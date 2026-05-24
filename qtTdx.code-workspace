@@ -1,0 +1,15 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../../../../new_tdx_mock/PYPlugins/user"
+		}
+	],
+	"settings": {
+		"python.analysis.extraPaths": [
+			"c:/Users/yellow/new_tdx_mock/PYPlugins/user"
+		]
+	}
+}
