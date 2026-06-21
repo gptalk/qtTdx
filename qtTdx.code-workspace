@@ -8,8 +8,15 @@
 		}
 	],
 	"settings": {
-		"python.analysis.extraPaths": [
-			"c:/Users/yellow/new_tdx_mock/PYPlugins/user"
-		]
+		"terminal.integrated.defaultProfile.windows": "PowerShell",
+		"terminal.integrated.profiles.windows": {
+			"PowerShell": {
+				"path": "pwsh.exe",
+				"icon": "terminal-powershell"
+			}
+		},
+		// Claude Code: 本工作区新会话默认进入 bypass permissions(等同 CLI --dangerously-skip-permissions)
+		// 全局开关 claudeCode.allowDangerouslySkipPermissions 需在 User Settings 里设为 true 才能生效
+		"claudeCode.initialPermissionMode": "bypassPermissions"
 	}
 }

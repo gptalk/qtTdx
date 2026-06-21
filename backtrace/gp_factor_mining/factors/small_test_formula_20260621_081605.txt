@@ -1,0 +1,8 @@
+# small_test GP best formula
+# train: 2018-01-01 ~ 2020-06-30
+# test:  2020-07-01 ~ 2021-06-30
+# train_ic=0.4688 icir=3.401
+# test_ic =0.4761 icir=3.058
+# length=2, depth=1
+
+sqrt(cs_ret_5)
