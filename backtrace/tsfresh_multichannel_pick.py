@@ -13,8 +13,8 @@ out_csv    = f'backtrace/tsfresh_multichannel_{STOCK_CODE.replace(".", "_")}_vs_
 
 # 1. 加载个股 + 大盘
 print("=" * 70)
-stock_df = P.load_ohlcv(STOCK_CODE, verbose=True)
-index_df = P.load_ohlcv(INDEX_CODE, verbose=True)
+stock_df = P.load_ohlcva(STOCK_CODE, verbose=True)
+index_df = P.load_ohlcva(INDEX_CODE, verbose=True)
 if stock_df is None or index_df is None:
     print(f"[FAIL] 缺少 {STOCK_CODE} 或 {INDEX_CODE} 数据,无法继续")
     raise SystemExit(1)

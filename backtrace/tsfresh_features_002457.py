@@ -9,7 +9,7 @@ STOCK_CODE = '002475.SZ'   # 想跑 002457 时改这里
 out_csv    = P.csv_path('features', STOCK_CODE)
 
 # 1. 加载 + long format + 全量特征(整段历史当 1 个样本)
-df = P.load_ohlcv(STOCK_CODE, verbose=True)
+df = P.load_ohlcva(STOCK_CODE, verbose=True)
 print(f"{STOCK_CODE} 日线 {len(df)} 行  |  {df.index[0].date()} -> {df.index[-1].date()}\n")
 
 long_df = P.to_long_format(df, id_value=STOCK_CODE)

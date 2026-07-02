@@ -32,12 +32,17 @@ def _try_local_csv(code):
     return None
 
 
-def load_ohlcv(code, lookback_years=None, use_tq=True, verbose=False):
+def load_ohlcva(code, lookback_years=None, use_tq=True, verbose=False, include_amount=True):
     """
     TQ 优先 → 失败回退本地 CSV。
-    返回 DataFrame(列 Open/High/Low/Close/Volume,DatetimeIndex)
+    返回 DataFrame(列 Open/High/Low/Close/Volume/Amount,DatetimeIndex)
+    include_amount=False 时不取成交额(回退场景:CSV 没 Amount 列时设 False)
     """
     lookback_years = lookback_years or C.LOOKBACK_YEARS
+    fields = ['Open', 'High', 'Low', 'Close', 'Volume']
+    if include_amount:
+        fields.append('Amount')
+
     if use_tq:
         try:
             sys.path.insert(0, C.TQ_PLUGINS_DIR)
@@ -46,8 +51,8 @@ def load_ohlcv(code, lookback_years=None, use_tq=True, verbose=False):
             end = datetime.now().strftime("%Y%m%d")
             start = (datetime.now() - timedelta(days=lookback_years * 365 + 30)).strftime("%Y%m%d")
             df_real = tq.get_market_data(
-                field_list=['Open', 'High', 'Low', 'Close', 'Volume'],
-                stock_list=[code], start_time=start, end_time=end,
+                field_list=fields, stock_list=[code],
+                start_time=start, end_time=end,
                 dividend_type='front', period='1d', fill_data=True,
             )
             out = pd.DataFrame({
@@ -57,6 +62,8 @@ def load_ohlcv(code, lookback_years=None, use_tq=True, verbose=False):
                 'Close':  pd.to_numeric(df_real['Close'][code],  errors='coerce'),
                 'Volume': pd.to_numeric(df_real['Volume'][code], errors='coerce'),
             }).sort_index()
+            if include_amount and 'Amount' in df_real and code in df_real['Amount'].columns:
+                out['Amount'] = pd.to_numeric(df_real['Amount'][code], errors='coerce')
             tq.close()
             if verbose:
                 print(f"[TQ] {code}  {len(out)} 行  {out.index[0].date()} -> {out.index[-1].date()}")
@@ -73,11 +80,14 @@ def load_ohlcv(code, lookback_years=None, use_tq=True, verbose=False):
     return local
 
 
-def load_sector(sector_name=None, lookback_years=None, use_tq=True, verbose=False):
+def load_sector(sector_name=None, lookback_years=None, use_tq=True, verbose=False, include_amount=True):
     """TQ 拉板块所有成员日线 -> {code: DataFrame};失败回退本地 fallback 列表"""
     sector_name = sector_name or C.SECTOR_NAME
     lookback_years = lookback_years or C.LOOKBACK_YEARS
     stock_data = {}
+    fields = ['Open', 'High', 'Low', 'Close', 'Volume']
+    if include_amount:
+        fields.append('Amount')
 
     if use_tq:
         try:
@@ -90,23 +100,27 @@ def load_sector(sector_name=None, lookback_years=None, use_tq=True, verbose=Fals
             end = datetime.now().strftime("%Y%m%d")
             start = (datetime.now() - timedelta(days=lookback_years * 365 + 30)).strftime("%Y%m%d")
             df_real = tq.get_market_data(
-                field_list=['Open', 'High', 'Low', 'Close', 'Volume'],
-                stock_list=codes, start_time=start, end_time=end,
+                field_list=fields, stock_list=codes,
+                start_time=start, end_time=end,
                 dividend_type='front', period='1d', fill_data=True,
             )
             for c in codes:
                 if c in df_real['Close'].columns:
-                    stock_data[c] = pd.DataFrame({
+                    row = {
                         'Open':   pd.to_numeric(df_real['Open'][c],   errors='coerce'),
                         'High':   pd.to_numeric(df_real['High'][c],   errors='coerce'),
                         'Low':    pd.to_numeric(df_real['Low'][c],    errors='coerce'),
                         'Close':  pd.to_numeric(df_real['Close'][c],  errors='coerce'),
                         'Volume': pd.to_numeric(df_real['Volume'][c], errors='coerce'),
-                    }).sort_index()
+                    }
+                    if include_amount and 'Amount' in df_real and c in df_real['Amount'].columns:
+                        row['Amount'] = pd.to_numeric(df_real['Amount'][c], errors='coerce')
+                    stock_data[c] = pd.DataFrame(row).sort_index()
             tq.close()
             if stock_data:
                 if verbose:
-                    print(f"[TQ] 板块 {sector_name} 拉到 {len(stock_data)} 只")
+                    extra = " (+Amount)" if include_amount else ""
+                    print(f"[TQ] 板块 {sector_name} 拉到 {len(stock_data)} 只{extra}")
                 return stock_data
         except Exception as e:
             if verbose:

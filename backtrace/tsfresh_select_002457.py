@@ -11,7 +11,7 @@ STOCK_CODE = '002475.SZ'
 out_csv    = P.csv_path('selected', STOCK_CODE)
 
 # 1. 加载 + 切窗口 + 提特征
-df = P.load_ohlcv(STOCK_CODE, verbose=True)
+df = P.load_ohlcva(STOCK_CODE, verbose=True)
 print()
 long_df = P.to_long_format(df, id_value=STOCK_CODE)
 X = P.extract_window_features(long_df, use_kind=True, verbose=True)
