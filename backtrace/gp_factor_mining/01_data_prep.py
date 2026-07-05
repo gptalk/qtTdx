@@ -25,7 +25,7 @@ import pandas as pd
 from sklearn.preprocessing import QuantileTransformer
 
 # ========================= 配置 =========================
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from importlib import import_module
 cfg = import_module('00_config')
 

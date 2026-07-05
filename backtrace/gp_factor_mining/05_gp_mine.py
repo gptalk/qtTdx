@@ -43,7 +43,7 @@ from sklearn.linear_model import ElasticNet, Ridge
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from importlib import import_module
 cfg        = import_module('00_config')
 prim       = import_module('02_primitive_set')

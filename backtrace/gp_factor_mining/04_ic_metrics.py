@@ -177,7 +177,7 @@ def full_evaluate(panel: pd.DataFrame, factor_col: str,
 # ============================================================
 if __name__ == "__main__":
     import sys, os
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from importlib import import_module
     cfg = import_module('00_config')
 
