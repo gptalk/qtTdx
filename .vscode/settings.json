@@ -4,6 +4,6 @@
         "C:/Users/yellow/.conda/envs/venv/Lib/site-packages"
     ]
     // 注:terminal.integrated.* 与 claudeCode.initialPermissionMode 是 window-scoped 配置,
-    //     在 multi-root workspace(qtTdx.code-workspace)下不能写在子文件夹的 .vscode/settings.json,
-    //     已迁到 qtTdx.code-workspace 的 settings 字段。
+    //     在 multi-root workspace(qtTdxs.code-workspace)下不能写在子文件夹的 .vscode/settings.json,
+    //     已迁到 qtTdxs.code-workspace 的 settings 字段。
 }
