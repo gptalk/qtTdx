@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import sys
+import sys, os
 sys.stdout.reconfigure(encoding='utf-8')
 sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')
 
@@ -15,6 +15,10 @@ tq.initialize(__file__)
 stock_list = ['000001.SH', '002475.SZ']  # 上证指数、002475
 days = 240
 # ======================================================
+
+# 输出目录: backtrace/outputs/
+OUTPUTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'outputs')
+os.makedirs(OUTPUTS_DIR, exist_ok=True)
 
 end_time = datetime.now().strftime("%Y%m%d")
 start_time = (datetime.now() - timedelta(days=days + 30)).strftime("%Y%m%d")
@@ -52,7 +56,7 @@ for code in stock_list:
     data = data.dropna().tail(240)
 
     # 保存CSV
-    csv_path = f'backtrace/{code.replace(".", "_")}_daily.csv'
+    csv_path = os.path.join(OUTPUTS_DIR, f'{code.replace(".", "_")}_daily.csv')
     data.to_csv(csv_path, encoding='utf-8')
     print(f"{code} 数据已保存到 {csv_path}，共{len(data)}条记录")
 
@@ -104,7 +108,7 @@ for code in stock_list:
         template='plotly_dark'
     )
 
-    html_path = f'backtrace/{code.replace(".", "_")}_kline.html'
+    html_path = os.path.join(OUTPUTS_DIR, f'{code.replace(".", "_")}_kline.html')
     fig.write_html(html_path)
     print(f"K线图已保存到 {html_path}")
 
