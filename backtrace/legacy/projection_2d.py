@@ -188,7 +188,11 @@ fig2.update_layout(
 )
 fig2.write_html('backtrace/projection_verify.html')
 
-# 图3: 正交性时序图
+# 图3: 正交性时序图 (叠加Close收盘价)
+close_002475 = data_002475['Close'].to_numpy()
+close_002475_norm = (close_002475 - close_002475.min()) / (close_002475.max() - close_002475.min())
+dot_abs_max = np.abs(dot_products_after).max()
+
 fig3 = go.Figure()
 fig3.add_trace(go.Scatter(
     x=list(common_idx), y=dot_products_after,
@@ -200,9 +204,15 @@ fig3.add_trace(go.Scatter(
     mode='lines', name='y=0 (理想正交)',
     line=dict(color='gray', dash='dash')
 ))
+fig3.add_trace(go.Scatter(
+    x=list(common_idx), y=close_002475_norm * dot_abs_max,
+    mode='lines', name='Close收盘价 (归一化到点积范围)',
+    line=dict(color='cyan'),
+    opacity=0.7
+))
 fig3.update_layout(
-    title='正交性验证: (u - proj) · v 应为 0',
-    xaxis_title='日期', yaxis_title='点积值',
+    title='正交性验证: (u - proj) · v 应为 0 (叠加Close收盘价)',
+    xaxis_title='日期', yaxis_title='点积值 / 收盘价(归一化)',
     template='plotly_dark', height=400
 )
 fig3.write_html('backtrace/orthogonality_check.html')
@@ -223,8 +233,7 @@ fig4a.update_layout(
 fig4a.write_html('backtrace/proj_coefficient.html')
 
 # 4b: 投影向量模长时序图 (叠加Close收盘价)
-close_002475 = data_002475['Close'].values
-close_002475_norm = (close_002475 - close_002475.min()) / (close_002475.max() - close_002475.min())
+# close_002475 / close_002475_norm 已在上方定义
 proj_magnitudes_scaled = proj_magnitudes * (close_002475.max() / proj_magnitudes.max())
 residual_magnitudes = np.linalg.norm(residuals, axis=1)
 
