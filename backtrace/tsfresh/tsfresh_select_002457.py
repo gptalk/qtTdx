@@ -5,6 +5,8 @@ if BACKTRACE_DIR not in sys.path:
 
 # 使用 tsfresh 提取个股日线特征 + select_features 筛选显著特征
 # 流程:滑动窗口(30日) -> 每窗口提一组特征 -> 标签=窗口结束后5日收益正负 -> select 卡 p 值
+# 输出:tsfresh_selected_<code>.csv(FDR 通过的显著特征列)
+# 用法:`python tsfresh/select_002457.py` → 看哪些 tsfresh 特征对未来 5 日涨跌有预测力
 import warnings
 warnings.filterwarnings('ignore')
 

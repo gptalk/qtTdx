@@ -88,6 +88,11 @@ def add_timeseries_primitives(panel: pd.DataFrame) -> pd.DataFrame:
 
 
 def _rsi(close: pd.Series, N: int = 14) -> pd.Series:
+    """
+    RSI(Relative Strength Index),Wilder 经典实现。
+    参数:close(单只票 close 序列)、N(默认 14)
+    返回:0-100 的 Series(>70 超买, <30 超卖)
+    """
     delta = close.diff()
     up    = delta.clip(lower=0)
     down  = -delta.clip(upper=0)
@@ -99,6 +104,11 @@ def _rsi(close: pd.Series, N: int = 14) -> pd.Series:
 
 
 def _atr(panel: pd.DataFrame, N: int = 14) -> pd.Series:
+    """
+    ATR(Average True Range),Wilder 平滑。
+    参数:panel(必须含 High/Low/Close/code 列)、N(默认 14)
+    返回:Series(每只票每天一个 ATR 值)
+    """
     high  = panel['High']
     low   = panel['Low']
     close = panel['Close']

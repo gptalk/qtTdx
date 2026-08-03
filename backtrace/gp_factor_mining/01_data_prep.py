@@ -34,13 +34,21 @@ cfg = import_module('00_config')
 
 # ---------- TQ 取数 ----------
 def _init_path():
+    """与 common.tsfresh_pipeline.init_tq_path 行为一致;优先 __file__,回退 sys.argv[0]/cwd"""
     if '__file__' in globals() and __file__:
         return os.path.abspath(__file__)
     return os.path.abspath(sys.argv[0]) if sys.argv else os.getcwd()
 
 
 def fetch_from_tq(codes, start, end):
-    """TQ 拉日线;返回 dict[code] -> DataFrame(OHLCVA),DatetimeIndex"""
+    """
+    TQ 批量拉日线;TQ 失败不会抛(逐票 try/except),调用方拿 dict 自己处理
+    参数:
+      codes : list[str]   股票代码列表(含 .SH/.SZ)
+      start : datetime    起始日
+      end   : datetime    截止日
+    返回:dict[code] -> DataFrame(OHLCV+A,DatetimeIndex,Close 已剔 <=0 与 NaN)
+    """
     sys.path.insert(0, cfg.TQ_INIT_PATH)
     from tqcenter import tq
     tq.initialize(_init_path())
@@ -75,7 +83,17 @@ def fetch_from_tq(codes, start, end):
 
 
 def fetch_panel():
-    """主入口:取数 + 清洗 + 构造标签 + 截面标准化"""
+    """
+    主入口:取数 + 清洗 + 构造标签 + 截面标准化 + 落盘。
+    流程(按代码顺序):
+      1. 拉数(TQ 优先,失败回退本地 *_daily.csv)
+      2. 拼接长表 (date, code, OHLCVA)
+      3. 股票池过滤(上市天数、壳股、ST、停牌)
+      4. 构造未来 N 日收益标签
+      5. 截面标准化(每日横截面 rank→zscore)
+      6. 落盘到 DATA_DIR/panel.parquet
+    返回:panel DataFrame(已在内存;同时落盘)
+    """
     print("=" * 70)
     print("[01] 数据准备")
     print("=" * 70)

@@ -3,6 +3,20 @@
 GP 因子挖掘 — 统一配置
 所有模块共享:训练/测试时间窗、股票池、种群规模、残差轮数、路径等。
 修改下面这块就够了,不要散落在各模块里写死。
+
+输入/输出:
+  - 输入:无(纯常量模块)
+  - 输出:9 个分组的 ~45 个公开常量 + 路径自动 mkdir
+
+依赖:
+  - pathlib
+  - 01..07 各模块会动态 import 本文件(因数字前缀,无法用 `import 00_config`)
+
+用法:
+  # 在同目录下其他文件里用 importlib:
+  import importlib
+  cfg = importlib.import_module('00_config')
+  print(cfg.POP_SIZE, cfg.TRAIN_START)
 """
 from pathlib import Path
 

@@ -43,6 +43,7 @@ def latest_run():
 
 
 def load_panel():
+    """载入 01_data_prep 落盘的 panel;缺失时 sys.exit"""
     p = cfg.DATA_DIR / "panel.parquet"
     if not p.exists():
         sys.exit(f"[FATAL] 找不到 {p}")

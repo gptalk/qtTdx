@@ -35,7 +35,10 @@ def daily_rankic(df: pd.DataFrame, factor_col: str, label_col: str) -> pd.Series
 
 
 def ic_summary(ic_ts: pd.Series) -> dict:
-    """IC 时序 → 摘要字典"""
+    """
+    IC 时序 → 摘要字典。
+    返回 dict keys:n_days / ic_mean / ic_std / icir / ic_t / ic_pos / ic_abs_mean
+    """
     ic_ts = ic_ts.dropna()
     if len(ic_ts) == 0:
         return {'n_days': 0}

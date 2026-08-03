@@ -1,5 +1,7 @@
 # tsfresh + VectorBT 集成 demo
 # 4 组合网格:MA5 基线 + tsfresh 三个阈值,全部走 jhzq_fees 真实扣费
+# 输出:tsfresh_vbt_grid_<code>_<start>_<end>.csv(每策略 trades + 净 PnL)
+# 用法:验证 tsfresh 信号当 vbt entry/exit 是否比纯 MA5 基线多赚(扣费后)
 import warnings
 warnings.filterwarnings('ignore')
 

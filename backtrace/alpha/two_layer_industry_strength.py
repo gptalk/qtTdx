@@ -3,6 +3,8 @@
 # 第 2 层:通达信88 个股,先按"近 20 日收益"排名,再过滤"属于 Top 行业"的股
 #
 # 注意:TQ 的 880xxx 行业指数本身有 K 线但拿不到成分股,所以用"行业代码前缀"匹配做粗过滤
+# 输出:two_layer_industry_strong_<idx>_<start>_<end>.csv(行业 / 个股两层排名)
+# 用法:`python alpha/industry_strength.py` → 研究时看"哪个行业近期最强 + 行业里哪几只最强"
 import warnings
 warnings.filterwarnings('ignore')
 

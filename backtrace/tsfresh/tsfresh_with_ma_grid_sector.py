@@ -1,5 +1,7 @@
 # tsfresh_with_ma 跨通达信88 板块验证
 # 对每只股票跑 basic vs with_ma 两套方案,看 with_ma 是否稳定胜出
+# 输出:tsfresh_with_ma_grid_<code>_<start>_<end>.csv
+# 用法:板块层面跑一遍,验证 with_ma 方案在多数票上是否真的更稳(不是过拟合单只票)
 import warnings
 warnings.filterwarnings('ignore')
 

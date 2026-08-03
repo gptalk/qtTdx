@@ -1,5 +1,7 @@
 # 真策略版:分别用 10 / 5 / 1 日窗口跑 α 选股真策略,对比 Sharpe / 最大回撤 / 与大盘对比
 # 评估 Sharpe / 最大回撤 / 与大盘对比
+# 输出:two_layer_industry_live_<idx>_<start>_<end>.csv + _1d_...csv(每个窗口一组)
+# 用法:`python alpha/industry_strength_live.py` → 1/5/10 日窗口横向对比,看哪条更稳
 import warnings
 warnings.filterwarnings('ignore')
 

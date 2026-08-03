@@ -1,5 +1,7 @@
 # 用 1 日窗口找 Top 1 行业 → 双重跑赢(>大盘 & >板块)成分股 → tsfresh walk-forward
 # 验证:对"短期最强"的股,tsfresh 模型能否预测其中长期走势
+# 输出:tsfresh_top1_industry_<start>_<end>.csv;另外还会推送板块到 TQ 客户端
+# 用法:`python tsfresh/top1_industry.py` → 跑完后查 TQ 自定义板块 `TSFresh候选_<date>`
 import warnings
 warnings.filterwarnings('ignore')
 

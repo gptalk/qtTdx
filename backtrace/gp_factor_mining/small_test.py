@@ -269,6 +269,7 @@ def run_small_gp(panel: pd.DataFrame):
 
 # ========================= C. 入口 =========================
 def main():
+    """合成数据 → 时序+截面特征 → 单轮 GP 训练 → 评估指标。无需 TQ,本机几分钟跑完"""
     print("="*70)
     print("[SMALL TEST] GP 因子挖掘 — 冒烟测试")
     print(f"  训练:{cfg.TRAIN_START} ~ {cfg.TRAIN_END}")

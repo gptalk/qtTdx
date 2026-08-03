@@ -1,6 +1,8 @@
 # tsfresh 指标评测:Phase 1 - IC(信息系数)快速评估
 # 对通达信88 每只股票,每个 vbt 指标计算"指标值 vs 未来 5 日收益"的 Pearson 相关
 # 输出:每个指标的板块 IC 中位数 + 胜率 + Top 5 表现最好股票
+# 输出文件:tsfresh_indicator_ic_<sector>_<start>_<end>.csv + _summary.csv
+# 用法:`python tsfresh/eval_indicators.py` → 11 个指标横向打分,挑有效的往下做
 import warnings
 warnings.filterwarnings('ignore')
 

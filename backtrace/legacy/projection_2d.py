@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+# 2-D 投影验证 — legacy，将 002475.SZ 的成交量 / 成交额向量投影到 000001.SH 的方向上
+# 输出:7 个 HTML 到 backtrace/ 根目录（vector_scatter / projection_verify / orthogonality_check / 等）
+# 用法:已不推荐,主要用作早期可正交性可视化实验;研究请改用 vbt/tsfresh 系列
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')

@@ -1,4 +1,6 @@
 # TALib 形态验证 - 检查形态后第2天涨跌概率 (直接计算，不使用vbt portfolio)
+# 输出:backtrace/talib_pattern_verify.csv(每形态:命中数 / 总次数 / 胜率)
+# 用法:`python talib/pattern_verify.py` → 直接算命中/未命中,无 portfolio 模拟,快很多
 import sys
 sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')
 import numpy as np

@@ -5,6 +5,8 @@ if BACKTRACE_DIR not in sys.path:
 
 # tsfresh 多通道联合特征提取:个股 + 大盘 + 相对强弱
 # 标签:未来 5 日个股相对大盘是否跑赢
+# 输出:tsfresh_multichannel_<code>_vs_<idx>.csv
+# 用途:看"相对大盘"标签比"绝对涨跌"标签是否能给出更稳定的特征
 import warnings
 warnings.filterwarnings('ignore')
 

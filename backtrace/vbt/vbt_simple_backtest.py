@@ -1,5 +1,7 @@
 # 注意：
 # 1/目前调用的vectorbt三方库函数vbt.Portfolio.from_signals不支持分红送股等权益变动，该demo仅做示例。
+# 输出:backtrace/vbt_backtest_<code>.html(vbt 内置 plotly 报告)
+# 用法:MA 交叉 demo;扣费 = 0(零摩擦上限)。要真实扣费请用 vbt_jhzq_backtest.py
 
 import sys
 sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')

@@ -5,6 +5,8 @@ if BACKTRACE_DIR not in sys.path:
 
 # 使用 tsfresh 提取个股日线特征(整段历史 -> 1 个样本 -> N 个特征)
 # 数据源:本地 CSV → TQ(失败回退)
+# 输出:tsfresh_features_<code>.csv(数百列 tsfresh 特征)
+# 用途:EDA / 看看 tsfresh 能提什么;不直接用于交易
 import warnings
 warnings.filterwarnings('ignore')
 

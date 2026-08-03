@@ -1,3 +1,6 @@
+# MA 交叉信号推送模板 — legacy，已被 tsfresh_top1_industry / vbt 系列取代
+# 输出:不落盘，只通过 tq.send_message / send_warn 推送到 TQ 客户端
+# 用法:启动时阻塞运行,MA 交叉即时推送,Ctrl+C 退出
 import sys
 sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')
 from datetime import datetime, timedelta

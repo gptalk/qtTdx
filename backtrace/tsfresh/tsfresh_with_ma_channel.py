@@ -1,6 +1,8 @@
 # tsfresh + MA5 作独立通道 → vbt + jhzq_fees 真实扣费
 # 核心创新:把 ma5 / ma10 / ma20 + close/ma5 偏离度 也作为通道喂给 tsfresh
 # 对比 3 个 tsfresh 通道方案 + 1 个 MA5 基线
+# 输出:tsfresh_with_ma_<code>_<start>_<end>.csv
+# 用法:验证把"均线 / 偏离度"当额外 tsfresh 通道,能否挑出 MA5 看不出的反转点
 import warnings
 warnings.filterwarnings('ignore')
 

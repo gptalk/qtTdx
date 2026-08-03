@@ -2,6 +2,8 @@
 # 第 1 层:大盘 vs 通达信88 板块指数,找"跑赢大盘"的强势股
 # 第 2 层:强势股内,个股 vs 板块,找"跑赢板块"的强势个股
 # 最后对 Top N 跑 walk-forward tsfresh + vbt + jhzq_fees 验证
+# 输出:two_layer_strong_stocks_<sector>_<start>_<end>.csv
+# 用法:`python alpha/relative_strength.py` → 看"双层跑赢"是否比单层排序更稳
 import warnings
 warnings.filterwarnings('ignore')
 

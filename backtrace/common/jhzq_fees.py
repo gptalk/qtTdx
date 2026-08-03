@@ -12,16 +12,16 @@
 import pandas as pd
 
 # ===== 费率常量 =====
-STOCK_COMMISSION = 0.000085       # 双向 万 0.85,**免 5**(无最低收费)
-STAMP_TAX_SELL   = 0.0005         # 仅卖出 万 5(凭据明确)
-TRANSFER_SH      = 0.00001        # 沪市双边 万 0.1
+STOCK_COMMISSION = 0.000085       # 双向 万 0.85,**免 5**(无最低收费);vbt 内部只按双边 fee 收,我们要补完整费率
+STAMP_TAX_SELL   = 0.0005         # 仅卖出 万 5(凭据明确);买入 0
+TRANSFER_SH      = 0.00001        # 沪市双边 万 0.1;深市为 0
 # ETF / 转债(暂未用,留接口)
 ETF_COMMISSION   = 0.00005
 BOND_COMMISSION  = 0.00005
 
 
 def is_sh(code: str) -> bool:
-    """沪市股票要收过户费,深市不收"""
+    """沪市股票要收过户费,深市不收;判断依据:代码后缀 .SH"""
     return code.upper().endswith(".SH")
 
 
@@ -29,7 +29,9 @@ def calc_single_fee(amount: float, is_sell: bool, is_sh_market: bool):
     """
     单笔成交完整费用计算(双笔金额 × 单次费率)。
     amount: 一次成交金额(买入金额或卖出金额,各算各的)
-    返回 (总费用, 佣金, 印花税, 过户费)
+    is_sell: 是否卖出(印花税仅卖出收)
+    is_sh_market: 是否沪市(沪市双边收过户费,深市 0)
+    返回 (总费用, 佣金, 印花税, 过户费)— 4 元组
     """
     comm     = amount * STOCK_COMMISSION                # 双向,免 5(无最低)
     stamp    = amount * STAMP_TAX_SELL if is_sell else 0.0
@@ -41,6 +43,15 @@ def adjust_trades_pnl(trades_df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
     """
     修正 VBT 原始成交记录,补全完整手续费,生成净盈亏。
     适配 VBT 多种列名版本(records_readable / records / 不同 vbt 版本)。
+    入口:trades_df = pf.trades.records_readable(每个 portfolio 自己取)
+    出口:在原 df 上新增 5 列(见下方 Schema)
+
+    Schema(新增列):
+      佣金_实扣     : float, 买卖双边佣金之和(= entry 佣金 + exit 佣金)
+      印花税_实扣   : float, 仅卖出端的印花税
+      过户费_实扣   : float, 仅沪市双边过户费,深市为 0
+      总手续费      : float, 上述三项合计(= 总费用 - VBT 已扣 + VBT 已扣,详见实现注释)
+      净盈亏_扣费后 : float, VBT 原 PnL 扣减总手续费后的净 PnL
     """
     if trades_df is None or trades_df.empty:
         return trades_df
@@ -89,7 +100,17 @@ def adjust_trades_pnl(trades_df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
 
 
 def summary_after_fees(trades_df: pd.DataFrame, stock_code: str) -> dict:
-    """汇总扣费后整体指标(分母用 INIT_CASH 由调用方传入)"""
+    """
+    汇总扣费后整体指标(分母用 INIT_CASH 由调用方传入,本函数不接触资金)。
+
+    返回 dict 6 个 key:
+      trades           : int,   成交笔数
+      gross_pnl        : float, 扣费前 PnL 合计(VBT 原 PnL 列)
+      total_stamp      : float, 印花税合计
+      total_transfer   : float, 过户费合计
+      net_pnl          : float, 净盈亏合计(扣完整手续费)
+      avg_net_per_trade: float, 单笔平均净盈亏
+    """
     df = adjust_trades_pnl(trades_df, stock_code)
     if df is None or df.empty:
         return {"trades": 0, "gross_pnl": 0.0, "total_stamp": 0.0,

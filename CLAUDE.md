@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **API 表见 [docs/api.md](docs/api.md)。** 修改公开函数时请同步更新。
+
 ## 仓库本质
 
 A 股量化研究 / 回测项目,围绕**通达信 TQ 接口**(`C:/new_tdx_mock/PYPlugins/user/tqcenter.py`)+ **vectorbt 回测**展开。所有脚本都在 `backtrace/` 下,统一拉 TQ 数据 → 跑研究 → 输出 CSV / HTML / 推送到通达信客户端。
@@ -31,7 +33,7 @@ backtrace/
 │   ├── tsfresh_config.py
 │   ├── tsfresh_pipeline.py
 │   └── jhzq_fees.py
-├── tsfresh/                 ← tsfresh 系列(11 个脚本)
+├── tsfresh/                 ← tsfresh 系列(10 个脚本)
 │   ├── tsfresh_features_002457.py     ← EDA 提特征
 │   ├── tsfresh_select_002457.py       ← FDR 筛选
 │   ├── tsfresh_classify_002457.py     ← walk-forward 训模型
@@ -62,23 +64,19 @@ backtrace/
 └── outputs/                 ← 全部 CSV/HTML 输出
 ```
 
-## 数据接入统一入口 — [backtrace/common/tsfresh_pipeline.py](backtrace/common/tsfresh_pipeline.py)
+## 数据接入统一入口 — [docs/api.md](docs/api.md)
 
-**所有脚本都用这个模块**(在 `common/` 下,其他脚本 `from common import tsfresh_pipeline as P`),不要自己写 TQ 拉数:
+**所有脚本都用 [backtrace/common/tsfresh_pipeline.py](backtrace/common/tsfresh_pipeline.py)**(在 `common/` 下,其他脚本 `from common import tsfresh_pipeline as P`),不要自己写 TQ 拉数。
 
-| 函数 | 用途 |
-|---|---|
-| `P.load_ohlcva(code, lookback_years=5, include_amount=True, verbose=...)` | 单只股 / 大盘;**Amount 默认带**;TQ 失败自动回退本地 CSV |
-| `P.load_sector(sector_name='通达信88', include_amount=True, verbose=...)` | 板块全部成员;**Amount 默认带** |
-| `P.to_long_format(df, channels=[...], id_value=...)` | OHLCV → tsfresh long format(id/time/kind/value) |
-| `P.extract_window_features(long_df, window=30, use_kind=False, roll=True)` | 滚动窗口 + tsfresh 提特征 |
-| `P.make_labels(X, close_arr, horizon=5, ref_arr=None)` | 标签;`ref_arr` 不为 None 时用"相对大盘"标签 |
-| `P.select_relevant(X, y, fdr_level=0.05)` | FDR 多重检验校正;0 特征自动放宽到 0.20 |
-| `P.fit_logreg(X, y)` | LR 训练,返回 (scaler, clf) |
+完整 API 表(11 个函数 + 5 个费率常量 + 14 个配置常量)见 [docs/api.md](docs/api.md)。常用:
+
+- `P.load_ohlcva(code, ...)` / `P.load_sector(sector_name, ...)` — TQ 优先 → CSV 回退
+- `P.extract_window_features(...)` / `P.select_relevant(...)` — tsfresh 提特征 + FDR 筛选
+- `F.adjust_trades_pnl(trades, code)` / `F.summary_after_fees(trades, code)` — vbt 真实扣费
 
 ## 关键配置 — [backtrace/common/tsfresh_config.py](backtrace/common/tsfresh_config.py)
 
-改这里 = 改所有脚本。`WINDOW=30` / `HORIZON=5` / `LR_C=0.5` / `FDR_LEVEL=0.05` 等。
+改这里 = 改所有脚本。`WINDOW=30` / `HORIZON=5` / `LR_C=0.5` / `FDR_LEVEL=0.05` 等。**全部 14 个常量见 [docs/api.md §tsfresh_config](docs/api.md#backtracecommontsfresh_configpy)**。
 
 **注意**:`OUTPUTS_DIR` 自动指向 `backtrace/outputs/`,所以脚本的输出 CSV / HTML 都落到那里。
 
@@ -86,7 +84,7 @@ backtrace/
 
 江海证券真实费率:**佣金 万 0.85(免 5)/ 印花税 卖出 万 5 / 沪市过户费 万 0.1**。费率参数在 `jhzq/交易凭据.md`,**不要把资金账号 / 密码写进任何代码**。
 
-`vbt` 的 `fees` 参数只能双边费率,无法表达"单边印花税 / SH-SZ 差异化过户费" → 必须 `fees=0` + `jhzq_fees.adjust_trades_pnl` 后置。
+`vbt` 的 `fees` 参数只能双边费率,无法表达"单边印花税 / SH-SZ 差异化过户费" → 必须 `fees=0` + `jhzq_fees.adjust_trades_pnl` 后置。**输出 5 列中文 schema 详见 [docs/api.md §adjust_trades_pnl](docs/api.md#adjust_trades_pnl-输出-schema新增-5-列)**。
 
 ## TQ 接口踩过的坑(写代码前必看)
 
@@ -110,21 +108,19 @@ backtrace/
 - `tq.send_message(msg)` → 策略管理器显示
 - `tq.send_warn(...)` → 预警信号
 
-参考实现:[tsfresh_top1_industry.py](backtrace/tsfresh_top1_industry.py) 的 `[5/5]` 和 `[6/6]` 段。
+参考实现:[backtrace/tsfresh/tsfresh_top1_industry.py](backtrace/tsfresh/tsfresh_top1_industry.py) 的 `[5/5]` 和 `[6/6]` 段。
 
 ## backtrace/ 脚本分类
 
-| 类别 | 脚本 | 备注 |
+| 类别 | 路径 | 备注 |
 |---|---|---|
-| **公共模块** | `tsfresh_config.py` / `tsfresh_pipeline.py` / `jhzq_fees.py` | 改一处 = 改所有 |
-| **基础策略** | `ma_cross_signals.py` / `stock_picker.py` / `price_rise_monitor.py` | TQ 信号推送基础模板 |
-| **tsfresh 系列** | `tsfresh_features_*` / `tsfresh_select_*` / `tsfresh_classify_*` / `tsfresh_pick_stocks.py` / `tsfresh_multichannel_pick.py` | EDA → 选特征 → 训模型 → 应用 |
-| **tsfresh + vbt 集成** | `tsfresh_vbt_combo.py` / `tsfresh_with_ma_channel.py` / `tsfresh_with_ma_grid_sector.py` / `tsfresh_top1_industry.py` | 把 tsfresh 信号当 vbt entry/exit |
-| **vbt + 真实扣费** | `vbt_jhzq_backtest.py` / `vbt_simple_backtest.py` | 真实下单回测 |
-| **双层 α 选股** | `two_layer_industry_strength.py` / `two_layer_industry_strength_live.py` / `two_layer_relative_strength.py` | 行业 → 个股双层筛选 |
-| **指标评测** | `tsfresh_eval_indicators.py` | 11 个技术指标 vs 未来收益 IC |
-| **GP 因子挖掘** | `gp_factor_mining/` 子目录 | 遗传规划 + 因子库 |
-| **K 线 / 投影可视化** | `kline_chart.py` / `projection_2d.py` / `orthogonality_check.html` | 早期可视化 |
+| **公共模块** | [backtrace/common/](backtrace/common/) | 改一处 = 改所有 |
+| **基础策略**(legacy) | [backtrace/legacy/](backtrace/legacy/) | TQ 信号推送基础模板 |
+| **tsfresh 系列** | [backtrace/tsfresh/](backtrace/tsfresh/) | EDA → 选特征 → 训模型 → 应用(10 个脚本) |
+| **vbt 系列** | [backtrace/vbt/](backtrace/vbt/) | 真实下单回测 |
+| **双层 α 选股** | [backtrace/alpha/](backtrace/alpha/) | 行业 → 个股双层筛选 |
+| **K 线形态** | [backtrace/talib/](backtrace/talib/) | TALib 形态回测 / 验证 |
+| **GP 因子挖掘** | [backtrace/gp_factor_mining/](backtrace/gp_factor_mining/) | 遗传规划 + 因子库 |
 
 ## 已知陷阱(踩过无数次的)
 

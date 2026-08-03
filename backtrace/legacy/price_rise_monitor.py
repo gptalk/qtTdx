@@ -1,4 +1,7 @@
 # 订阅板块成分股行情，涨幅突破实时预警，首次突破后取消该证券行情订阅监控
+# 输出:实时,通过 tq.send_warn 推送到 TQ 客户端；不落盘
+# 用法:`python legacy/price_rise_monitor.py` → 阻塞监听,涨幅 > 5% 推一次预警后自动退订
+# 依赖:legacy/ 唯一的 __main__ 守卫文件
 import json
 import time
 import signal

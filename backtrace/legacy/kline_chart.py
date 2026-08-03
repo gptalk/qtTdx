@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+# K线图可视化（plotly） — legacy 模板，已被 vbt_simple_backtest / tsfresh_top1_industry 取代
+# 输出:outputs/<code>_kline.html (每只票一张 plotly HTML)
+# 用法:`python legacy/kline_chart.py` → 看 000001.SH / 002475.SZ 的 K 线 + 量能
 import sys, os
 sys.stdout.reconfigure(encoding='utf-8')
 sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')

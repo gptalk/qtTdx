@@ -1,5 +1,27 @@
 # -*- coding: utf-8 -*-
-"""tsfresh pipeline 工具函数,被 5 个脚本共用。无 print,verbose 标志控制。"""
+"""
+tsfresh pipeline 工具函数,被 5 个脚本共用。无 print,verbose 标志控制。
+
+流程/约定/做法:
+  1. 拉数据:`load_ohlcva` / `load_sector`(TQ 优先 → 本地 CSV 回退)
+  2. 提特征:`to_long_format` → `extract_window_features`
+  3. 打标签:`make_labels`(绝对 / 相对大盘二选一)
+  4. 筛选特征:`select_relevant`(FDR 多重检验校正)
+  5. 训练:`fit_logreg` → 用 `align_window_features` 对齐列后再 predict
+
+输入/输出:
+  - 输入:股票代码(code)或板块名(sector_name),TQ SDK 在 import 时按需懒加载
+  - 输出:pd.DataFrame(每只票 1 个)或 dict {code: DataFrame};特征矩阵 X、标签 Series y
+
+依赖:
+  - tsfresh.extract_features / select_features / impute / roll_time_series
+  - sklearn.linear_model.LogisticRegression + StandardScaler
+  - C:/new_tdx_mock/PYPlugins/user/tqcenter.tq(运行时)
+
+用法:
+  from common import tsfresh_pipeline as P
+  df = P.load_ohlcva('600118.SH', verbose=True)
+"""
 import sys
 import os
 import traceback
@@ -18,6 +40,7 @@ from common import tsfresh_config as C
 # ==================== 1. TQ 上下文 ====================
 def init_tq_path():
     """tq.initialize 要求传脚本路径,__file__ 在 -c 模式或子进程里可能没定义"""
+    # 兜底链:`__file__` → `sys.argv[0]` → `cwd`,至少返回一个可解析的绝对路径
     if '__file__' in globals() and __file__:
         return os.path.abspath(__file__)
     return os.path.abspath(sys.argv[0]) if sys.argv else os.getcwd()
@@ -141,6 +164,7 @@ def to_long_format(ohlcv_df, channels=None, id_value=0):
     """
     把 OHLCV DataFrame 转 tsfresh long format。
     channels: 要包含的列名列表,None=全 5 个。
+    id_value: 该票的 id(单只票可固定 0;多票时改为股票代码字符串)
     返回 DataFrame [id, time, kind, value]
     """
     channels = channels or ['Open', 'High', 'Low', 'Close', 'Volume']
@@ -149,7 +173,7 @@ def to_long_format(ohlcv_df, channels=None, id_value=0):
         for k in channels:
             records.append((id_value, t_idx, k.lower(), row[k]))
     out = pd.DataFrame(records, columns=['id', 'time', 'kind', 'value'])
-    out['value'] = pd.to_numeric(out['value'], errors='coerce')
+    out['value'] = pd.to_numeric(out['value'], errors='coerce')   # coerce→NaN,tsfresh 内部再 impute
     return out
 
 
@@ -160,7 +184,10 @@ def extract_window_features(long_df, window=None, use_kind=False, roll=True, ver
     window: 窗口大小(None=用 config.WINDOW)
     use_kind: 是否多通道(用 column_kind)
     roll: 是否滑动窗口(默认 True;False 时整段历史当 1 样本)
-    返回 X: 索引是 id(或 (id, end_t) 元组)
+    返回 X: 索引是 id(或 (id, end_t) 元组),列是 tsfresh 特征名
+
+    为什么用 impute:tsfresh 不允许 NaN/Inf,impute 用均值/中位数兜底,
+      避免特征矩阵出现整列 NaN 后 select_features 把它当成"零方差"剔除掉。
     """
     window = window or C.WINDOW
     if roll:
@@ -222,7 +249,17 @@ def make_labels(X, close_arr, horizon=None, ref_arr=None, verbose=True):
 
 # ==================== 5. 特征筛选 ====================
 def select_relevant(X, y, fdr_level=None, verbose=True):
-    """FDR 筛选,0 特征时自动放宽到 0.20"""
+    """
+    FDR(Benjamini-Hochberg)多重检验校正。
+    参数:
+      X: 特征矩阵
+      y: 0/1 标签
+      fdr_level: 显著性阈值,None=用 config.FDR_LEVEL(=0.05)
+    返回:显著特征子集 X_sel
+
+    为什么 0 特征自动放宽:样本少(几百行以下)+ 严格 FDR 容易全砍掉,
+      此时放宽到 0.20 至少留点特征能训出模型(实战经验值)。
+    """
     fdr_level = fdr_level or C.FDR_LEVEL
     X_sel = select_features(X, y, n_jobs=C.TSFRESH_N_JOBS, fdr_level=fdr_level)
     if X_sel.shape[1] == 0 and fdr_level < 0.20:
@@ -236,7 +273,11 @@ def select_relevant(X, y, fdr_level=None, verbose=True):
 
 # ==================== 6. 模型 ====================
 def fit_logreg(X, y, verbose=True):
-    """返回 (scaler, clf)"""
+    """
+    训练 StandardScaler + 平衡 LogisticRegression。
+    参数:同 sklearn 接口
+    返回:(scaler, clf)— predict 时记得先 scaler.transform(X)
+    """
     scaler = StandardScaler().fit(X.values)
     clf = LogisticRegression(
         C=C.LR_C, max_iter=C.LR_MAX_ITER,
@@ -261,11 +302,11 @@ def align_window_features(X_win, ref_cols, fill_value=0.0):
 
 # ==================== 8. 输出命名 ====================
 def csv_path(kind, code):
-    """生成 backtrace/outputs/{kind}_{code}.csv 路径"""
+    """生成 backtrace/outputs/{kind}_{code}.csv 路径(无时间戳,同 code 会覆盖)"""
     return os.path.join(C.OUTPUTS_DIR, f'tsfresh_{kind}_{code.replace(".", "_")}.csv')
 
 
 def timestamped_csv_path(kind, ext='csv'):
-    """生成带时间戳的输出路径 → backtrace/outputs/"""
+    """生成带时间戳的输出路径 → backtrace/outputs/tsfresh_{kind}_{YYYYMMDD_HHMMSS}.{ext}(不会覆盖历史)"""
     name = f'tsfresh_{kind}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.{ext}'
     return os.path.join(C.OUTPUTS_DIR, name)

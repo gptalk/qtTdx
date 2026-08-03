@@ -1,4 +1,6 @@
 # TALib 形态识别回测 - 全市场验证 (用上证指数代表A股)
+# 输出:backtrace/talib_pattern_verify_<code>.csv(每形态的 hit / total / win_rate)
+# 用法:`python talib/pattern_backtest.py` → 验证 TALib 形态是否真有预测力(单只票上)
 import sys
 sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')
 import numpy as np

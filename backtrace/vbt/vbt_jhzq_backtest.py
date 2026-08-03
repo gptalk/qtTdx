@@ -1,5 +1,7 @@
 # vbt 回测,按江海证券真实手续费率扣费(佣金 + 印花税 + 沪市过户费)
 # 资金账号 / 密码 不在本脚本
+# 输出:vbt_jhzq_<code>_<start>_<end>_trades.csv(trades 表 + 5 列扣费字段)
+# 用法:与 vbt_simple_backtest.py 对照 — 验证"真实扣费 vs 零摩擦"差距有多大
 import warnings
 warnings.filterwarnings('ignore')
 

@@ -4,6 +4,8 @@ if BACKTRACE_DIR not in sys.path:
     sys.path.insert(0, BACKTRACE_DIR)
 
 # 用 23 个 tsfresh 显著特征训练分类器 + walk-forward 时序回测 + 最新窗口打分
+# 输出:tsfresh_model_<code>.csv(每折的训练/测试指标)
+# 用途:验证显著特征单独做 LR 是否真有样本外预测力(基线对比)
 import warnings
 warnings.filterwarnings('ignore')
 

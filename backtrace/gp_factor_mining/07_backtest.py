@@ -41,6 +41,10 @@ except Exception:
 # A. 读因子库
 # ============================================================
 def load_pool():
+    """
+    读 06 产出的因子库主表 + 每个入选因子的 test parquet 目录。
+    返回:(pool_df, pool_dir Path)
+    """
     pool_path = cfg.FACTOR_DIR / "factor_pool.csv"
     if not pool_path.exists():
         sys.exit(f"[FATAL] 找不到 {pool_path},先跑 06_factor_pool.py")
@@ -116,7 +120,10 @@ def combine_factors(pool: pd.DataFrame, pool_dir: Path, method: str = "ic_weight
 def monthly_topn(composite: pd.DataFrame, top_n: int = 50) -> pd.DataFrame:
     """
     每个月末取截面 rank top N,标记 1(持仓)/ 0(空仓)。
-    返回 long DataFrame: index=date, columns=code, values=0/1
+    参数:
+      composite: (date, code, composite) 长表,composite 已是合成因子
+      top_n: 每月持仓数(默认 50)
+    返回:wide DataFrame(index=date, columns=code, values=0/1)— 喂给 vbt.Portfolio.from_signals
     """
     df = composite.copy()
     df['date'] = pd.to_datetime(df['date'])

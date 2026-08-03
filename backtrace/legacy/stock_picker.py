@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+# 连续上涨 N 日选股 — legacy，简单硬编码选股模板
+# 输出:不落 CSV，直接通过 tq.send_user_block 推送到 TQ 自定义板块 `LZXG`
+# 用法:`python legacy/stock_picker.py` → 看 TQ 客户端 `连涨选股` 板块
 import pandas as pd
 import numpy as np
 from datetime import datetime

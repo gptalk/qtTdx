@@ -5,6 +5,8 @@ if BACKTRACE_DIR not in sys.path:
 
 # 用训练好的模型对多只股票打分 -> 输出选股 CSV
 # 数据源:优先 TQ(通达信88) -> 自动回退到本地 CSV
+# 输出:tsfresh_pick_stocks_YYYYMMDD_HHMMSS.csv(每票一行:proba / 当日 OHLC)
+# 用途:研究时看哪些票被模型打高分;不直接用于下单
 import warnings
 warnings.filterwarnings('ignore')
 
