@@ -9,7 +9,7 @@ tsfresh pipeline 共享配置。改这里等于改所有脚本。
 
 输入/输出:
   - 输入:无(纯常量模块)
-  - 输出:14 个公开常量
+  - 输出:15 个公开常量
 
 依赖:无
 
@@ -23,7 +23,7 @@ import os
 TQ_PLUGINS_DIR = 'C:/new_tdx_mock/PYPlugins/user'   # tqcenter.py 所在目录,sys.path.insert 用
 
 # -------- 数据回退 --------
-LOCAL_FALLBACK_CODES = ['000001.SH', '002475.SZ']    # TQ 拉取失败时回退的本地 CSV 代码(必须有对应 backtrace/<code>_daily.csv)
+LOCAL_FALLBACK_CODES = ['000001.SH', '002475.SZ']    # TQ 拉取失败时回退的本地 CSV 代码(须有对应 data/<kind>/<code>_daily.csv,见 data_store)
 SECTOR_NAME = '通达信88'                              # 默认板块(88 个通达信行业)
 LOOKBACK_YEARS = 5                                    # 默认回看年数,实际取 LOOKBACK_YEARS*365+30 天
 
@@ -44,3 +44,4 @@ LR_RANDOM_STATE = 42      # 复现实验结果
 # -------- 路径 --------
 BACKTRACE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # backtrace/ 绝对路径
 OUTPUTS_DIR = os.path.join(BACKTRACE_DIR, 'outputs')                            # backtrace/outputs/(gitignored)
+DATA_DIR = os.path.join(os.path.dirname(BACKTRACE_DIR), 'data')                 # 仓库根 data/(gitignored) — 本地日线缓存,见 data_store.py

@@ -127,6 +127,25 @@ from common import tsfresh_config as C, tsfresh_pipeline as P, jhzq_fees as F
 | `LR_RANDOM_STATE` | `42` | 复现实验结果 |
 | `BACKTRACE_DIR` | `<abs>/backtrace/` | 自动解析 |
 | `OUTPUTS_DIR` | `<abs>/backtrace/outputs/` | gitignored |
+| `DATA_DIR` | 仓库根 `data/` 绝对路径 | 本地日线缓存根目录 |
+
+---
+
+### `backtrace/common/data_store.py`
+
+本地日线缓存的唯一真相源。纯文件 IO,不依赖 TQ。
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| `csv_path` | `(code, kind='stocks') -> str` | 路径唯一真相;`kind ∈ ('stocks','sectors','indices')`,非法值抛 `ValueError` |
+| `save_daily` | `(code, df, kind='stocks') -> str` | 原子写(.tmp + os.replace),返回落盘路径 |
+| `load_daily` | `(code) -> DataFrame \| None` | 按 stocks→sectors→indices 查找,都没有返回 None |
+| `has_daily` | `(code) -> bool` | 任一 kind 下存在该 code |
+| `manifest_path` | `() -> str` | `data/manifest.json` |
+| `load_manifest` | `() -> dict` | 不存在时返回 `{'generated_at':None,'trading_days':None,'entries':{}}` |
+| `save_manifest` | `(man) -> str` | 原子写 |
+
+模块级 `DATA_DIR`(默认 `tsfresh_config.DATA_DIR`)可 monkeypatch 用于测试。
 
 ---
 
