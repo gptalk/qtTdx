@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-# 2-D 投影验证 — legacy，将个股 (STOCK_CODE) 的成交量 / 成交额向量投影到大盘指数 (INDEX_CODE) 的方向上
-# 指数与个股均在下方「配置」区参数化，改两行即可换标的
-# 输出:6 个 HTML + 1 个 CSV 到 backtrace/ 根目录（vector_scatter / projection_verify / orthogonality_check / 等）
+# 2-D 投影验证 — legacy，将个股 (STOCK_CODE) 的成交量 / 成交额向量投影到大盘指数的方向上
+# 个股在下方「配置」区参数化,改 STOCK_CODE/STOCK_NAME 即可换标的;大盘指数按个股交易所自动选择(SZ→深证成指 / SH→上证综指)
+# 输出:6 个 HTML 到 backtrace/ 根目录 + 1 个 CSV 到 data/projection/
 # 用法:已不推荐,主要用作早期可正交性可视化实验;研究请改用 vbt/tsfresh 系列
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
@@ -18,15 +18,28 @@ if BACKTRACE_DIR not in sys.path:
     sys.path.insert(0, BACKTRACE_DIR)
 from common import tsfresh_pipeline as P
 
+# 市场 → 大盘指数(Code, Name)。改个股交易所后缀即自动切换大盘。
+MARKET_TO_INDEX = {
+    'SZ': ('399001.SZ', '深证成指'),
+    'SH': ('000001.SH', '上证综指'),
+}
+
 # ========================= 配置 =========================
-INDEX_CODE = '399001.SZ'      # 大盘指数 — 深证成指(399001.SZ) / 上证指数(000001.SH) / 沪深300(000300.SH)
-INDEX_NAME = '深证成指'
-STOCK_CODE = '002475.SZ'      # 个股
-STOCK_NAME = '立讯精密'
+STOCK_CODE = '002475.SZ'      # 个股 — 后缀决定大盘指数(SZ→深证成指 / SH→上证综指)
+STOCK_NAME = '立讯精密'         # 仅用于图例标签
 days = 240
 OUT_DIR = 'backtrace'         # HTML 报告输出目录
 CSV_OUT = 'data/projection'   # 分析结果 CSV 输出子目录(与 INDEX/STOCK 标签组合文件名)
 # ======================================================
+
+# 由 STOCK_CODE 后缀自动派生 INDEX_CODE / INDEX_NAME
+stock_suffix = STOCK_CODE.split('.')[-1]
+if stock_suffix not in MARKET_TO_INDEX:
+    raise ValueError(
+        f"未识别 STOCK_CODE 后缀: {STOCK_CODE!r}\n"
+        f"支持: {sorted(MARKET_TO_INDEX)} (对应 深证成指 / 上证综指)"
+    )
+INDEX_CODE, INDEX_NAME = MARKET_TO_INDEX[stock_suffix]
 
 # 由配置派生:六位数字代码(去交易所后缀)用于变量标签 / CSV 列名 / 图例
 INDEX_TAG = INDEX_CODE.split('.')[0]
