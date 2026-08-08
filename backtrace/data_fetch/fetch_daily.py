@@ -69,7 +69,6 @@ def trim_tail(df, n=TRADING_DAYS):
 
 # ==================== 以下需要 TQ 客户端 ====================
 import argparse
-import json
 import traceback
 from datetime import datetime, timedelta
 
@@ -133,7 +132,7 @@ def build_stock_universe(tq, sector_codes):
     tsfresh_top1_industry.py:69 跑通。覆盖面接近全市场,且顺带拿到行业归属。
     探明全市场实参后可在此替换。
     """
-    seen = {}
+    seen = set()
     for i, code in enumerate(sector_codes, 1):
         try:
             members = tq.get_stock_list_in_sector(code) or []
@@ -141,7 +140,7 @@ def build_stock_universe(tq, sector_codes):
             print(f"  [WARN] 行业 {code} 成分股拉取失败: {type(e).__name__}: {e}")
             continue
         for m in members:
-            seen.setdefault(m, None)
+            seen.add(m)
         if i % 20 == 0:
             print(f"  行业成分股进度 {i}/{len(sector_codes)}  累计去重 {len(seen)} 只")
 
@@ -151,6 +150,7 @@ def build_stock_universe(tq, sector_codes):
         raise RuntimeError("行业成分股并集为空 —— TQ 客户端可能未启动")
 
     items = []
+    empty_name_count = 0
     for c in all_codes:
         try:
             # get_stock_info 返回 dict 含 'name' 字段(小写) — 已由
@@ -158,9 +158,11 @@ def build_stock_universe(tq, sector_codes):
             name = tq.get_stock_info(c).get('name', '')
         except Exception:
             name = ''
+        if not name:
+            empty_name_count += 1
         items.append({'Code': c, 'Name': name})
     kept = filter_st(items)
-    print(f"  个股 universe: 并集 {len(all_codes)} 只 -> 去 ST/退市后 {len(kept)} 只")
+    print(f"  个股 universe: 并集 {len(all_codes)} 只 -> 去 ST/退市后 {len(kept)} 只 (get_stock_info 空名 {empty_name_count} 只)")
     return kept
 
 
@@ -263,9 +265,9 @@ def main():
     ap.add_argument('--probe', action='store_true', help='只探测 TQ 列表接口后退出')
     args = ap.parse_args()
 
-    tq = _tq()
-    tq.initialize(os.path.abspath(__file__))
     try:
+        tq = _tq()
+        tq.initialize(os.path.abspath(__file__))
         if args.probe:
             probe_lists(tq)
             return 0
