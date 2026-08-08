@@ -1,0 +1,169 @@
+# -*- coding: utf-8 -*-
+# projection_batch.py — 批量跑 projection 2-D 投影分析(只产 CSV,不画 HTML)
+#
+# 用法:
+#   1. 准备股票列表 CSV,至少一列 `code`,可选 `name`(例:
+#        code,name
+#        002475.SZ,立讯精密
+#        600519.SH,贵州茅台
+#      )
+#      默认读取 data/projection/stocks.csv
+#   2. PYTHONIOENCODING=utf-8 python backtrace/projection/projection_batch.py
+#      [可选 --input PATH / --days N / --limit N]
+#
+# 输出:
+#   - 每只股票一个 CSV:data/projection/projection_{INDEX_TAG}_{STOCK_TAG}.csv
+#     (同 single-stock projection_2d.py 的输出格式,可直接对照)
+#   - 批量清单:data/projection/batch_manifest.csv
+#     列: code, name, index_code, index_name, rows, date_start, date_end, csv_path, status
+#
+# 注:本脚本不产 HTML。可视化请用 projection_2d.py 单股跑或自行读 CSV 画。
+# 数学/数据载入/CSV 组装统一在 _projection_core.py。
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+
+import os
+import argparse
+import pandas as pd
+
+# 同 single-stock:把 backtrace/ 加进 path 找 common.tsfresh_pipeline
+BACKTRACE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BACKTRACE_DIR not in sys.path:
+    sys.path.insert(0, BACKTRACE_DIR)
+from common import tsfresh_pipeline as P
+from _projection_core import (
+    load_pair,
+    compute_vectors,
+    compute_projections,
+    build_result_df,
+)
+
+CSV_OUT_DIR = 'data/projection'   # 每只股票 CSV + batch_manifest.csv 都落这里
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='批量 projection 2-D 投影分析(只产 CSV)')
+    parser.add_argument(
+        '--input', default=os.path.join(CSV_OUT_DIR, 'stocks.csv'),
+        help=f'股票列表 CSV 路径(列:code, 可选 name)。默认 {CSV_OUT_DIR}/stocks.csv',
+    )
+    parser.add_argument('--days', type=int, default=240, help='回看天数。默认 240')
+    parser.add_argument('--limit', type=int, default=0, help='最多处理多少只;0 表示全部。默认 0')
+    return parser.parse_args()
+
+
+def load_stock_list(path):
+    """读 CSV:必须有 code 列,name 可选。返回 [(code, name|None), ...]。"""
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"股票列表文件不存在: {path}\n"
+            f"请新建该文件,最少一列 code(可选 name),例如:\n"
+            f"  code,name\n"
+            f"  002475.SZ,立讯精密\n"
+            f"  600519.SH,贵州茅台"
+        )
+    df = pd.read_csv(path, dtype={'code': str})
+    if 'code' not in df.columns:
+        raise ValueError(f"输入文件 {path} 必须有 'code' 列(可选 'name')")
+    names = df['name'] if 'name' in df.columns else [None] * len(df)
+    return [
+        (str(c).strip(), str(n).strip() if isinstance(n, str) else None)
+        for c, n in zip(df['code'], names)
+    ]
+
+
+def process_one(stock_code, stock_name, days):
+    """处理一只股票。返回 manifest 行 dict(失败也返回,status 字段说明原因)。"""
+    try:
+        loaded = load_pair(stock_code, days, P)
+        data_stock = loaded['stock_df']
+        data_index = loaded['index_df']
+        common_idx = loaded['common_idx']
+        index_code = loaded['index_code']
+        index_name = loaded['index_name']
+        index_tag = loaded['index_tag']
+        stock_tag = loaded['stock_tag']
+
+        vec_index, vec_stock, vec_index_norm, vec_stock_norm, norm_params = compute_vectors(
+            data_stock, data_index, index_tag, stock_tag,
+        )
+        proj = compute_projections(vec_stock_norm, vec_index_norm)
+
+        result_df = build_result_df(
+            common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_norm,
+            proj['projections'], proj['residuals'], proj['dot_after'],
+            proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'], proj['resi_prices'],
+            norm_params, index_tag, stock_tag,
+        )
+
+        csv_name = f'projection_{index_tag}_{stock_tag}.csv'
+        csv_path = os.path.join(CSV_OUT_DIR, csv_name)
+        os.makedirs(CSV_OUT_DIR, exist_ok=True)
+        result_df.to_csv(csv_path, index=False, encoding='utf-8')
+
+        return {
+            'code': stock_code,
+            'name': stock_name or '',
+            'index_code': index_code,
+            'index_name': index_name,
+            'rows': len(common_idx),
+            'date_start': str(common_idx[0])[:10],
+            'date_end': str(common_idx[-1])[:10],
+            'csv_path': csv_path,
+            'status': 'ok',
+        }
+    except Exception as e:
+        return {
+            'code': stock_code,
+            'name': stock_name or '',
+            'index_code': '',
+            'index_name': '',
+            'rows': 0,
+            'date_start': '',
+            'date_end': '',
+            'csv_path': '',
+            'status': f'failed: {type(e).__name__}: {e}',
+        }
+
+
+def main():
+    args = parse_args()
+    os.makedirs(CSV_OUT_DIR, exist_ok=True)
+
+    stock_list = load_stock_list(args.input)
+    if args.limit > 0:
+        stock_list = stock_list[:args.limit]
+
+    print(f"输入: {args.input} ({len(stock_list)} 只)")
+    print(f"回看天数: {args.days}")
+    print(f"输出目录: {CSV_OUT_DIR}\n")
+
+    manifest = []
+    for i, (code, name) in enumerate(stock_list, 1):
+        label = f"{code} ({name})" if name else code
+        print(f"[{i}/{len(stock_list)}] {label}...", end=' ', flush=True)
+        row = process_one(code, name, args.days)
+        manifest.append(row)
+        if row['status'] == 'ok':
+            print(f"✓ {row['rows']} 行 → {row['csv_path']}")
+        else:
+            print(f"✗ {row['status']}")
+
+    manifest_df = pd.DataFrame(manifest, columns=[
+        'code', 'name', 'index_code', 'index_name', 'rows',
+        'date_start', 'date_end', 'csv_path', 'status',
+    ])
+    manifest_path = os.path.join(CSV_OUT_DIR, 'batch_manifest.csv')
+    manifest_df.to_csv(manifest_path, index=False, encoding='utf-8')
+
+    ok = sum(1 for r in manifest if r['status'] == 'ok')
+    fail = len(manifest) - ok
+    print(f"\n=== 汇总 ===")
+    print(f"  成功: {ok}/{len(manifest)}")
+    if fail:
+        print(f"  失败: {fail}/{len(manifest)}")
+    print(f"  清单: {manifest_path}")
+
+
+if __name__ == '__main__':
+    main()

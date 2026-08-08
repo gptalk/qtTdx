@@ -2,12 +2,13 @@
 # 2-D 投影验证 — legacy，将个股 (STOCK_CODE) 的成交量 / 成交额向量投影到大盘指数的方向上
 # 个股在下方「配置」区参数化,改 STOCK_CODE/STOCK_NAME 即可换标的;大盘指数按个股交易所自动选择(SZ→深证成指 / SH→上证综指)
 # 输出:6 个 HTML 到 backtrace/ 根目录 + 1 个 CSV 到 data/projection/
+# 数学/数据载入/CSV 组装统一在 _projection_core.py;本脚本只负责 plotly 可视化与文件落地
 # 用法:已不推荐,主要用作早期可正交性可视化实验;研究请改用 vbt/tsfresh 系列
+# 批量版见 projection_batch.py
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
 import os
-import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -17,12 +18,12 @@ BACKTRACE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BACKTRACE_DIR not in sys.path:
     sys.path.insert(0, BACKTRACE_DIR)
 from common import tsfresh_pipeline as P
-
-# 市场 → 大盘指数(Code, Name)。改个股交易所后缀即自动切换大盘。
-MARKET_TO_INDEX = {
-    'SZ': ('399001.SZ', '深证成指'),
-    'SH': ('000001.SH', '上证综指'),
-}
+from _projection_core import (
+    load_pair,
+    compute_vectors,
+    compute_projections,
+    build_result_df,
+)
 
 # ========================= 配置 =========================
 STOCK_CODE = '002475.SZ'      # 个股 — 后缀决定大盘指数(SZ→深证成指 / SH→上证综指)
@@ -32,18 +33,15 @@ OUT_DIR = 'backtrace'         # HTML 报告输出目录
 CSV_OUT = 'data/projection'   # 分析结果 CSV 输出子目录(与 INDEX/STOCK 标签组合文件名)
 # ======================================================
 
-# 由 STOCK_CODE 后缀自动派生 INDEX_CODE / INDEX_NAME
-stock_suffix = STOCK_CODE.split('.')[-1]
-if stock_suffix not in MARKET_TO_INDEX:
-    raise ValueError(
-        f"未识别 STOCK_CODE 后缀: {STOCK_CODE!r}\n"
-        f"支持: {sorted(MARKET_TO_INDEX)} (对应 深证成指 / 上证综指)"
-    )
-INDEX_CODE, INDEX_NAME = MARKET_TO_INDEX[stock_suffix]
-
 # 由配置派生:六位数字代码(去交易所后缀)用于变量标签 / CSV 列名 / 图例
-INDEX_TAG = INDEX_CODE.split('.')[0]
-STOCK_TAG = STOCK_CODE.split('.')[0]
+loaded = load_pair(STOCK_CODE, days, P)
+data_stock = loaded['stock_df']
+data_index = loaded['index_df']
+common_idx = loaded['common_idx']
+INDEX_CODE = loaded['index_code']
+INDEX_NAME = loaded['index_name']
+INDEX_TAG = loaded['index_tag']
+STOCK_TAG = loaded['stock_tag']
 INDEX_LABEL = f'{INDEX_CODE} ({INDEX_NAME})'
 STOCK_LABEL = f'{STOCK_CODE} ({STOCK_NAME})'
 
@@ -57,95 +55,26 @@ def out_csv(name):
 
 print(f"从本地 data/ 缓存读取最近{days}日日线... 指数={INDEX_LABEL} 个股={STOCK_LABEL}")
 
-# use_tq=False 强制走 data_store.load_daily;数据缺失时返回 None(报清楚)
-data_index_full = P.load_ohlcva(INDEX_CODE, use_tq=False, verbose=True)
-data_stock_full = P.load_ohlcva(STOCK_CODE, use_tq=False, verbose=True)
-if data_index_full is None:
-    raise RuntimeError(
-        f"本地缓存缺失 {INDEX_CODE}。请先跑:\n"
-        f"  PYTHONIOENCODING=utf-8 python backtrace/data_fetch/fetch_daily.py"
-    )
-if data_stock_full is None:
-    raise RuntimeError(
-        f"本地缓存缺失 {STOCK_CODE}。请先跑:\n"
-        f"  PYTHONIOENCODING=utf-8 python backtrace/data_fetch/fetch_daily.py"
-    )
-
-# 用最近 `days` 行(本地缓存保留 500 交易日,够用)
-data_index = data_index_full[['Volume', 'Amount', 'Close']].tail(days).dropna()
-data_stock = data_stock_full[['Volume', 'Amount', 'Close']].tail(days).dropna()
-
-common_idx = data_index.index.intersection(data_stock.index)
-data_index = data_index.loc[common_idx]
-data_stock = data_stock.loc[common_idx]
+vec_index, vec_stock, vec_index_norm, vec_stock_norm, norm_params = compute_vectors(
+    data_stock, data_index, INDEX_TAG, STOCK_TAG
+)
 
 print(f"共同交易日数量: {len(common_idx)}")
-
-vec_index = data_index[['Volume', 'Amount']].values
-vec_stock = data_stock[['Volume', 'Amount']].values
-
-# 分别对 Volume 和 Amount 进行归一化 (Min-Max到[0,1])
-vol_min_index, vol_max_index = vec_index[:, 0].min(), vec_index[:, 0].max()
-vol_min_stock, vol_max_stock = vec_stock[:, 0].min(), vec_stock[:, 0].max()
-amt_min_index, amt_max_index = vec_index[:, 1].min(), vec_index[:, 1].max()
-amt_min_stock, amt_max_stock = vec_stock[:, 1].min(), vec_stock[:, 1].max()
-
-vec_index_norm = np.column_stack([
-    (vec_index[:, 0] - vol_min_index) / (vol_max_index - vol_min_index),
-    (vec_index[:, 1] - amt_min_index) / (amt_max_index - amt_min_index)
-])
-vec_stock_norm = np.column_stack([
-    (vec_stock[:, 0] - vol_min_stock) / (vol_max_stock - vol_min_stock),
-    (vec_stock[:, 1] - amt_min_stock) / (amt_max_stock - amt_min_stock)
-])
-
-print(f"Volume {INDEX_TAG} 范围: [{vol_min_index:.2e}, {vol_max_index:.2e}]")
-print(f"Volume {STOCK_TAG} 范围: [{vol_min_stock:.2e}, {vol_max_stock:.2e}]")
-print(f"Amount {INDEX_TAG} 范围: [{amt_min_index:.2e}, {amt_max_index:.2e}]")
-print(f"Amount {STOCK_TAG} 范围: [{amt_min_stock:.2e}, {amt_max_stock:.2e}]")
+print(f"Volume {INDEX_TAG} 范围: [{vec_index[:,0].min():.2e}, {vec_index[:,0].max():.2e}]")
+print(f"Volume {STOCK_TAG} 范围: [{vec_stock[:,0].min():.2e}, {vec_stock[:,0].max():.2e}]")
+print(f"Amount {INDEX_TAG} 范围: [{vec_index[:,1].min():.2e}, {vec_index[:,1].max():.2e}]")
+print(f"Amount {STOCK_TAG} 范围: [{vec_stock[:,1].min():.2e}, {vec_stock[:,1].max():.2e}]")
 print(f"\n归一化后向量范围: [0, 1]")
 
-# ============== 二维投影计算 ==============
-def project_u_onto_v(u, v):
-    v_norm_sq = np.dot(v, v)
-    if v_norm_sq == 0:
-        return np.zeros_like(u)
-    coeff = np.dot(u, v) / v_norm_sq
-    return coeff * v
-
-projections = []
-residuals = []
-dot_products_after = []
-proj_coefficients = []  # 投影系数
-proj_magnitudes = []   # 投影向量模长
-proj_prices = []  # 投影向量对应的价格 (个股的Close)
-resi_prices = []  # 残差向量对应的价格 (个股的Close)
-
-for i in range(len(common_idx)):
-    u = vec_stock_norm[i]  # 归一化后的个股
-    v = vec_index_norm[i]  # 归一化后的指数
-    proj = project_u_onto_v(u, v)
-    residual = u - proj
-    projections.append(proj)
-    residuals.append(residual)
-    dot_products_after.append(np.dot(residual, v))
-    proj_coefficients.append(np.dot(u, v) / np.dot(v, v))
-    proj_magnitudes.append(np.linalg.norm(proj))
-    proj_prices.append(proj[1]/proj[0] if proj[0] != 0 else np.sign(proj[1]))  # 投影向量的价格比 (Amount/Volume)
-    resi_prices.append(residual[1]/residual[0] if residual[0] != 0 else residual[1]/abs(residual[1]))  # 残差向量的价格比 (Amount/Volume)
-    #resi_prices中大于100的数字被认为是异常值，可能是由于Volume接近0导致的价格比异常大。设置为最大值
-    if abs(resi_prices[-1]) > 3:
-        resi_prices[-1] = np.sign(resi_prices[-1]) * np.max(np.abs(resi_prices[:-2]))
-
-
-
-projections = np.array(projections)
-residuals = np.array(residuals)
-dot_products_after = np.array(dot_products_after)
-proj_coefficients = np.array(proj_coefficients)
-proj_magnitudes = np.array(proj_magnitudes)
-proj_prices = np.array(proj_prices)
-resi_prices = np.array(resi_prices)
+# 二维投影计算(全部委托给 _projection_core)
+proj = compute_projections(vec_stock_norm, vec_index_norm)
+projections = proj['projections']
+residuals = proj['residuals']
+dot_products_after = proj['dot_after']
+proj_coefficients = proj['proj_coeffs']
+proj_magnitudes = proj['proj_mags']
+proj_prices = proj['proj_prices']
+resi_prices = proj['resi_prices']
 
 # ============== 图形显示 ==============
 
@@ -187,7 +116,7 @@ fig2 = make_subplots(
 for idx, (si, row, col) in enumerate(zip(sample_indices, [1,1,2,2], [1,2,1,2])):
     u = vec_stock_norm[si]
     v = vec_index_norm[si]
-    proj = projections[si]
+    proj_pt = projections[si]
     residual = residuals[si]
 
     # 原点到v (指数)
@@ -206,14 +135,14 @@ for idx, (si, row, col) in enumerate(zip(sample_indices, [1,1,2,2], [1,2,1,2])):
 
     # 投影
     fig2.add_trace(go.Scatter(
-        x=[0, proj[0]], y=[0, proj[1]],
+        x=[0, proj_pt[0]], y=[0, proj_pt[1]],
         mode='lines+markers', name='proj(u->v)' if idx==0 else None,
         line=dict(color='green', width=2, dash='dash'), marker=dict(size=6)
     ), row=row, col=col)
 
     # 残差 (正交分量)
     fig2.add_trace(go.Scatter(
-        x=[proj[0], u[0]], y=[proj[1], u[1]],
+        x=[proj_pt[0], u[0]], y=[proj_pt[1], u[1]],
         mode='lines', name='residual (正交)' if idx==0 else None,
         line=dict(color='orange', width=2)
     ), row=row, col=col)
@@ -236,7 +165,6 @@ fig2.write_html(out('projection_verify.html'))
 # 图3: 正交性时序图 (叠加Close收盘价)
 close_stock = data_stock['Close'].to_numpy()
 close_stock_norm = (close_stock - close_stock.min()) / (close_stock.max() - close_stock.min())
-dot_abs_max = np.abs(dot_products_after).max()
 
 fig3 = go.Figure()
 fig3.add_trace(go.Scatter(
@@ -250,7 +178,6 @@ fig3.add_trace(go.Scatter(
     line=dict(color='gray', dash='dash')
 ))
 fig3.add_trace(go.Scatter(
-    # x=list(common_idx), y=close_stock_norm * dot_abs_max,
     x=list(common_idx), y=close_stock_norm,
     mode='lines', name=f'{STOCK_TAG} Close收盘价 (归一化到点积范围)',
     line=dict(color='cyan'),
@@ -274,7 +201,6 @@ fig4a.add_trace(go.Scatter(
 ))
 fig4a.add_trace(go.Scatter(
     x=list(common_idx), y=close_stock_norm * dot_abs_max,
-    # x=list(common_idx), y=close_stock_norm,
     mode='lines', name=f'{STOCK_TAG} Close收盘价 (归一化到点积范围)',
     line=dict(color='cyan'),
     opacity=0.7
@@ -336,34 +262,13 @@ print(f"  4. {out('proj_coefficient.html')}    - 投影系数时序图")
 print(f"  5. {out('proj_prices.html')}        - proj_prices 时序图")
 print(f"  6. {out('resi_prices.html')}        - resi_prices 时序图")
 
-# 保存CSV
-norm_params = (
-    f"vol_{INDEX_TAG}:[{vol_min_index:.2e},{vol_max_index:.2e}] "
-    f"amt_{INDEX_TAG}:[{amt_min_index:.2e},{amt_max_index:.2e}] "
-    f"vol_{STOCK_TAG}:[{vol_min_stock:.2e},{vol_max_stock:.2e}] "
-    f"amt_{STOCK_TAG}:[{amt_min_stock:.2e},{amt_max_stock:.2e}]"
+# 保存CSV(组装 19 列 DataFrame)
+result_df = build_result_df(
+    common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_norm,
+    projections, residuals, dot_products_after,
+    proj_coefficients, proj_magnitudes, proj_prices, resi_prices,
+    norm_params, INDEX_TAG, STOCK_TAG,
 )
-result_df = pd.DataFrame({
-    'Date': common_idx,
-    f'Vol_{INDEX_TAG}_raw': vec_index[:, 0],
-    f'Amt_{INDEX_TAG}_raw': vec_index[:, 1],
-    f'Vol_{STOCK_TAG}_raw': vec_stock[:, 0],
-    f'Amt_{STOCK_TAG}_raw': vec_stock[:, 1],
-    f'Vol_{INDEX_TAG}_norm': vec_index_norm[:, 0],
-    f'Amt_{INDEX_TAG}_norm': vec_index_norm[:, 1],
-    f'Vol_{STOCK_TAG}_norm': vec_stock_norm[:, 0],
-    f'Amt_{STOCK_TAG}_norm': vec_stock_norm[:, 1],
-    'Proj_Vol': projections[:, 0],
-    'Proj_Amt': projections[:, 1],
-    'Residual_Vol': residuals[:, 0],
-    'Residual_Amt': residuals[:, 1],
-    'Proj_Coeff': proj_coefficients,
-    'Proj_Magnitude': proj_magnitudes,
-    'Proj_Price': proj_prices,
-    'Resi_Price': resi_prices,
-    'Dot_After_Proj': dot_products_after,
-    'Norm_Params': [norm_params] * len(common_idx)
-})
 csv_path = out_csv(f'projection_{INDEX_TAG}_{STOCK_TAG}.csv')
 os.makedirs(os.path.dirname(csv_path), exist_ok=True)
 result_df.to_csv(csv_path, index=False, encoding='utf-8')
