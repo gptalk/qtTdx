@@ -35,6 +35,7 @@ from tsfresh import extract_features, select_features
 from tsfresh.utilities.dataframe_functions import impute, roll_time_series
 
 from common import tsfresh_config as C
+from common import data_store
 
 
 # ==================== 1. TQ 上下文 ====================
@@ -48,11 +49,12 @@ def init_tq_path():
 
 # ==================== 2. 数据加载 ====================
 def _try_local_csv(code):
-    """回退路径:从 backtrace/{code}_daily.csv 读"""
-    p = os.path.join(C.BACKTRACE_DIR, f'{code.replace(".", "_")}_daily.csv')
-    if os.path.exists(p):
-        return pd.read_csv(p, index_col=0, parse_dates=True).sort_index()
-    return None
+    """回退路径:委托给 data_store(仓库根 data/)。
+
+    历史教训:这里曾自己拼 backtrace/{code}_daily.csv,而写入方落在 backtrace/outputs/,
+    路径分家导致回退长期静默失效。现在读写共用 data_store.csv_path()。
+    """
+    return data_store.load_daily(code)
 
 
 def load_ohlcva(code, lookback_years=None, use_tq=True, verbose=False, include_amount=True):
