@@ -39,6 +39,9 @@ env/
 .ipynb_checkpoints/
 *.ipynb
 
+# 本地日线缓存(仓库根 data/)
+data/
+
 # 编辑器备份
 *~
 *.swp

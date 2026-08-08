@@ -12,6 +12,27 @@ VSCode multi-root workspace 配置文件: [qtTdxs.code-workspace](qtTdxs.code-wo
 
 输出产物默认 gitignored(见 [.gitignore](.gitignore))。详见 [README.md](README.md)(TQ 平台说明) 和 [backtrace/gp_factor_mining/README.md](backtrace/gp_factor_mining/README.md)(GP 因子挖掘子项目)。
 
+## 本地日线缓存 — `data/`
+
+TQ 客户端没启动时,`P.load_ohlcva` / `P.load_sector` 会回退到仓库根 `data/`:
+
+```
+data/stocks/    沪深 A 股(去 ST/退市)日线,~5000 只
+data/sectors/   申万二级 128 行业指数
+data/indices/   000001.SH 上证综指 / 399001.SZ 深证成指
+data/manifest.json   每只票的行数/首末日期/拉取时间/失败原因
+```
+
+每只票保留 **500 个交易日**。刷新数据:
+
+```bash
+PYTHONIOENCODING=utf-8 python backtrace/data_fetch/fetch_daily.py           # 全量,20-40 分钟
+PYTHONIOENCODING=utf-8 python backtrace/data_fetch/fetch_daily.py --limit 5 # 冒烟
+```
+
+**路径只认 [backtrace/common/data_store.py](backtrace/common/data_store.py)** —— 读写都走 `csv_path()`。
+不要在别处硬拼 `data/...` 路径,历史上正是「写在 A、读在 B」让回退静默失效了半年。
+
 ## 跑脚本的最快姿势
 
 **所有脚本在 `backtrace/` 下子目录里**(已按功能分组),从仓库根运行即可:
@@ -61,6 +82,8 @@ backtrace/
 │   ├── kline_chart.py
 │   └── projection_2d.py
 ├── gp_factor_mining/        ← GP 因子挖掘子项目(独立 README)
+├── data_fetch/              ← 日线批量拉取(写 data/)
+│   └── fetch_daily.py
 └── outputs/                 ← 全部 CSV/HTML 输出
 ```
 

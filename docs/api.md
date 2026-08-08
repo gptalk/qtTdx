@@ -149,6 +149,27 @@ from common import tsfresh_config as C, tsfresh_pipeline as P, jhzq_fees as F
 
 ---
 
+### `backtrace/data_fetch/fetch_daily.py`
+
+日线批量拉取编排。落盘经由 `data_store`,自身不拼路径。
+
+| 函数 | 签名 | 说明 |
+|---|---|---|
+| `filter_st` | `(items) -> list[str]` | 剔除 ST/*ST/退市;跳过 None 与缺 Code 条目 |
+| `chunked` | `(seq, size=250) -> Iterator[list]` | 分批 |
+| `calendar_days_for` | `(trading_days=500) -> int` | 交易日→自然日(占比 0.670,余量 5%) |
+| `trim_tail` | `(df, n=500) -> DataFrame` | 排序取尾;不足不补齐 |
+| `build_sector_universe` | `(tq) -> (list[str], dict)` | 128 申万二级行业码 + 中文名 |
+| `build_stock_universe` | `(tq, sector_codes) -> list[str]` | 行业成分股并集去 ST |
+| `fetch_batch` | `(tq, codes, start, end) -> dict` | 一批 OHLCVA;**空返回抛 RuntimeError** |
+| `main` | `() -> int` | CLI 入口,退出码 |
+
+CLI:`--limit N` 冒烟 / `--force` 忽略 manifest / `--probe` 探测 TQ 列表接口。
+
+常量:`TRADING_DAYS=500`、`BATCH_SIZE=250`、`INDEX_CODES=['000001.SH','399001.SZ']`。
+
+---
+
 ## `backtrace/gp_factor_mining/` — GP 因子挖掘子项目
 
 9 个 `.py` + 1 个 [README.md](../backtrace/gp_factor_mining/README.md)。运行顺序:`00 → 01 → 02 → 03 → 05 → 06 → 07`(04 是共用模块)。`small_test.py` 是冒烟测试。
