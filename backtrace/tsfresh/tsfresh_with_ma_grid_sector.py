@@ -16,6 +16,8 @@ from tqcenter import tq
 
 from common import tsfresh_config as C
 from common import tsfresh_pipeline as P
+from common import tsfresh_walkforward as W
+from common import vbt_jhzq_backtest as B
 from common import jhzq_fees as F
 
 tq.initialize(__file__)
@@ -37,71 +39,6 @@ CHANNELS_MA    = CHANNELS_BASIC + ['ma5', 'ma10', 'ma20', 'rel_ma5']
 # ===================================
 
 
-def tsfresh_walkforward_proba(ohlcv_df, channels, label):
-    """单只股票跑 tsfresh + walk-forward,返回 proba Series"""
-    df_fill = ohlcv_df[channels].copy().fillna(0.0)
-    long_df = P.to_long_format(df_fill, channels=channels, id_value=ohlcv_df.name or 'X')
-    X_all = P.extract_window_features(long_df, use_kind=True, verbose=False)
-    y_all, X_all = P.make_labels(X_all, ohlcv_df['Close'].values, verbose=False)
-
-    X_sel = P.select_relevant(X_all, y_all, verbose=False)
-    if X_sel.shape[1] == 0:
-        X_sel = X_all   # demo 兜底
-
-    date_index = pd.DatetimeIndex(ohlcv_df.index)
-    proba_records = []
-    scaler_w = clf_w = None
-    for pos, idx in enumerate(X_sel.index):
-        end_t = idx[1]
-        if end_t >= len(date_index):
-            continue
-        if pos < INIT_TRAIN_SIZE:
-            proba_records.append((date_index[end_t], np.nan))
-            continue
-        if pos == INIT_TRAIN_SIZE or (pos - INIT_TRAIN_SIZE) % STEP == 0:
-            scaler_w, clf_w = P.fit_logreg(X_sel.iloc[:pos], y_all.iloc[:pos], verbose=False)
-        p = float(clf_w.predict_proba(scaler_w.transform(X_sel.iloc[[pos]].values))[0, 1])
-        proba_records.append((date_index[end_t], p))
-
-    proba = pd.Series([v for _, v in proba_records],
-                      index=pd.DatetimeIndex([d for d, _ in proba_records]),
-                      name='proba').sort_index()
-    return proba[~proba.index.duplicated(keep='last')].dropna()
-
-
-def run_backtest(ohlcv_df, proba, stock_code):
-    """单只股票跑 vbt + jhzq_fees,返回汇总 dict"""
-    init_open = float(ohlcv_df['Open'].iloc[0])
-    if init_open <= 0:
-        return None
-    shares = int(np.floor(INIT_CASH * MAX_POS_PCT / init_open / 100) * 100)
-    if shares < 100:
-        return None
-
-    aligned = proba.reindex(ohlcv_df.index)
-    entries = (aligned > ENTRY_TSF).shift(1).fillna(False).astype(bool)
-    exits   = (aligned < EXIT_TSF).shift(1).fillna(False).astype(bool)
-
-    pf = vbt.Portfolio.from_signals(
-        close=ohlcv_df['Close'], entries=entries, exits=exits,
-        price=ohlcv_df['Open'], init_cash=INIT_CASH,
-        fees=0, freq='D', size=shares, size_type='amount',
-        size_granularity=100, upon_long_conflict='exit',
-    )
-    trades = pf.trades.records_readable
-    if len(trades) == 0:
-        return {'stock': stock_code, 'trades': 0, 'net_pnl': 0.0, 'net_ret': 0.0,
-                'win_rate': 0.0}
-
-    summary = F.summary_after_fees(trades, stock_code)
-    summary['stock'] = stock_code
-    pnl_col = next(c for c in trades.columns if 'PnL' in c and '扣' not in c)
-    wins = (trades[pnl_col] > 0).sum()
-    summary['win_rate'] = wins / len(trades)
-    summary['net_ret'] = summary['net_pnl'] / INIT_CASH
-    return summary
-
-
 # ---------- 1. 拉全板块 ----------
 print("=" * 70)
 print(f"[{SECTOR_NAME}] 拉板块全部成员...")
@@ -116,38 +53,50 @@ total = len(stock_data)
 t_start = time.time()
 
 for i, (code, raw) in enumerate(stock_data.items(), 1):
-    df = raw.loc[TARGET_START:TARGET_END].copy()
-    if len(df) < 100:
-        print(f"  [{i:2d}/{total}] {code} 样本不足 ({len(df)}),跳过")
+    # Walkforward 需要足够数据(>250天),先跑在完整 500 天上
+    df_full = W.add_ma_channels(raw.copy())
+
+    # 2025 切片用于回测(243天),需确保足够长
+    df_demo = df_full.loc[TARGET_START:TARGET_END].copy()
+    if len(df_demo) < 100:
+        print(f"  [{i:2d}/{total}] {code} 回测区间不足 ({len(df_demo)} 天),跳过")
         continue
 
-    # 算 MA 通道
-    for w in [5, 10, 20]:
-        df[f'ma{w}'] = vbt.MA.run(df['Close'], window=w).ma.ffill()
-    df['rel_ma5'] = (df['Close'] - df['ma5']) / df['ma5'].replace(0, np.nan)
-    df.name = code
-
-    print(f"  [{i:2d}/{total}] {code} ({len(df)} 交易日) ...")
-    rec = {'stock': code, 'n_days': len(df)}
+    print(f"  [{i:2d}/{total}] {code} (全 {len(df_full)} 天 / 回测 {len(df_demo)} 天) ...")
+    rec = {'stock': code, 'n_days': len(df_demo)}
 
     # basic
     try:
-        proba_basic = tsfresh_walkforward_proba(df, CHANNELS_BASIC, 'basic')
-        r_basic = run_backtest(df, proba_basic, code)
-        rec['basic_net_ret'] = r_basic['net_ret'] if r_basic else None
-        rec['basic_trades']  = r_basic['trades']  if r_basic else 0
-        rec['basic_winrate'] = r_basic['win_rate'] if r_basic else None
+        proba_basic, _ = W.tsfresh_walkforward_proba(
+            df_full, CHANNELS_BASIC,
+            init_train_size=INIT_TRAIN_SIZE, step=STEP, verbose=False)
+        entries, exits = B.build_proba_signals(
+            proba_basic, df_demo.index, entry_th=ENTRY_TSF, exit_th=EXIT_TSF)
+        r_basic = B.run_vbt_backtest(
+            df_demo, entries, exits, code,
+            init_cash=INIT_CASH, max_pos_pct=MAX_POS_PCT,
+            print_rejection_warning=False)
+        rec['basic_net_ret'] = r_basic['net_ret']
+        rec['basic_trades']  = r_basic['trades']
+        rec['basic_winrate'] = r_basic['win_rate']
     except Exception as e:
         print(f"     basic 失败:{e}")
         rec['basic_net_ret'] = None
 
     # with_ma
     try:
-        proba_ma = tsfresh_walkforward_proba(df, CHANNELS_MA, 'with_ma')
-        r_ma = run_backtest(df, proba_ma, code)
-        rec['with_ma_net_ret'] = r_ma['net_ret'] if r_ma else None
-        rec['with_ma_trades']  = r_ma['trades']  if r_ma else 0
-        rec['with_ma_winrate'] = r_ma['win_rate'] if r_ma else None
+        proba_ma, _ = W.tsfresh_walkforward_proba(
+            df_full, CHANNELS_MA,
+            init_train_size=INIT_TRAIN_SIZE, step=STEP, verbose=False)
+        entries, exits = B.build_proba_signals(
+            proba_ma, df_demo.index, entry_th=ENTRY_TSF, exit_th=EXIT_TSF)
+        r_ma = B.run_vbt_backtest(
+            df_demo, entries, exits, code,
+            init_cash=INIT_CASH, max_pos_pct=MAX_POS_PCT,
+            print_rejection_warning=False)
+        rec['with_ma_net_ret'] = r_ma['net_ret']
+        rec['with_ma_trades']  = r_ma['trades']
+        rec['with_ma_winrate'] = r_ma['win_rate']
     except Exception as e:
         print(f"     with_ma 失败:{e}")
         rec['with_ma_net_ret'] = None
