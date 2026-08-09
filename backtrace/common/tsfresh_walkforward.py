@@ -79,7 +79,7 @@ def tsfresh_walkforward_proba(ohlcv_df, channels, *,
     if verbose:
         print(f'   通道 {len(channels)} 个: {channels}')
 
-    id_val = id_value if id_value is not None else (ohlcv_df.name or 'X')
+    id_val = id_value if id_value is not None else 'X'
     long_df = P.to_long_format(df_fill, channels=channels, id_value=id_val)
     X_all = P.extract_window_features(long_df, use_kind=True, verbose=False)
     y_all, X_all = P.make_labels(X_all, ohlcv_df['Close'].values, verbose=False)
