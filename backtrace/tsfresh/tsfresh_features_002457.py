@@ -24,12 +24,21 @@ STOCK_CODE = '002475.SZ'   # 想跑 002457 时改这里
 out_csv    = P.csv_path('features', STOCK_CODE)
 
 # 量纲爆炸特征 — 这类特征数值随股价/成交量的绝对水平缩放,跨股票不可比。
-# 展示「Top 重要特征」时先剔除,否则排行榜会被「这只股票均价多少」霸占,看不出形态信号
+# 展示「Top 重要特征」时先剔除,否则排行榜会被「这只股票均价多少」霸占,看不出形态信号。
+#
+# 三档量纲敏感度:
+#   量纲³(立方级):c3(三阶自相关)、time_reversal_asymmetry_statistic(三次方项)
+#   量纲²(平方级):abs_energy、fft_coefficient__coeff_0(恒等于 sum_values)
+#   量纲¹(线性级):sum_values、mean、median、maximum、minimum 等
+# fft_coefficient 不能简单按前缀整体排除 — attr_"angle" 是相位角(量纲无关,值域 [-π, π]),
+#   排除掉可惜;所以下方 _is_scale_dep 单独精确匹配 coeff_0 + abs/real 这两个会重复 sum_values 的特例
 SCALE_DEPENDENT = (
     'sum_values', 'abs_energy', 'mean', 'median',
     'maximum', 'minimum', 'sum_of_reoccurring_data_points',
     'sum_of_reoccurring_values',
     'mean_abs_change', 'mean_change',
+    'c3',                                    # 三阶自相关,量纲是原始值的三次方
+    'time_reversal_asymmetry_statistic',    # 同样含三次方项,volume 通道能炸到 1e22
 )
 
 # 1. 加载 + long format + 全量特征(整段历史当 1 个样本)
@@ -68,11 +77,18 @@ print()
 # 4. 各通道 |value| 最大的前 8 个特征 — **剔除量纲爆炸** 后
 print("=== 各通道 |value| 最大的前 8 个特征(已剔除量纲相关) ===")
 def _is_scale_dep(feature_name):
-    """feature_name 是 tsfresh 完整名,形如 '{kind}__{feature_func}'"""
+    """feature_name 是 tsfresh 完整名,形如 '{kind}__{feature_func}' 或带参数 '...__attr_<X>__coeff_<N>'"""
     parts = feature_name.split('__')
     if len(parts) < 2:
         return False
     fn = parts[1]
+    # 精确排除 fft_coefficient 的 coeff_0(abs/real 同样恒等于 sum_values);保留 angle(相位角,量纲无关)
+    if fn == 'fft_coefficient' and len(parts) >= 4:
+        attr = parts[2]    # 形如 attr_"abs" / attr_"real" / attr_"angle"
+        coeff = parts[3]   # 形如 coeff_0
+        if attr in ('attr_"abs"', 'attr_"real"') and coeff == 'coeff_0':
+            return True
+        return False
     return any(fn.startswith(s) for s in SCALE_DEPENDENT)
 
 for kind in ['open', 'high', 'low', 'close', 'volume']:
