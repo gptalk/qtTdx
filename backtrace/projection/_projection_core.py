@@ -88,6 +88,15 @@ def load_pair(stock_code, days, pipeline):
     }
 
 
+def _safe_minmax(values, v_min, v_range):
+    """Min-Max 归一化:max == min(常数列,如停牌 / 无成交)→ 整列归零。
+    否则 0/0 = NaN 污染后续所有投影系数和残差。
+    """
+    if not np.isfinite(v_range) or v_range == 0:
+        return np.zeros_like(values)
+    return (values - v_min) / v_range
+
+
 def compute_vectors(stock_df, index_df, index_tag, stock_tag):
     """Min-Max 归一化 Vol/Amt。返回 (vec_index, vec_stock, vec_index_norm, vec_stock_norm, norm_params_str)。"""
     vec_index = index_df[['Volume', 'Amount']].values
@@ -99,12 +108,12 @@ def compute_vectors(stock_df, index_df, index_tag, stock_tag):
     amt_min_st, amt_max_st = vec_stock[:, 1].min(), vec_stock[:, 1].max()
 
     vec_index_norm = np.column_stack([
-        (vec_index[:, 0] - vol_min_ix) / (vol_max_ix - vol_min_ix),
-        (vec_index[:, 1] - amt_min_ix) / (amt_max_ix - amt_min_ix),
+        _safe_minmax(vec_index[:, 0], vol_min_ix, vol_max_ix - vol_min_ix),
+        _safe_minmax(vec_index[:, 1], amt_min_ix, amt_max_ix - amt_min_ix),
     ])
     vec_stock_norm = np.column_stack([
-        (vec_stock[:, 0] - vol_min_st) / (vol_max_st - vol_min_st),
-        (vec_stock[:, 1] - amt_min_st) / (amt_max_st - amt_min_st),
+        _safe_minmax(vec_stock[:, 0], vol_min_st, vol_max_st - vol_min_st),
+        _safe_minmax(vec_stock[:, 1], amt_min_st, amt_max_st - amt_min_st),
     ])
 
     norm_params = (
@@ -129,7 +138,7 @@ def compute_projections(vec_stock_norm, vec_index_norm):
         projections.append(proj)
         residuals.append(residual)
         dot_after.append(np.dot(residual, v))
-        proj_coeffs.append(_safe_ratio(np.dot(u, v), np.dot(v, v)))
+        proj_coeffs.append(_safe_ratio(np.dot(u, v), np.dot(v, v), default=0.0))
         proj_mags.append(np.linalg.norm(proj))
         proj_prices.append(_safe_ratio(proj[1], proj[0], default=np.sign(proj[1]) if np.isfinite(proj[1]) else 0.0))
         resi_price = _safe_ratio(residual[1], residual[0])
