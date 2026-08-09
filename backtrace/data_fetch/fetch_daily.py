@@ -34,18 +34,24 @@ SW2_OUT_DIR = 'data/sw2'  # 128 行业 + 成分股 long-format + 并集清单,fe
 
 
 def filter_st(items):
-    """[{'Code','Name'}, ...] -> [code],剔除 ST/*ST/SST 与退市标的。
+    """[{'Code','Name'}, ...] -> [code],剔除 ST/*ST/SST、退市 与北交所(.BJ)标的。
 
+    北交所历史短(2021 开业)、流动性差、交易规则不同(30% 涨跌幅、t+1 但最小
+    交易 100 股起 — 跟沪深 100 股一手取整口径一致但有差异),当前策略框架只跑沪深两市。
     条目可能是 None 或缺 Code(TQ 返回偶有脏数据),一律跳过。
     """
     out = []
     for it in items or []:
         if not it or not it.get('Code'):
             continue
+        code = it['Code']
+        # 北交所股票代码后缀 .BJ,策略框架目前只覆盖沪深两市
+        if code.upper().endswith('.BJ'):
+            continue
         name = it.get('Name') or ''
         if 'ST' in name.upper() or '退' in name:
             continue
-        out.append(it['Code'])
+        out.append(code)
     return out
 
 
