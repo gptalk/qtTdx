@@ -29,7 +29,8 @@ from _projection_core import (
 STOCK_CODE = '002475.SZ'      # 个股 — 后缀决定大盘指数(SZ→深证成指 / SH→上证综指)
 STOCK_NAME = '立讯精密'         # 仅用于图例标签
 days = 240
-OUT_DIR = 'backtrace'         # HTML 报告输出目录
+OUT_DIR = 'backtrace/outputs' # HTML 报告输出目录(CLAUDE.md 约定)
+FILE_PREFIX = 'proj2d_'       # HTML 文件统一前缀,便于在 outputs/ 目录下人工查找
 CSV_OUT = 'data/projection'   # 分析结果 CSV 输出子目录(与 INDEX/STOCK 标签组合文件名)
 # ======================================================
 
@@ -46,8 +47,8 @@ INDEX_LABEL = f'{INDEX_CODE} ({INDEX_NAME})'
 STOCK_LABEL = f'{STOCK_CODE} ({STOCK_NAME})'
 
 def out(name):
-    """HTML 报告:backtrace/<name>"""
-    return os.path.join(OUT_DIR, name).replace('\\', '/')
+    """HTML 报告:backtrace/outputs/<FILE_PREFIX><name>"""
+    return os.path.join(OUT_DIR, FILE_PREFIX + name).replace('\\', '/')
 
 def out_csv(name):
     """分析 CSV:data/projection/<name>"""
