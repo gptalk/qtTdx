@@ -22,6 +22,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 import sys, os
+from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
@@ -34,7 +35,7 @@ from common import tsfresh_config as C
 # ============== 配置 ==============
 SECTOR_NAME   = 'SW2_并集'   # 128 申万二级行业成分股并集(原 '通达信88' 的本地近似)
 TARGET_START  = '20250101'
-TARGET_END    = '20251231'
+TARGET_END    = datetime.now().strftime('%Y%m%d')   # 动态取「当天」;df.loc 切片自然截到 data/ 最新日
 HORIZON       = 5
 SW2_UNION_CSV = os.path.join(C.DATA_DIR, 'sw2', 'union.csv')
 # ===================================
@@ -212,7 +213,7 @@ print(f"\n有效股票:{len(df_ic)} / {total}")
 
 # ---------- 4. 聚合每个指标的板块 IC ----------
 print("\n" + "=" * 70)
-print("=== 11 个指标板块 IC 评估(2025-01-01 ~ 2025-12-31, HORIZON=5 日) ===")
+print(f"=== 11 个指标板块 IC 评估({TARGET_START} ~ {TARGET_END}, HORIZON=5 日) ===")
 print("=" * 70)
 
 agg_rows = []
