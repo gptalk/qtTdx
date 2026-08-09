@@ -29,6 +29,7 @@ CALENDAR_MARGIN = 1.05    # 自然日请求余量
 INDEX_CODES = ['000001.SH', '399001.SZ']   # 上证综指 / 深证成分指数
 SW2_LIST_ARG = '11'       # get_stock_list('11', list_type=1) -> 128 申万二级行业
 FIELDS = ['Open', 'High', 'Low', 'Close', 'Volume', 'Amount']
+SW2_OUT_DIR = 'data/sw2'  # 128 行业 + 成分股 long-format + 并集清单,fetch 过程中落盘
 # ======================================================
 
 
@@ -111,6 +112,7 @@ def build_sector_universe(tq):
     """128 申万二级行业。返回 (代码列表, {代码: 中文名})。
 
     已由 tsfresh_top1_industry.py:46-56 验证:这批 Code 可直接喂 get_market_data。
+    Side effect:持久化 data/sw2/industries.csv (sector_code, sector_name)。
     """
     items = tq.get_stock_list(SW2_LIST_ARG, list_type=1) or []
     codes, names = [], {}
@@ -121,28 +123,56 @@ def build_sector_universe(tq):
     if not codes:
         raise RuntimeError(f"get_stock_list({SW2_LIST_ARG!r}) 返回空 —— TQ 客户端可能未启动")
     print(f"  申万二级行业: {len(codes)} 个")
+
+    os.makedirs(SW2_OUT_DIR, exist_ok=True)
+    industries_path = os.path.join(SW2_OUT_DIR, 'industries.csv')
+    pd.DataFrame(
+        [{'sector_code': c, 'sector_name': names[c]} for c in codes]
+    ).to_csv(industries_path, index=False, encoding='utf-8')
+    print(f"  → {industries_path} ({len(codes)} 行)")
     return codes, names
 
 
-def build_stock_universe(tq, sector_codes):
+def build_stock_universe(tq, sector_codes, sector_names):
     """个股 universe = 128 行业成分股并集,再剔除 ST/退市。
 
     为什么用行业并集而非 get_stock_list 全市场:get_stock_list 取沪深两市的实参
     未经验证(见 --probe),而 get_stock_list_in_sector 对这批行业码已由
     tsfresh_top1_industry.py:69 跑通。覆盖面接近全市场,且顺带拿到行业归属。
     探明全市场实参后可在此替换。
+
+    Side effect:持久化
+      - data/sw2/members.csv (long-format: sector_code, sector_name, member_code)
+      - data/sw2/union.csv   (去重后、ST 过滤前的所有代码: code, name)
     """
     seen = set()
+    sector_to_members = {}  # sector_code -> [member_code] 保留每行业归属
     for i, code in enumerate(sector_codes, 1):
         try:
             members = tq.get_stock_list_in_sector(code) or []
         except Exception as e:
             print(f"  [WARN] 行业 {code} 成分股拉取失败: {type(e).__name__}: {e}")
             continue
+        sector_to_members[code] = list(members)
         for m in members:
             seen.add(m)
         if i % 20 == 0:
             print(f"  行业成分股进度 {i}/{len(sector_codes)}  累计去重 {len(seen)} 只")
+
+    # 持久化 long-format 成分股(sector_code + sector_name + member_code)
+    os.makedirs(SW2_OUT_DIR, exist_ok=True)
+    member_rows = []
+    for s_code in sector_codes:
+        s_name = sector_names.get(s_code, '')
+        for m in sector_to_members.get(s_code, []):
+            member_rows.append({
+                'sector_code': s_code,
+                'sector_name': s_name,
+                'member_code': m,
+            })
+    members_path = os.path.join(SW2_OUT_DIR, 'members.csv')
+    pd.DataFrame(member_rows).to_csv(members_path, index=False, encoding='utf-8')
+    print(f"  → {members_path} ({len(member_rows)} 行 long-format)")
 
     # get_stock_list_in_sector 只给代码不给名称,需要名称才能过滤 ST
     all_codes = sorted(seen)
@@ -161,6 +191,14 @@ def build_stock_universe(tq, sector_codes):
         if not name:
             empty_name_count += 1
         items.append({'Code': c, 'Name': name})
+
+    # 持久化 union(去重后、ST 过滤前的所有代码)
+    union_path = os.path.join(SW2_OUT_DIR, 'union.csv')
+    pd.DataFrame(
+        [{'code': it['Code'], 'name': it['Name']} for it in items]
+    ).to_csv(union_path, index=False, encoding='utf-8')
+    print(f"  → {union_path} ({len(items)} 行,ST 过滤前)")
+
     kept = filter_st(items)
     print(f"  个股 universe: 并集 {len(all_codes)} 只 -> 去 ST/退市后 {len(kept)} 只 (get_stock_info 空名 {empty_name_count} 只)")
     return kept
@@ -291,7 +329,7 @@ def main():
         i_ok, i_fail = _run_group(tq, INDEX_CODES, 'indices', start, end, man, force=args.force)
 
         print("\n[3/3] 个股")
-        stock_codes = build_stock_universe(tq, sector_codes)
+        stock_codes = build_stock_universe(tq, sector_codes, sector_names)
         if args.limit:
             stock_codes = stock_codes[:args.limit]
         k_ok, k_fail = _run_group(tq, stock_codes, 'stocks', start, end, man, force=args.force)
