@@ -27,6 +27,9 @@ TARGET_END   = '20251231'
 WINDOW_MA    = 5                       # MA5
 INIT_CASH    = 100_000
 MAX_POS_PCT  = 0.95
+# walk-forward:前 INIT_TRAIN_SIZE 窗口训练初始 LR,之后每 STEP 窗口重训一次
+INIT_TRAIN_SIZE = 200
+STEP            = 50
 
 # 4 组合网格
 STRATEGIES = [
@@ -61,18 +64,20 @@ X_all = P.extract_window_features(long_df, use_kind=True, verbose=True)
 y_all, X_all = P.make_labels(X_all, df['Close'].values, verbose=False)
 print(f"   -> 有效样本 {len(y_all)} 个  |  未来 {C.HORIZON} 日上涨 {y_all.sum()} 个 ({y_all.mean():.1%})")
 
-print("\nFDR 特征筛选...")
-X_sel = P.select_relevant(X_all, y_all, verbose=False)
-print(f"   -> FDR 显著特征 {X_sel.shape[1]} 列")
-if X_sel.shape[1] == 0:
+print("\nFDR 特征筛选(只在前 INIT_TRAIN_SIZE 段做 — 防未来信息泄漏)...")
+X_train0 = X_all.iloc[:INIT_TRAIN_SIZE]
+y_train0 = y_all.iloc[:INIT_TRAIN_SIZE]
+X_sel_initial = P.select_relevant(X_train0, y_train0, verbose=False)
+selected_cols = X_sel_initial.columns.tolist()
+print(f"   -> 在前 {INIT_TRAIN_SIZE} 个样本上筛特征 → FDR 显著 {len(selected_cols)} 列")
+if len(selected_cols) == 0:
     print("   [WARN] FDR 0 特征,demo 兜底用全量特征(可能过拟合,但管道能跑通)")
     X_sel = X_all
+else:
+    # 用筛出来的列名,索引仍覆盖全期 → walk-forward 仍能按 pos 切片
+    X_sel = X_all[selected_cols]
 
 # ---------- 3. 真 walk-forward predict ----------
-#    expanding window:前 INIT_TRAIN_SIZE 窗口训练初始 LR,之后每 STEP 窗口重训一次
-INIT_TRAIN_SIZE = 200   # 初始训练窗口数
-STEP = 50               # 每多少窗口重训一次
-
 print(f"\n真 walk-forward predict (initial={INIT_TRAIN_SIZE}, retrain every {STEP} 窗口)...")
 date_index = pd.DatetimeIndex(df.index)
 proba_records = []
@@ -166,7 +171,10 @@ def run_vbt_backtest(name, entries, exits):
     base['zero_friction_ret'] = pf_zero.total_return()
 
     # ===== B. 实盘 portfolio(fees=0 内置, jhzq_fees 后置)=====
-    portfolio = pf_zero   # 复用同一个 pf_zero 拿 trades(扣费结构相同,只是费用单独算)
+    # 复用 pf_zero 拿 trades(扣费结构相同,只是费用单独算)
+    # **前提**:策略的 entry/exit 判定逻辑与交易费用无关(signal 按价格穿越触发)
+    # 若未来新增"预期收益需覆盖手续费才entry"类策略,需单独跑一次有费率 portfolio
+    portfolio = pf_zero
 
     trades = portfolio.trades.records_readable
     if len(trades) == 0:
@@ -201,6 +209,16 @@ for strat in STRATEGIES:
     entry_n = int(entries.sum())
     print(f"\n[{name}] entry 信号数: {entry_n}  exit 信号数: {int(exits.sum())}")
     summary = run_vbt_backtest(name, entries, exits)
+    # 资金不足 / 仓位冲突检查:shares_per_trade 用回测首日价格算的固定股数,
+    # 若股价大幅上涨,后期 entry 所需资金可能 > INIT_CASH*MAX_POS_PCT,
+    # vbt 会静默拒单 → 实际成交笔数显著少于信号数
+    if entry_n > 0:
+        actual = int(summary.get('trades', 0))
+        if actual < entry_n * 0.8:
+            print(f"   [WARN] 信号 {entry_n} 个 → 实际成交 {actual} 笔 "
+                  f"({(1 - actual / entry_n):.0%} 被拒)")
+            print(f"          可能因 MAX_POS_PCT={MAX_POS_PCT} 时股价上涨后资金不足;")
+            print(f"          收益对比会失真,降 MAX_POS_PCT 或加现金补充")
     results.append(summary)
     trades_per_strategy[name] = portfolio = None  # 占位,保留接口
 
@@ -211,6 +229,10 @@ cols = ['strategy', 'trades', 'zero_friction_ret',
         'net_pnl', 'net_ret', 'win_rate', 'profit_factor', 'avg_net_per_trade']
 results_df = results_df[cols].sort_values('net_pnl', ascending=False).reset_index(drop=True)
 results_df['friction_loss_pp'] = (results_df['zero_friction_ret'] - results_df['net_ret']) * 100
+
+# 摩擦吃损理论上恒 ≥ 0(扣费后收益 ≤ 零摩擦收益);负值说明 zero/net_ret 口径不一致或费率 bug
+if (results_df['friction_loss_pp'] < 0).any():
+    print("[WARN] 存在摩擦吃损为负的策略,检查 zero_friction_ret 与 net_ret 口径是否一致")
 
 def fmt_money(x):
     return f"{x:>12,.2f}" if pd.notna(x) else "          N/A"
