@@ -1,14 +1,20 @@
 # -*- coding: utf-8 -*-
 # 2-D 投影验证 — legacy，将个股 (STOCK_CODE) 的成交量 / 成交额向量投影到大盘指数的方向上
-# 个股在下方「配置」区参数化,改 STOCK_CODE/STOCK_NAME 即可换标的;大盘指数按个股交易所自动选择(SZ→深证成指 / SH→上证综指)
-# 输出:6 个 HTML 到 backtrace/ 根目录 + 1 个 CSV 到 data/projection/
+# 个股通过 --code / --name / --days 参数化;大盘指数按个股交易所自动选择(SZ→深证成指 / SH→上证综指)
+# 输出:6 个 HTML 到 backtrace/outputs/ + 1 个 CSV 到 data/projection/
 # 数学/数据载入/CSV 组装统一在 _projection_core.py;本脚本只负责 plotly 可视化与文件落地
 # 用法:已不推荐,主要用作早期可正交性可视化实验;研究请改用 vbt/tsfresh 系列
 # 批量版见 projection_batch.py
+#
+# CLI:
+#   python backtrace/projection/projection_2d.py                          # 默认 002475.SZ / 立讯精密 / 240 日
+#   python backtrace/projection/projection_2d.py --code 688318.SH         # 科创板虹软 → 上证综指
+#   python backtrace/projection/projection_2d.py --code 600519.SH --name 贵州茅台 --days 120
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
 import os
+import argparse
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -25,10 +31,20 @@ from _projection_core import (
     build_result_df,
 )
 
-# ========================= 配置 =========================
-STOCK_CODE = '002475.SZ'      # 个股 — 后缀决定大盘指数(SZ→深证成指 / SH→上证综指)
-STOCK_NAME = '立讯精密'         # 仅用于图例标签
-days = 240
+# ========================= CLI 参数 =========================
+def parse_args():
+    p = argparse.ArgumentParser(description='单股 2-D 投影分析(HTML + CSV)')
+    p.add_argument('--code', default='002475.SZ', help='个股代码(带 .SH / .SZ 后缀)。默认 002475.SZ')
+    p.add_argument('--name', default='立讯精密', help='个股中文名(仅用于图例标签)。默认 立讯精密')
+    p.add_argument('--days', type=int, default=240, help='回看交易日数。默认 240')
+    return p.parse_args()
+
+args = parse_args()
+STOCK_CODE = args.code
+STOCK_NAME = args.name
+days = args.days
+
+# ========================= 输出布局 =========================
 OUT_DIR = 'backtrace/outputs' # HTML 报告输出目录(CLAUDE.md 约定)
 FILE_PREFIX = 'proj2d_'       # HTML 文件统一前缀,便于在 outputs/ 目录下人工查找
 CSV_OUT = 'data/projection'   # 分析结果 CSV 输出子目录(与 INDEX/STOCK 标签组合文件名)
