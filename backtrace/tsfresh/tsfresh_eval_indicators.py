@@ -1,8 +1,14 @@
+# -*- coding: utf-8 -*-
 # tsfresh 指标评测:Phase 1 - IC(信息系数)快速评估
-# 对通达信88 每只股票,每个 vbt 指标计算"指标值 vs 未来 5 日收益"的 Spearman rank IC
+# 对 SW2 行业并集 每只股票,每个 vbt 指标计算"指标值 vs 未来 5 日收益"的 Spearman rank IC
 # 输出:每个指标的板块 IC 中位数 / IC_IR / 胜率 / Top 5 表现最好股票 / Top 3 IC 分布
 # 输出文件:tsfresh_indicator_ic_<sector>_<start>_<end>.csv + _summary.csv
-# 用法:`python tsfresh/eval_indicators.py` → 13 个指标横向打分,挑有效的往下做
+# 用法:`PYTHONIOENCODING=utf-8 python backtrace/tsfresh/tsfresh_eval_indicators.py`
+#
+# 数据源:本地 data/ 缓存(由 fetch_daily.py 落盘,不依赖 TQ 客户端)。
+#   原版用 '通达信88' 板块,本地缓存只有 128 申万二级行业 + 它们的成分股并集 ~5000 只;
+#   这里用 SW2 行业成分股并集(data/sw2/union.csv)作为「全市场近似」 universe。
+#   之前的 2-只 fallback(LOCAL_FALLBACK_CODES)对 IC 统计毫无意义,这里直接绕开。
 #
 # 实现要点:
 # - 先在**连续时间轴**上算 fwd_ret,再对涨跌停日的指标值置 NaN(不删行);
@@ -17,24 +23,20 @@ warnings.filterwarnings('ignore')
 
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')
 
 import numpy as np
 import pandas as pd
-import vectorbt as vbt
 from scipy.stats import spearmanr
-from tqcenter import tq
 
+from common import data_store
 from common import tsfresh_config as C
-from common import tsfresh_pipeline as P
-
-tq.initialize(__file__)
 
 # ============== 配置 ==============
-SECTOR_NAME   = '通达信88'
+SECTOR_NAME   = 'SW2_并集'   # 128 申万二级行业成分股并集(原 '通达信88' 的本地近似)
 TARGET_START  = '20250101'
 TARGET_END    = '20251231'
 HORIZON       = 5
+SW2_UNION_CSV = os.path.join(C.DATA_DIR, 'sw2', 'union.csv')
 # ===================================
 
 # ---------- 1. 定义 11 个指标通道(全部 pandas 手算,绕开 vbt 内部 EMA bug) ----------
@@ -169,8 +171,24 @@ def ic_per_stock(df, indicators):
 
 # ---------- 3. 拉板块 + 跑全 IC ----------
 print("=" * 70)
-print(f"[{SECTOR_NAME}] 拉板块全部成员(带 Amount)...")
-stock_data = P.load_sector(sector_name=SECTOR_NAME, verbose=True)
+print(f"[{SECTOR_NAME}] 从本地缓存拉全市场近似(带 Amount)...")
+if not os.path.exists(SW2_UNION_CSV):
+    raise FileNotFoundError(
+        f"未找到 {SW2_UNION_CSV} — 请先跑 `PYTHONIOENCODING=utf-8 python "
+        f"backtrace/data_fetch/fetch_daily.py` 生成本地缓存"
+    )
+union = pd.read_csv(SW2_UNION_CSV, dtype={'code': str})
+print(f"  union.csv 共 {len(union)} 只")
+
+stock_data = {}
+miss = 0
+for code in union['code']:
+    df = data_store.load_daily(code)
+    if df is None or len(df) < 50:
+        miss += 1
+        continue
+    stock_data[code] = df
+print(f"  本地命中 {len(stock_data)} 只 (缺失或不足 {miss} 只)")
 print("=" * 70)
 
 results = []
@@ -184,8 +202,8 @@ for i, (code, raw) in enumerate(stock_data.items(), 1):
         rec = {'stock': code}
         rec.update(ic_dict)
         results.append(rec)
-        if i % 10 == 0:
-            print(f"  [{i:2d}/{total}] 已处理")
+        if i % 100 == 0 or i == total:
+            print(f"  [{i:4d}/{total}] 已处理")
     except Exception as e:
         print(f"  [{i:2d}/{total}] {code} 失败:{e}")
 
@@ -267,5 +285,3 @@ print(f"\n每只股票 IC 明细已保存到 {out_csv}")
 agg_path = out_csv.replace('.csv', '_summary.csv')
 agg_df.to_csv(agg_path, index=False, encoding='utf-8-sig')
 print(f"板块聚合已保存到 {agg_path}")
-
-tq.close()
