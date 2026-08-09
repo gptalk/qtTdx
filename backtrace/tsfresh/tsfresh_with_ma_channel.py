@@ -3,6 +3,16 @@
 # 对比 3 个 tsfresh 通道方案 + 1 个 MA5 基线
 # 输出:tsfresh_with_ma_<code>_<start>_<end>.csv
 # 用法:验证把"均线 / 偏离度"当额外 tsfresh 通道,能否挑出 MA5 看不出的反转点
+#
+# ⚠️ 已知陷阱:
+#  1. MA 通道与 Close 结构性共线 — ma5/ma10/ma20 是 Close 的确定性变换(低通滤波),
+#     喂给 tsfresh 相当于让模型对同一段价格做了两次滤波,显著特征可能成对出现。
+#     跑完后看 _report_channel_composition 输出,确认 ma5/10/20 通道是否真带来增量
+#     (而不是 Close 信息的冗余复制 — 那样的话 with_ma 跟 basic 没本质区别)。
+#  2. **阈值选择偏差** — 0.60 是从上一版脚本(同一段 5 年回测、同一只票)网格搜索出的
+#     「最优」,本次对比再用同一段数据验证,本质上是同一份样本的二次拟合。
+#     这次默认改用 0.55(非拟合中点)以避开这个偏差;想保留 0.60 对比,见 --entry-th 参数。
+#  3. fillna(0.0) 会人为制造 0 → 实值的跳变,改用 bfill(第一个有效值往前填)。
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -31,7 +41,8 @@ MAX_POS_PCT  = 0.95
 INIT_TRAIN_SIZE = 200   # walk-forward 初始训练窗口
 STEP = 50               # 重训步长
 EXIT_TSF = 0.50
-ENTRY_TSF = 0.60        # 当前最佳阈值
+# ⚠️ 0.60 是同段数据上 grid search 的「最优」,二次拟合风险大 → 默认 0.55(中点)
+ENTRY_TSF = 0.55
 # ===================================
 
 # ---------- 1. 数据 ----------
@@ -55,22 +66,53 @@ open_full  = df['Open']
 PROBA_CACHE = {}   # key=channels -> pd.Series(proba, index=date)
 
 
+def _report_channel_composition(X_sel, label):
+    """统计 X_sel 里各通道贡献的显著特征数 — 用来看 MA 通道是否带来真增量。
+
+    ma5/ma10/ma20 是 Close 的低通滤波,与 Close 通道提取的特征高度相关。
+    如果 MA 通道入选数极少 → with_ma 跟 basic 没本质区别,「加均线」无实质 alpha。
+    """
+    if X_sel.shape[1] == 0:
+        return
+    # 特征名形如 '{kind}__{feature_func}...',kind 在第一个 '__' 前
+    channels = pd.Series([col.split('__', 1)[0] for col in X_sel.columns])
+    counts = channels.value_counts()
+    print(f"   [{label}] 各通道入选特征数:")
+    for ch, n in counts.items():
+        pct = n / len(channels) * 100
+        print(f"     {ch:<10} {n:>4}  ({pct:5.1f}%)")
+    # 如果 MA 通道占比超过 1/3,提醒是冗余复制风险
+    ma_total = sum(counts.get(c, 0) for c in counts.index if c.startswith('ma') or c == 'rel_ma5')
+    if ma_total > 0 and ma_total / len(channels) > 0.33:
+        print(f"   [WARN] MA 相关通道占 {ma_total/len(channels):.0%},可能与 Close 通道冗余")
+
+
 def build_tsfresh_proba(channels, label):
     """
     给定通道列表,跑全量 tsfresh + walk-forward。
     返回 proba Series(每个窗口结束日 1 个值)。
     """
     print(f"\n--- {label} ({len(channels)} 通道: {channels}) ---")
-    df_fill = df[channels].copy().fillna(0.0)   # tsfresh 不允许 NaN(ma5 在头几天为 0/NaN)
+    df_fill = df[channels].copy().bfill()   # 用第一个有效值往前填(替代 fillna(0.0))
+    # 避免 0 → 实值的跳变被 tsfresh 当成「突变」类特征 — 改 bfill 后头 19 天 ma20 为常数,
+    # tsfresh 提不出有效信号(方差=0、自相关=1),比 0 填充更干净
     long_df = P.to_long_format(df_fill, channels=channels, id_value=STOCK_CODE)
     X_all = P.extract_window_features(long_df, use_kind=True, verbose=False)
     y_all, X_all = P.make_labels(X_all, df['Close'].values, verbose=False)
     print(f"   样本 {len(y_all)} 个  |  正样本 {y_all.mean():.1%}  |  特征 {X_all.shape[1]} 列")
 
-    X_sel = P.select_relevant(X_all, y_all, verbose=False)
-    if X_sel.shape[1] == 0:
+    # FDR 特征筛选 — **只在前 INIT_TRAIN_SIZE 段做**(防未来信息泄漏)
+    X_train0 = X_all.iloc[:INIT_TRAIN_SIZE]
+    y_train0 = y_all.iloc[:INIT_TRAIN_SIZE]
+    X_sel_initial = P.select_relevant(X_train0, y_train0, verbose=False)
+    selected_cols = X_sel_initial.columns.tolist()
+    if len(selected_cols) == 0:
         print(f"   [WARN] FDR=0,用全量 {X_all.shape[1]} 特征")
         X_sel = X_all
+    else:
+        X_sel = X_all[selected_cols]   # 筛出的列名 + 全期索引 → walk-forward 可按 pos 切片
+    print(f"   FDR 显著 {X_sel.shape[1]} 列 (前 {INIT_TRAIN_SIZE} 个样本筛)")
+    _report_channel_composition(X_sel, label=label)
 
     # walk-forward
     print(f"   walk-forward (initial={INIT_TRAIN_SIZE}, retrain every {STEP})...")
