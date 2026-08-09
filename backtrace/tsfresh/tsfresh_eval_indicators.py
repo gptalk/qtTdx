@@ -1,13 +1,16 @@
 # tsfresh 指标评测:Phase 1 - IC(信息系数)快速评估
 # 对通达信88 每只股票,每个 vbt 指标计算"指标值 vs 未来 5 日收益"的 Spearman rank IC
-# 输出:每个指标的板块 IC 中位数 / IC_IR / 胜率 / Top 5 表现最好股票
+# 输出:每个指标的板块 IC 中位数 / IC_IR / 胜率 / Top 5 表现最好股票 / Top 3 IC 分布
 # 输出文件:tsfresh_indicator_ic_<sector>_<start>_<end>.csv + _summary.csv
 # 用法:`python tsfresh/eval_indicators.py` → 13 个指标横向打分,挑有效的往下做
 #
 # 实现要点:
+# - 先在**连续时间轴**上算 fwd_ret,再对涨跌停日的指标值置 NaN(不删行);
+#   删行会让 pct_change(H) 跨过缺失日期,实际跨度 > H 自然日,污染 IC
 # - Spearman rank IC(对极端值鲁棒)+ p < 0.05 显著性过滤(不显著不采信)
 # - 涨跌停过滤(|daily_ret| >= 9.5%)避免停牌/复牌/涨停样本污染 IC
 # - OBV 改为 20 日 rolling z-score,跨股票 IC 才有可比性
+# - VWAP 改为价格相对 VWAP 的偏离百分比(vwap_dev),跨股票量纲一致
 # - 聚合加 IC_IR(mean / std),> 0.5 算稳健(注:Phase 1 是截面 IC,严格说 IR 应在时序上算)
 import warnings
 warnings.filterwarnings('ignore')
@@ -112,14 +115,18 @@ def build_indicators(df):
     else:
         out['amount'] = (c * v).ffill()        # 兜底 = Close × Volume
     v_safe = v.replace(0, np.nan)
-    out['vwap'] = (out['amount'] / v_safe).ffill()   # 近似 VWAP
+    vwap_raw = (out['amount'] / v_safe).ffill()      # 近似 VWAP(价格量级,跨股票不可比)
+    # 用 vwap_dev(价格相对 VWAP 的偏离百分比)而不是裸 VWAP:
+    # 5 元股 vs 500 元股的裸 VWAP 量纲差 100 倍;vwap_dev 反映「当前价相对
+    # 当日均价偏离多少」,跨股票量纲一致,IC 才有意义
+    out['vwap_dev'] = ((c - vwap_raw) / vwap_raw.replace(0, np.nan)).ffill()
 
     return out
 
 
 INDICATOR_NAMES = ['ma5', 'ma10', 'ma20', 'rsi14', 'atr14', 'bband_pctb',
                    'macd', 'stoch_k', 'obv', 'mfi14', 'adx14',
-                   'amount', 'vwap']
+                   'amount', 'vwap_dev']
 
 
 # ---------- 2. 单只股票 IC 评估 ----------
@@ -127,7 +134,9 @@ def ic_per_stock(df, indicators):
     """对单只股票,返回 {indicator_name: ic_value}。
 
     实现要点:
-    - 过滤涨跌停(|daily_ret| >= 9.5%)避免异常值污染 IC
+    - 先在**连续时间轴**上算 fwd_ret,再对涨跌停日的指标值置 NaN(不删行)
+      — 若先删行再算 pct_change(H),被删行的位置会让 H 实际跨度 > H 自然日,污染 IC
+    - 涨跌停过滤:只把指标值置 NaN(不影响收益率计算),保留连续时间轴
     - Spearman rank IC(对极端值鲁棒),p < 0.05 才采信
     - Pearson 在涨跌停/复牌/停牌样本下易被一个异常点拉偏
     """
@@ -135,20 +144,19 @@ def ic_per_stock(df, indicators):
     if len(df_demo) < 50:
         return None
 
-    # 过滤涨跌停(单日 |return| >= 9.5%):停牌 / 涨跌停 / 复牌的极端单日收益
-    # 会显著拉偏 Pearson IC;先剔再算 rank
+    # 1) 先在完整连续时间轴上算前瞻收益率 — 关键时序:fwd_ret 用 df_demo 完整索引
+    fwd_ret = df_demo['Close'].pct_change(HORIZON).shift(-HORIZON)
+
+    # 2) 涨跌停过滤:对单日 |return| >= 9.5% 的行,只把指标值置 NaN(不删行)
     daily_ret = df_demo['Close'].pct_change()
     limit_mask = daily_ret.abs() >= 0.095
-    df_demo = df_demo[~limit_mask]
-
-    # 未来 HORIZON 日收益率(pct_change(H).shift(-H) → (C_{t+H} - C_t) / C_t)
-    fwd_ret = df_demo['Close'].pct_change(HORIZON).shift(-HORIZON)
 
     ic_dict = {}
     for name in INDICATOR_NAMES:
         if name not in indicators:
             continue
-        ind = indicators[name].reindex(df_demo.index)
+        # reindex 到 df_demo 索引,并对涨跌停日把指标值置 NaN(链式 where 不修改原 indicators)
+        ind = indicators[name].reindex(df_demo.index).where(~limit_mask)
         valid = ind.notna() & fwd_ret.notna()
         if valid.sum() < 30:
             ic_dict[name] = np.nan
@@ -233,6 +241,20 @@ for name in agg_df.head(3)['indicator']:
     top5 = df_ic[['stock', name]].dropna().sort_values(name, ascending=False).head(5)
     print(f"\n[{name}]")
     print(top5.to_string(index=False))
+
+# Top 3 指标 IC 分布(便于一眼看出「是否多数 IC 同号 + 强弱分布」)
+print("\n=== Top 3 指标 IC 分布 ===")
+for name in agg_df.head(3)['indicator']:
+    ic_vals = df_ic[name].dropna()
+    if len(ic_vals) == 0:
+        continue
+    neg = int((ic_vals < 0).sum())
+    near0 = int((ic_vals.abs() < 0.05).sum())
+    pos = int((ic_vals > 0).sum())
+    q25, q50, q75 = ic_vals.quantile([0.25, 0.50, 0.75])
+    print(f"\n[{name}] n={len(ic_vals)}")
+    print(f"  负IC: {neg}  |IC|<0.05: {near0}  正IC: {pos}")
+    print(f"  Q25={q25:+.3f}  Q50={q50:+.3f}  Q75={q75:+.3f}")
 
 # 保存
 out_csv = os.path.join(
