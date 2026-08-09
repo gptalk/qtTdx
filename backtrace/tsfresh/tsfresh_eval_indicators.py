@@ -1,8 +1,14 @@
 # tsfresh 指标评测:Phase 1 - IC(信息系数)快速评估
-# 对通达信88 每只股票,每个 vbt 指标计算"指标值 vs 未来 5 日收益"的 Pearson 相关
-# 输出:每个指标的板块 IC 中位数 + 胜率 + Top 5 表现最好股票
+# 对通达信88 每只股票,每个 vbt 指标计算"指标值 vs 未来 5 日收益"的 Spearman rank IC
+# 输出:每个指标的板块 IC 中位数 / IC_IR / 胜率 / Top 5 表现最好股票
 # 输出文件:tsfresh_indicator_ic_<sector>_<start>_<end>.csv + _summary.csv
-# 用法:`python tsfresh/eval_indicators.py` → 11 个指标横向打分,挑有效的往下做
+# 用法:`python tsfresh/eval_indicators.py` → 13 个指标横向打分,挑有效的往下做
+#
+# 实现要点:
+# - Spearman rank IC(对极端值鲁棒)+ p < 0.05 显著性过滤(不显著不采信)
+# - 涨跌停过滤(|daily_ret| >= 9.5%)避免停牌/复牌/涨停样本污染 IC
+# - OBV 改为 20 日 rolling z-score,跨股票 IC 才有可比性
+# - 聚合加 IC_IR(mean / std),> 0.5 算稳健(注:Phase 1 是截面 IC,严格说 IR 应在时序上算)
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -13,6 +19,7 @@ sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')
 import numpy as np
 import pandas as pd
 import vectorbt as vbt
+from scipy.stats import spearmanr
 from tqcenter import tq
 
 from common import tsfresh_config as C
@@ -79,9 +86,13 @@ def build_indicators(df):
     stoch_range = (high14 - low14).replace(0, np.nan)
     out['stoch_k'] = ((c - low14) / stoch_range * 100).fillna(50)
 
-    # OBV
+    # OBV — 原始是 cumsum,量纲随时间增长,跨股票 IC 不可比
+    # 改为 20 日 rolling z-score,标准化后才进 IC 评估
     sign = np.sign(c.diff()).fillna(0)
-    out['obv'] = (sign * v).cumsum().ffill()
+    obv_raw = (sign * v).cumsum()
+    obv_mu = obv_raw.rolling(20).mean()
+    obv_sd = obv_raw.rolling(20).std()
+    out['obv'] = ((obv_raw - obv_mu) / (obv_sd + 1e-9)).ffill()
 
     # MFI 14
     tp = (h + l + c) / 3
@@ -113,12 +124,24 @@ INDICATOR_NAMES = ['ma5', 'ma10', 'ma20', 'rsi14', 'atr14', 'bband_pctb',
 
 # ---------- 2. 单只股票 IC 评估 ----------
 def ic_per_stock(df, indicators):
-    """对单只股票,返回 {indicator_name: ic_value}"""
+    """对单只股票,返回 {indicator_name: ic_value}。
+
+    实现要点:
+    - 过滤涨跌停(|daily_ret| >= 9.5%)避免异常值污染 IC
+    - Spearman rank IC(对极端值鲁棒),p < 0.05 才采信
+    - Pearson 在涨跌停/复牌/停牌样本下易被一个异常点拉偏
+    """
     df_demo = df.loc[TARGET_START:TARGET_END].copy()
     if len(df_demo) < 50:
         return None
 
-    # 未来 HORIZON 日收益率
+    # 过滤涨跌停(单日 |return| >= 9.5%):停牌 / 涨跌停 / 复牌的极端单日收益
+    # 会显著拉偏 Pearson IC;先剔再算 rank
+    daily_ret = df_demo['Close'].pct_change()
+    limit_mask = daily_ret.abs() >= 0.095
+    df_demo = df_demo[~limit_mask]
+
+    # 未来 HORIZON 日收益率(pct_change(H).shift(-H) → (C_{t+H} - C_t) / C_t)
     fwd_ret = df_demo['Close'].pct_change(HORIZON).shift(-HORIZON)
 
     ic_dict = {}
@@ -130,8 +153,9 @@ def ic_per_stock(df, indicators):
         if valid.sum() < 30:
             ic_dict[name] = np.nan
             continue
-        ic = np.corrcoef(ind[valid].values, fwd_ret[valid].values)[0, 1]
-        ic_dict[name] = ic
+        ic, pval = spearmanr(ind[valid].values, fwd_ret[valid].values)
+        # 不显著的 IC 不采信(填 NaN,在聚合时 dropna 排除)
+        ic_dict[name] = ic if pval < 0.05 else np.nan
     return ic_dict
 
 
@@ -175,12 +199,16 @@ for name in INDICATOR_NAMES:
     pos = (ic_series > 0).sum()
     strong_pos = (ic_series > 0.05).sum()      # |IC| > 5% 算较强
     strong_neg = (ic_series < -0.05).sum()
+    # IC_IR = mean / std,衡量 IC 时序稳定性(Phase 1 是截面 IC,严格说跨时间不独立,
+    # 但仍是衡量「是否大多数股票都给出一致方向」的便捷指标;IC_IR > 0.5 算稳健)
+    ic_ir = ic_series.mean() / (ic_series.std() + 1e-9)
     agg_rows.append({
         'indicator':     name,
         'n':             len(ic_series),
         'ic_median':     ic_series.median(),
         'ic_mean':       ic_series.mean(),
         'ic_std':        ic_series.std(),
+        'ic_ir':         ic_ir,
         'ic_pos_count':  int(pos),
         'ic_pos_rate':   pos / len(ic_series),
         'ic_strong_pos': int(strong_pos),
@@ -190,11 +218,12 @@ for name in INDICATOR_NAMES:
 agg_df = pd.DataFrame(agg_rows).sort_values('ic_median', ascending=False).reset_index(drop=True)
 
 print(f"\n{'指标':<14} {'样本':>5} {'IC中位数':>10} {'IC均值':>10} {'IC标准差':>10} "
-      f"{'IC>0':>6} {'胜率':>8} {'|IC|>5%':>10}")
-print("-" * 90)
+      f"{'IC_IR':>8} {'IC>0':>6} {'胜率':>8} {'|IC|>5%':>10}")
+print("-" * 96)
 for _, r in agg_df.iterrows():
     print(f"{r['indicator']:<14} {int(r['n']):>5} "
           f"{r['ic_median']:>+10.4f} {r['ic_mean']:>+10.4f} {r['ic_std']:>10.4f} "
+          f"{r['ic_ir']:>+8.3f} "
           f"{int(r['ic_pos_count']):>6} {r['ic_pos_rate']:>8.1%} "
           f"+{int(r['ic_strong_pos'])}/-{int(r['ic_strong_neg']):<3}")
 
