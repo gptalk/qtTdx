@@ -36,6 +36,20 @@ def project_u_onto_v(u, v):
     return (np.dot(u, v) / v_norm_sq) * v
 
 
+def _safe_ratio(num, den, default=np.nan):
+    """标量除法,安全处理 0/NaN/Inf — 不会触发 numpy RuntimeWarning。
+
+    无效输入 → 返回 default(np.nan),由调用方决定过滤或填值。
+    batch 跑 5500+ 只票时,NaN 安全能避免日志被 RuntimeWarning 刷屏。
+    """
+    if not np.isfinite(den) or den == 0:
+        return default
+    res = num / den
+    if not np.isfinite(res):
+        return default
+    return res
+
+
 def load_pair(stock_code, days, pipeline):
     """从本地 data/ 缓存加载 (stock_df, index_df) 共同交易日的最近 `days` 行。
 
@@ -115,13 +129,16 @@ def compute_projections(vec_stock_norm, vec_index_norm):
         projections.append(proj)
         residuals.append(residual)
         dot_after.append(np.dot(residual, v))
-        proj_coeffs.append(np.dot(u, v) / np.dot(v, v))
+        proj_coeffs.append(_safe_ratio(np.dot(u, v), np.dot(v, v)))
         proj_mags.append(np.linalg.norm(proj))
-        proj_prices.append(proj[1] / proj[0] if proj[0] != 0 else np.sign(proj[1]))
-        resi_price = residual[1] / residual[0] if residual[0] != 0 else residual[1] / abs(residual[1])
-        # >3 视为 Volume≈0 导致的异常大比值,限幅到已算值
-        if abs(resi_price) > 3:
-            resi_price = np.sign(resi_price) * np.max(np.abs(resi_prices[:-2])) if len(resi_prices) > 2 else 0
+        proj_prices.append(_safe_ratio(proj[1], proj[0], default=np.sign(proj[1]) if np.isfinite(proj[1]) else 0.0))
+        resi_price = _safe_ratio(residual[1], residual[0])
+        # NaN 或 | > 3 视为 Volume≈0 导致的异常比值,限幅到已算值
+        if not np.isfinite(resi_price) or abs(resi_price) > 3:
+            past = np.abs(resi_prices[:-2]) if len(resi_prices) > 2 else None
+            cap = float(np.nanmax(past)) if past is not None and len(past) > 0 and np.any(np.isfinite(past)) else 0.0
+            sign = np.sign(residual[1]) if np.isfinite(residual[1]) else 0.0
+            resi_price = sign * cap
         resi_prices.append(resi_price)
 
     return {
