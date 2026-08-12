@@ -2,6 +2,12 @@
 """
 拉取沪深全市场 + 申万二级行业指数 + 两大盘指数的日线,落盘到仓库根 data/。
 
+排除范围:
+  - 北交所(.BJ)标的:历史短(2021 开业)、流动性差、交易规则与沪深不同(30% 涨跌幅),
+    策略框架不覆盖。在 build_stock_universe 收 sector members 时源头剔除,不进入
+    members.csv / union.csv,fetch 阶段自然也不会拉到。
+  - ST/*ST/SST、退市:由 filter_st 在 fetch 前过滤。
+
 职责边界:本模块只做「编排」—— universe、分批、重试、进度。
 落盘一律经由 common.data_store,自己不拼任何路径。
 
@@ -34,10 +40,10 @@ SW2_OUT_DIR = 'data/sw2'  # 128 行业 + 成分股 long-format + 并集清单,fe
 
 
 def filter_st(items):
-    """[{'Code','Name'}, ...] -> [code],剔除 ST/*ST/SST、退市 与北交所(.BJ)标的。
+    """[{'Code','Name'}, ...] -> [code],剔除 ST/*ST/SST、退市标的。
 
-    北交所历史短(2021 开业)、流动性差、交易规则不同(30% 涨跌幅、t+1 但最小
-    交易 100 股起 — 跟沪深 100 股一手取整口径一致但有差异),当前策略框架只跑沪深两市。
+    北交所(.BJ)已在更上游(build_stock_universe 收 sector members 时)排除,
+    这里不再重复过滤,避免出现「members.csv 有 .BJ、union.csv 无 .BJ」的不一致。
     条目可能是 None 或缺 Code(TQ 返回偶有脏数据),一律跳过。
     """
     out = []
@@ -45,14 +51,16 @@ def filter_st(items):
         if not it or not it.get('Code'):
             continue
         code = it['Code']
-        # 北交所股票代码后缀 .BJ,策略框架目前只覆盖沪深两市
-        if code.upper().endswith('.BJ'):
-            continue
         name = it.get('Name') or ''
         if 'ST' in name.upper() or '退' in name:
             continue
         out.append(code)
     return out
+
+
+def is_bj(code: str) -> bool:
+    """北交所股票代码后缀 .BJ(400xxx/920xxx 等),策略框架不覆盖,直接排除。"""
+    return bool(code) and code.upper().endswith('.BJ')
 
 
 def chunked(seq, size=BATCH_SIZE):
@@ -153,17 +161,29 @@ def build_stock_universe(tq, sector_codes, sector_names):
     """
     seen = set()
     sector_to_members = {}  # sector_code -> [member_code] 保留每行业归属
+    bj_excluded = 0
     for i, code in enumerate(sector_codes, 1):
         try:
             members = tq.get_stock_list_in_sector(code) or []
         except Exception as e:
             print(f"  [WARN] 行业 {code} 成分股拉取失败: {type(e).__name__}: {e}")
             continue
-        sector_to_members[code] = list(members)
+        # 上游剔除北交所(.BJ):不进入 sector_to_members / seen,避免污染 members.csv
+        # 北交所历史短(2021 开业)、流动性差、交易规则与沪深不同,策略框架不覆盖
+        kept_members = []
         for m in members:
+            if is_bj(m):
+                bj_excluded += 1
+                continue
+            kept_members.append(m)
+        sector_to_members[code] = kept_members
+        for m in kept_members:
             seen.add(m)
         if i % 20 == 0:
             print(f"  行业成分股进度 {i}/{len(sector_codes)}  累计去重 {len(seen)} 只")
+
+    if bj_excluded:
+        print(f"  [剔除北证] {bj_excluded} 条 .BJ 成员已在源头过滤(未进入 members.csv / union.csv)")
 
     # 持久化 long-format 成分股(sector_code + sector_name + member_code)
     os.makedirs(SW2_OUT_DIR, exist_ok=True)
@@ -211,34 +231,52 @@ def build_stock_universe(tq, sector_codes, sector_names):
 
 
 def fetch_batch(tq, codes, start, end):
-    """拉一批,返回 {code: DataFrame}。
+    """拉一批,返回 ({code: DataFrame}, {missing_code: reason})。
 
-    TQ 客户端未启动时会「假装成功」返回空数据 —— 这里必须当成硬错误抛出,
-    否则会用空 CSV 覆盖掉上一轮的好数据(静默的数据损坏比崩溃危险得多)。
+    三种空数据情形,必须区分:
+      A) 整批返回空(raw 是 None 或 'Close' 列宽=0)→ 客户端/环境问题 → RuntimeError,中止整轮
+      B) 整批返回空但只有 1 只代码 → 可能是该代码本身无行情(新股/暂停)
+         → 当成"个股缺数据",记 failed 继续,避免 1 只新股把整轮 5214 只卡住
+      C) 个别代码在返回里缺失 → 记 failed,其它正常落盘
+
+    (B) 判定:raw 非空 + Close 列宽=0 + batch 只有 1 只代码 → 视为个股缺数据
     """
     raw = tq.get_market_data(
         field_list=FIELDS, stock_list=list(codes),
         start_time=start, end_time=end,
         dividend_type='front', period='1d', fill_data=True,
     )
-    if raw is None or 'Close' not in raw or raw['Close'].shape[1] == 0:
-        raise RuntimeError("TQ 返回空列 —— 客户端可能未启动")
+    # raw 是 None / 不是 dict / 缺 Close 字段:
+    #   - batch 多只 → 客户端问题,中止整轮
+    #   - batch 只 1 只 → 该代码无行情(新股未上市/暂停),记 failed 继续
+    if raw is None or not isinstance(raw, dict) or 'Close' not in raw:
+        if len(codes) == 1:
+            return {}, {codes[0]: 'TQ 返回空(可能新股未上市或已暂停)'}
+        raise RuntimeError(f"TQ 返回空 —— 客户端可能未启动 (请求 {len(codes)} 只)")
+    if raw['Close'].shape[1] == 0:
+        if len(codes) == 1:
+            return {}, {codes[0]: 'TQ 返回无该代码行情数据(可能新股未上市或已暂停)'}
+        raise RuntimeError(f"TQ 返回空列 —— 客户端可能未启动 (请求 {len(codes)} 只)")
 
     out = {}
+    missing = {}
     for c in codes:
         if c not in raw['Close'].columns:
+            missing[c] = 'TQ 返回里无该代码'
             continue
         cols = {}
         for f in FIELDS:
             if f in raw and c in raw[f].columns:
                 cols[f] = pd.to_numeric(raw[f][c], errors='coerce')
         if 'Close' not in cols:
+            missing[c] = 'TQ 返回无 Close 字段'
             continue
         df = trim_tail(pd.DataFrame(cols))
         if len(df) == 0:
+            missing[c] = 'TQ 返回数据为空'
             continue
         out[c] = df
-    return out
+    return out, missing
 
 
 def _record(man, code, kind, df, name=None):
@@ -274,9 +312,10 @@ def _run_group(tq, codes, kind, start, end, man, names=None, force=False):
     batches = list(chunked(todo))
     for bi, batch in enumerate(batches, 1):
         got = None
+        missing = {}
         for attempt in (1, 2):
             try:
-                got = fetch_batch(tq, batch, start, end)
+                got, missing = fetch_batch(tq, batch, start, end)
                 break
             except RuntimeError:
                 raise                      # 空数据 = 环境问题,不重试,直接上抛中止整轮
@@ -293,10 +332,15 @@ def _run_group(tq, codes, kind, start, end, man, names=None, force=False):
             data_store.save_daily(c, df, kind)
             _record(man, c, kind, df, (names or {}).get(c))
             ok += 1
-        for c in batch:
-            if c not in got:
-                man['entries'][c] = {'kind': kind, 'status': 'failed', 'reason': 'TQ 无该代码数据'}
-                fail += 1
+        # 记入 missing 的代码 → 标 failed,不抛错
+        for c, reason in missing.items():
+            man['entries'][c] = {'kind': kind, 'status': 'failed', 'reason': reason}
+            fail += 1
+            print(f"  [{kind}] {c} 跳过:{reason}")
+        # 整批都没拿到(全 missing)、客户端正常返回但每只都没行情(常见:某批次全是新股)
+        if not got and missing and len(missing) == len(batch):
+            # 不算环境问题;已经记入 manifest 了,继续下一批
+            pass
         data_store.save_manifest(man)      # 每批存盘,崩了也不白跑
         print(f"  [{kind}] 批 {bi}/{len(batches)} 完成  累计 ok={ok} fail={fail}")
     return ok, fail

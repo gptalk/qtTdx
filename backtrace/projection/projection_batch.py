@@ -1,6 +1,21 @@
 # -*- coding: utf-8 -*-
 # projection_batch.py — 批量跑 projection 2-D 投影分析(只产 CSV,不画 HTML)
 #
+# 基线指数(优先级从高到低):
+#   1. --index <code> 显式传入 → 所有股票共用同一基线(覆盖下列自动逻辑)
+#   2. 默认 → 每只票按 申万二级行业(881xxx.SH) 投影,不是大盘指数。
+#      行业映射走 _projection_core.resolve_industry(data/sw2/members.csv);
+#      新股/非 A 股等 sw2 缺失的代码自动回退大盘(resolve_index)。
+#   3. --market-baseline → 全部回退到大盘基线(SZ→深证成指 / SH→上证综指)
+#
+# 参数:
+#   --input              path  股票列表 CSV(列:code, 可选 name)。默认 data/projection/stocks.csv
+#   --days               int   回看天数。默认 240
+#   --limit              int   最多处理多少只;0 表示全部。默认 0
+#   --market-baseline    flag  全部回退到大盘基线(覆盖默认行业基线)。
+#   --index              str   强制指定基线指数(覆盖个股自动解析);所有股票共用。
+#                              示例:--index 881427.SH(半导体)/ 000001.SH(上证综指)
+#
 # 用法:
 #   1. 准备股票列表 CSV,至少一列 `code`,可选 `name`(例:
 #        code,name
@@ -9,11 +24,18 @@
 #      )
 #      默认读取 data/projection/stocks.csv
 #   2. PYTHONIOENCODING=utf-8 python backtrace/projection/projection_batch.py
-#      [可选 --input PATH / --days N / --limit N]
+#      [可选 --input PATH / --days N / --limit N / --market-baseline / --index CODE]
+#
+# CLI 示例:
+#   python backtrace/projection/projection_batch.py                              # 默认按个股所属行业基线跑
+#   python backtrace/projection/projection_batch.py --market-baseline            # 全部用大盘基线
+#   python backtrace/projection/projection_batch.py --index 881427.SH            # 全部用申万二级体育指数
+#   python backtrace/projection/projection_batch.py --index 000001.SH --days 120 # 上证综指,回看 120 日
+#   python backtrace/projection/projection_batch.py --limit 50                   # 只跑列表前 50 只
 #
 # 输出:
 #   - 每只股票一个 CSV:data/projection/projection_{INDEX_TAG}_{STOCK_TAG}.csv
-#     (同 single-stock projection_2d.py 的输出格式,可直接对照)
+#     (INDEX_TAG 是行业代码 881xxx 或大盘代码 000001/399001,或 --index 显式指定的代码)
 #   - 批量清单:data/projection/batch_manifest.csv
 #     列: code, name, index_code, index_name, rows, date_start, date_end, csv_path, status
 #
@@ -49,6 +71,17 @@ def parse_args():
     )
     parser.add_argument('--days', type=int, default=240, help='回看天数。默认 240')
     parser.add_argument('--limit', type=int, default=0, help='最多处理多少只;0 表示全部。默认 0')
+    parser.add_argument(
+        '--market-baseline', action='store_true',
+        help='回退到大盘基线(SZ→深证成指/SH→上证综指)。默认走行业基线(申万二级)。',
+    )
+    parser.add_argument(
+        '--index', default=None,
+        help=(
+            '强制指定基线指数(覆盖个股自动解析);所有股票都用同一基线。'
+            '示例:--index 881427.SH(半导体)/ 000001.SH(上证综指)'
+        ),
+    )
     return parser.parse_args()
 
 
@@ -72,10 +105,10 @@ def load_stock_list(path):
     ]
 
 
-def process_one(stock_code, stock_name, days):
+def process_one(stock_code, stock_name, days, prefer_industry, index_code):
     """处理一只股票。返回 manifest 行 dict(失败也返回,status 字段说明原因)。"""
     try:
-        loaded = load_pair(stock_code, days, P)
+        loaded = load_pair(stock_code, days, P, prefer_industry=prefer_industry, index_code=index_code)
         data_stock = loaded['stock_df']
         data_index = loaded['index_df']
         common_idx = loaded['common_idx']
@@ -134,15 +167,24 @@ def main():
     if args.limit > 0:
         stock_list = stock_list[:args.limit]
 
+    prefer_industry = not args.market_baseline
+    if args.index:
+        baseline = f'显式指定基线 {args.index}(所有股票共用)'
+    elif prefer_industry:
+        baseline = '申万二级行业(按个股解析;新股/非 A 股自动回退大盘)'
+    else:
+        baseline = '大盘指数(深证成指/上证综指)'
+
     print(f"输入: {args.input} ({len(stock_list)} 只)")
     print(f"回看天数: {args.days}")
+    print(f"投影基线: {baseline}")
     print(f"输出目录: {CSV_OUT_DIR}\n")
 
     manifest = []
     for i, (code, name) in enumerate(stock_list, 1):
         label = f"{code} ({name})" if name else code
         print(f"[{i}/{len(stock_list)}] {label}...", end=' ', flush=True)
-        row = process_one(code, name, args.days)
+        row = process_one(code, name, args.days, prefer_industry, args.index)
         manifest.append(row)
         if row['status'] == 'ok':
             print(f"✓ {row['rows']} 行 → {row['csv_path']}")

@@ -1,13 +1,23 @@
 # -*- coding: utf-8 -*-
 """Shared math + I/O for projection_2d.py and projection_batch.py.
 
-Single source of truth for: market→index map, local-cache loading,
-2-D vector projection math, and 19-column result DataFrame assembly.
+Single source of truth for: market→index map, stock→industry map,
+local-cache loading, 2-D vector projection math, and 19-column result
+DataFrame assembly.
 
 No plotly / HTML / file writes — those are the calling scripts' jobs.
 """
+import os
+
 import numpy as np
 import pandas as pd
+
+
+# === 数据根目录(沿用 common.data_store 的 DATA_DIR) ===
+# 这里避免直接 import common.data_store 以保持 _projection_core.py 的最小依赖。
+_PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DATA_DIR = os.path.join(_PROJECT_DIR, 'data')
+SW2_MEMBERS_CSV = os.path.join(DATA_DIR, 'sw2', 'members.csv')   # member_code -> (sector_code, sector_name)
 
 
 # 市场 → 大盘指数(Code, Name)。改个股交易所后缀即自动切换大盘。
@@ -26,6 +36,70 @@ def resolve_index(stock_code):
             f"支持: {sorted(MARKET_TO_INDEX)} (对应 深证成指 / 上证综指)"
         )
     return MARKET_TO_INDEX[suffix]
+
+
+# === 个股 → 申万二级行业(平行于 MARKET_TO_INDEX) ===
+# 申万二级行业用通达信行业代码 881xxx.SH;日线在 data/sectors/ 下,直接由
+# tsfresh_pipeline.load_ohlcva(code) 走 sectors kind 拉取。
+#
+# 数据源:data/sw2/members.csv (sector_code, sector_name, member_code)
+# 一只票出现在多个行业 → 保留首个(申万二级互有重叠,首条一般是主行业)。
+def _build_industry_map(csv_path):
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(
+            f"行业成分股表缺失: {csv_path}\n"
+            f"需先准备 data/sw2/members.csv(列:sector_code, sector_name, member_code)"
+        )
+    df = pd.read_csv(csv_path, dtype={'sector_code': str, 'member_code': str})
+    seen_member = set()
+    member_map = {}
+    sector_map = {}
+    for _, row in df.iterrows():
+        sc = row['sector_code']
+        sn = row['sector_name']
+        mc = row['member_code']
+        # 行业代码 → 行业名(同名行业重复出现取首条即可)
+        if sc not in sector_map:
+            sector_map[sc] = sn
+        # 个股 → 所属行业
+        if mc not in seen_member:
+            seen_member.add(mc)
+            member_map[mc] = (sc, sn)
+    return member_map, sector_map
+
+
+INDUSTRY_MAP, SECTOR_NAME_MAP = _build_industry_map(SW2_MEMBERS_CSV)
+
+
+def resolve_industry(stock_code):
+    """由 STOCK_CODE 查 申万二级行业:(industry_code, industry_name)。
+    未在 members.csv 中(新股/退市/非沪深)→ 抛 ValueError,提示更新 sw2/members.csv。
+    """
+    if stock_code not in INDUSTRY_MAP:
+        raise ValueError(
+            f"{stock_code} 不在 {SW2_MEMBERS_CSV} 中\n"
+            f"(新股/退市/非沪深 A 股都会落空)\n"
+            f"请更新 {SW2_MEMBERS_CSV} 或回退到 resolve_index() 用大盘。"
+        )
+    return INDUSTRY_MAP[stock_code]
+
+
+def resolve_index_name(index_code):
+    """由 index_code 反查人类可读名称。
+
+    支持:
+    - 大盘指数 (000001.SH / 399001.SZ) → MARKET_TO_INDEX
+    - 申万二级行业 (881xxx.SH) → SECTOR_NAME_MAP(来 sw2/members.csv)
+    - 其它 → 返回 '自定义基线'
+    """
+    if index_code in dict(MARKET_TO_INDEX.values()) or index_code in MARKET_TO_INDEX.values():
+        # 反向查
+        for k, v in MARKET_TO_INDEX.items():
+            if v[0] == index_code:
+                return v[1]
+    if index_code in SECTOR_NAME_MAP:
+        return SECTOR_NAME_MAP[index_code]
+    return '自定义基线'
 
 
 def project_u_onto_v(u, v):
@@ -50,14 +124,41 @@ def _safe_ratio(num, den, default=np.nan):
     return res
 
 
-def load_pair(stock_code, days, pipeline):
+def load_pair(stock_code, days, pipeline, prefer_industry=False, index_code=None):
     """从本地 data/ 缓存加载 (stock_df, index_df) 共同交易日的最近 `days` 行。
 
-    Returns dict: stock_df, index_df, common_idx, index_code, index_name,
-                  index_tag, stock_tag。
-    Raises RuntimeError if either cache entry is missing.
+    Args:
+        stock_code:        个股代码,带 .SH / .SZ 后缀(如 002475.SZ)
+        days:              回看交易日数(取最近 N 行共同交易日)
+        pipeline:          tsfresh_pipeline 实例(load_ohlcva 用)
+        prefer_industry:   bool。True 时基线 = 个股所在申万二级行业(缺失回退大盘)
+        index_code:        str 或 None。显式基线代码,优先级最高。
+                           None 时按 prefer_industry / 默认大盘自动解析。
+                           示例:'881427.SH'(申万体育)/ '000001.SH'(上证综指)/ '399001.SZ'(深证成指)
+
+    基线选择优先级:
+      1. index_code(显式传入,最高优先级)→ 强制用它,可传大盘/任意行业指数/自定义代码
+      2. prefer_industry=True → 个股所在申万二级行业,缺失回退大盘
+      3. 默认 → 大盘(SZ→深证成指 / SH→上证综指)
+
+    Returns:
+        dict: stock_df, index_df, common_idx, index_code, index_name,
+              index_tag, stock_tag。
+
+    Raises:
+        RuntimeError: 本地缓存缺失(需先跑 backtrace/data_fetch/fetch_daily.py)
     """
-    index_code, index_name = resolve_index(stock_code)
+    if index_code:
+        # 显式传入基线:手动指定大盘或行业指数(如 881427.SH 半导体)。
+        # 这里不做严格校验;pipeline.load_ohlcva 会在缓存缺失时报错。
+        index_name = resolve_index_name(index_code)
+    elif prefer_industry:
+        try:
+            index_code, index_name = resolve_industry(stock_code)
+        except ValueError:
+            index_code, index_name = resolve_index(stock_code)
+    else:
+        index_code, index_name = resolve_index(stock_code)
     index_tag = index_code.split('.')[0]
     stock_tag = stock_code.split('.')[0]
 

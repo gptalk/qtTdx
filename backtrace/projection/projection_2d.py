@@ -1,15 +1,29 @@
 # -*- coding: utf-8 -*-
-# 2-D 投影验证 — legacy，将个股 (STOCK_CODE) 的成交量 / 成交额向量投影到大盘指数的方向上
-# 个股通过 --code / --name / --days 参数化;大盘指数按个股交易所自动选择(SZ→深证成指 / SH→上证综指)
+# 2-D 投影验证 — legacy，将个股 (STOCK_CODE) 的成交量 / 成交额向量投影到基线指数的方向上
+# 个股通过 --code / --name / --days 参数化;基线指数默认按个股交易所自动选大盘
+# (SZ→深证成指 / SH→上证综指),通过 --index 可显式覆盖为任意行业指数或自定义基线
 # 输出:6 个 HTML 到 backtrace/outputs/ + 1 个 CSV 到 data/projection/
 # 数学/数据载入/CSV 组装统一在 _projection_core.py;本脚本只负责 plotly 可视化与文件落地
 # 用法:已不推荐,主要用作早期可正交性可视化实验;研究请改用 vbt/tsfresh 系列
 # 批量版见 projection_batch.py
 #
+# 参数:
+#   --code      str   个股代码(带 .SH / .SZ 后缀)。默认 002475.SZ
+#   --name      str   个股中文名(仅用于图例标签)。默认 立讯精密
+#   --days      int   回看交易日数。默认 240
+#   --index     str   基线指数代码(带 .SH / .SZ 后缀)。默认 None 时按个股交易所自动选大盘。
+#                    示例:
+#                      881427.SH(申万二级行业-体育)
+#                      000001.SH(上证综指,显式指定)
+#                      399001.SZ(深证成指,显式指定)
+#                    任意能解析的 TQ 代码均可;数据需在 data/sectors/ 或 data/indices/ 缓存中。
+#
 # CLI:
-#   python backtrace/projection/projection_2d.py                          # 默认 002475.SZ / 立讯精密 / 240 日
-#   python backtrace/projection/projection_2d.py --code 688318.SH         # 科创板虹软 → 上证综指
+#   python backtrace/projection/projection_2d.py                                       # 默认 002475.SZ / 立讯精密 / 240 日 / 大盘基线
+#   python backtrace/projection/projection_2d.py --code 688318.SH                      # 科创板虹软 → 上证综指
 #   python backtrace/projection/projection_2d.py --code 600519.SH --name 贵州茅台 --days 120
+#   python backtrace/projection/projection_2d.py --code 300651.SZ --index 881427.SH     # 金陵体育 → 申万二级体育指数
+#   python backtrace/projection/projection_2d.py --code 002475.SZ --index 000001.SH    # 立讯精密 → 上证综指(显式)
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -37,12 +51,23 @@ def parse_args():
     p.add_argument('--code', default='002475.SZ', help='个股代码(带 .SH / .SZ 后缀)。默认 002475.SZ')
     p.add_argument('--name', default='立讯精密', help='个股中文名(仅用于图例标签)。默认 立讯精密')
     p.add_argument('--days', type=int, default=240, help='回看交易日数。默认 240')
+    p.add_argument(
+        '--index', default=None,
+        help=(
+            '基线指数代码(带 .SH / .SZ 后缀)。'
+            '默认按个股交易所自动选择大盘(SZ→深证成指 / SH→上证综指);'
+            '传 881xxx.SH 可改用申万二级行业指数;'
+            '传 000001.SH / 399001.SZ 显式指定大盘。'
+            '示例:--index 881427.SH(半导体)'
+        ),
+    )
     return p.parse_args()
 
 args = parse_args()
 STOCK_CODE = args.code
 STOCK_NAME = args.name
 days = args.days
+INDEX_OVERRIDE = args.index
 
 # ========================= 输出布局 =========================
 OUT_DIR = 'backtrace/outputs' # HTML 报告输出目录(CLAUDE.md 约定)
@@ -51,7 +76,7 @@ CSV_OUT = 'data/projection'   # 分析结果 CSV 输出子目录(与 INDEX/STOCK
 # ======================================================
 
 # 由配置派生:六位数字代码(去交易所后缀)用于变量标签 / CSV 列名 / 图例
-loaded = load_pair(STOCK_CODE, days, P)
+loaded = load_pair(STOCK_CODE, days, P, index_code=INDEX_OVERRIDE)
 data_stock = loaded['stock_df']
 data_index = loaded['index_df']
 common_idx = loaded['common_idx']
@@ -61,6 +86,12 @@ INDEX_TAG = loaded['index_tag']
 STOCK_TAG = loaded['stock_tag']
 INDEX_LABEL = f'{INDEX_CODE} ({INDEX_NAME})'
 STOCK_LABEL = f'{STOCK_CODE} ({STOCK_NAME})'
+
+baseline_kind = (
+    f'显式指定基线 {INDEX_CODE}' if INDEX_OVERRIDE
+    else ('大盘指数(按个股交易所)' if INDEX_CODE in ('000001.SH', '399001.SZ') else '行业指数(自动)')
+)
+print(f"基线选择: {baseline_kind}")
 
 def out(name):
     """HTML 报告:backtrace/outputs/<FILE_PREFIX><name>"""
