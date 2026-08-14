@@ -61,9 +61,15 @@ def parse_args():
             '示例:--index 881427.SH(半导体)'
         ),
     )
+    p.add_argument(
+        '--two-day-vec', action='store_true',
+        help='将向量扩展为 4-D (今日 + 前一日 Vol/Amt);首日丢弃。默认 2-D。',
+    )
     return p.parse_args()
 
 args = parse_args()
+TWO_DAY_VEC = args.two_day_vec
+LAG = 1 if TWO_DAY_VEC else 0
 STOCK_CODE = args.code
 STOCK_NAME = args.name
 days = args.days
@@ -71,12 +77,12 @@ INDEX_OVERRIDE = args.index
 
 # ========================= 输出布局 =========================
 OUT_DIR = 'backtrace/outputs' # HTML 报告输出目录(CLAUDE.md 约定)
-FILE_PREFIX = 'proj2d_'       # HTML 文件统一前缀,便于在 outputs/ 目录下人工查找
+FILE_PREFIX = 'proj2d_4d_' if TWO_DAY_VEC else 'proj2d_'  # HTML 文件统一前缀,4-D 模式切前缀
 CSV_OUT = 'data/projection'   # 分析结果 CSV 输出子目录(与 INDEX/STOCK 标签组合文件名)
 # ======================================================
 
 # 由配置派生:六位数字代码(去交易所后缀)用于变量标签 / CSV 列名 / 图例
-loaded = load_pair(STOCK_CODE, days, P, index_code=INDEX_OVERRIDE)
+loaded = load_pair(STOCK_CODE, days, P, index_code=INDEX_OVERRIDE, lag=LAG)
 data_stock = loaded['stock_df']
 data_index = loaded['index_df']
 common_idx = loaded['common_idx']
@@ -92,6 +98,7 @@ baseline_kind = (
     else ('大盘指数(按个股交易所)' if INDEX_CODE in ('000001.SH', '399001.SZ') else '行业指数(自动)')
 )
 print(f"基线选择: {baseline_kind}")
+print(f"向量维度: {'4-D (今日+前一日 Vol/Amt)' if TWO_DAY_VEC else '2-D (今日 Vol/Amt)'}")
 
 def out(name):
     """HTML 报告:backtrace/outputs/<FILE_PREFIX><name>"""
@@ -104,7 +111,7 @@ def out_csv(name):
 print(f"从本地 data/ 缓存读取最近{days}日日线... 指数={INDEX_LABEL} 个股={STOCK_LABEL}")
 
 vec_index, vec_stock, vec_index_norm, vec_stock_norm, norm_params = compute_vectors(
-    data_stock, data_index, INDEX_TAG, STOCK_TAG
+    data_stock, data_index, INDEX_TAG, STOCK_TAG, lag=LAG,
 )
 
 print(f"共同交易日数量: {len(common_idx)}")
@@ -315,7 +322,7 @@ result_df = build_result_df(
     common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_norm,
     projections, residuals, dot_products_after,
     proj_coefficients, proj_magnitudes, proj_prices, resi_prices,
-    norm_params, INDEX_TAG, STOCK_TAG,
+    norm_params, INDEX_TAG, STOCK_TAG, lag=LAG,
 )
 csv_path = out_csv(f'projection_{INDEX_TAG}_{STOCK_TAG}.csv')
 os.makedirs(os.path.dirname(csv_path), exist_ok=True)

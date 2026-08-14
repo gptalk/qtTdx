@@ -89,3 +89,30 @@ def test_batch_process_one_lag1_writes_27_col_csv(tmp_path, monkeypatch):
     assert 'Resi_Price' in csv_df.columns
     assert 'Vol_000001_prev_raw' in csv_df.columns
     assert 'Vol_000001_prev_norm' in csv_df.columns
+
+
+def test_single_2d_does_not_set_two_day_vec_by_default(monkeypatch):
+    """parse_args 默认解析后 two_day_vec=False。"""
+    import importlib
+    # 必须在 import projection_2d 前 patch argv,否则 import 时 parse_args 就已 SystemExit
+    monkeypatch.setattr(sys, 'argv', ['projection_2d.py'])
+    import projection_2d as p2d_mod
+    importlib.reload(p2d_mod)  # re-run parse_args with patched argv
+    assert not p2d_mod.TWO_DAY_VEC
+    assert p2d_mod.FILE_PREFIX == 'proj2d_'
+    assert p2d_mod.LAG == 0
+
+
+def test_single_two_day_vec_sets_4d_prefix(tmp_path, monkeypatch):
+    """parse_args 收到 --two-day-vec 后 FILE_PREFIX='proj2d_4d_' 且 LAG=1。"""
+    monkeypatch.setattr(sys, 'argv', [
+        'projection_2d.py', '--code', '002475.SZ',
+        '--name', '立讯精密', '--days', '5', '--index', '000001.SH',
+        '--two-day-vec',
+    ])
+    import importlib
+    import projection_2d as p2d_mod
+    importlib.reload(p2d_mod)
+    assert p2d_mod.TWO_DAY_VEC is True
+    assert p2d_mod.FILE_PREFIX == 'proj2d_4d_'
+    assert p2d_mod.LAG == 1
