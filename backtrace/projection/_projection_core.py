@@ -124,7 +124,7 @@ def _safe_ratio(num, den, default=np.nan):
     return res
 
 
-def load_pair(stock_code, days, pipeline, prefer_industry=False, index_code=None):
+def load_pair(stock_code, days, pipeline, prefer_industry=False, index_code=None, lag: int = 0):
     """从本地 data/ 缓存加载 (stock_df, index_df) 共同交易日的最近 `days` 行。
 
     Args:
@@ -135,6 +135,9 @@ def load_pair(stock_code, days, pipeline, prefer_industry=False, index_code=None
         index_code:        str 或 None。显式基线代码,优先级最高。
                            None 时按 prefer_industry / 默认大盘自动解析。
                            示例:'881427.SH'(申万体育)/ '000001.SH'(上证综指)/ '399001.SZ'(深证成指)
+        lag: 0 = 当前(Volume, Amount)(默认,行为与改动前一致);
+             >=1 时还附带 Volume.shift(1) / Amount.shift(1),首行 prev=NaN 被 dropna。
+             本次仅实现 lag=0 / lag=1。
 
     基线选择优先级:
       1. index_code(显式传入,最高优先级)→ 强制用它,可传大盘/任意行业指数/自定义代码
@@ -147,6 +150,7 @@ def load_pair(stock_code, days, pipeline, prefer_industry=False, index_code=None
 
     Raises:
         RuntimeError: 本地缓存缺失(需先跑 backtrace/data_fetch/fetch_daily.py)
+        ValueError: lag >= 1 但 stock/index 数据 < 2 行。
     """
     if index_code:
         # 显式传入基线:手动指定大盘或行业指数(如 881427.SH 半导体)。
@@ -175,8 +179,27 @@ def load_pair(stock_code, days, pipeline, prefer_industry=False, index_code=None
             f"  PYTHONIOENCODING=utf-8 python backtrace/data_fetch/fetch_daily.py"
         )
 
-    data_index = data_index_full[['Volume', 'Amount', 'Close']].tail(days).dropna()
-    data_stock = data_stock_full[['Volume', 'Amount', 'Close']].tail(days).dropna()
+    # lag >= 1 时附加 prev 列;前置 < 2 行检查(避免 shift 全 NaN 后静默丢所有行)
+    if lag >= 1:
+        if len(data_index_full) < 2 or len(data_stock_full) < 2:
+            raise ValueError(
+                f"--two-day-vec 需要 ≥2 行数据,"
+                f"实际 {index_code}={len(data_index_full)} 行, {stock_code}={len(data_stock_full)} 行"
+            )
+        data_index_full = data_index_full.assign(
+            Volume_prev=data_index_full['Volume'].shift(1),
+            Amount_prev=data_index_full['Amount'].shift(1),
+        )
+        data_stock_full = data_stock_full.assign(
+            Volume_prev=data_stock_full['Volume'].shift(1),
+            Amount_prev=data_stock_full['Amount'].shift(1),
+        )
+
+    cols = ['Volume', 'Amount', 'Close']
+    if lag >= 1:
+        cols = ['Volume', 'Amount', 'Volume_prev', 'Amount_prev', 'Close']
+    data_index = data_index_full[cols].tail(days).dropna()
+    data_stock = data_stock_full[cols].tail(days).dropna()
     common_idx = data_index.index.intersection(data_stock.index)
     return {
         'stock_df': data_stock.loc[common_idx],

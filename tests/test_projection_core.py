@@ -12,7 +12,7 @@ PROJECTION = os.path.join(BACKTRACE, 'projection')
 if BACKTRACE not in sys.path:
     sys.path.insert(0, BACKTRACE)
 
-from projection._projection_core import compute_vectors, build_result_df
+from projection._projection_core import compute_vectors, build_result_df, load_pair
 
 
 def _make_pair(n=10):
@@ -163,3 +163,55 @@ def test_build_result_df_lag1_resi_price_present():
         "x", '000001', '002475', lag=1,
     )
     assert 'Resi_Price' in df.columns
+
+
+class _FakePipeline:
+    """最小化的 tsfresh_pipeline 替身:返回内存中的 DataFrame,不读 data/。"""
+
+    def __init__(self, df_by_code):
+        self._df = df_by_code
+
+    def load_ohlcva(self, code, use_tq=False, verbose=False):
+        return self._df.get(code)
+
+
+def _make_ohlcv(n, base_vol, base_amt):
+    idx = pd.date_range('2026-07-01', periods=n, freq='D')
+    return pd.DataFrame({
+        'Volume': np.linspace(base_vol, base_vol * 1.5, n),
+        'Amount': np.linspace(base_amt, base_amt * 1.5, n),
+        'Close':  np.linspace(100, 110, n),
+    }, index=idx)
+
+
+def test_load_pair_lag0_does_not_add_prev_columns():
+    """lag=0: 返回的 stock_df / index_df 不含 Volume_prev。"""
+    df = _make_ohlcv(10, 1e6, 1e10)
+    pipe = _FakePipeline({'000001.SH': df, '002475.SZ': df})
+    out = load_pair('002475.SZ', days=10, pipeline=pipe, index_code='000001.SH')
+    assert 'Volume_prev' not in out['stock_df'].columns
+    assert 'Volume_prev' not in out['index_df'].columns
+    assert len(out['common_idx']) == 10
+
+
+def test_load_pair_lag1_adds_prev_columns_and_drops_first_row():
+    """lag=1: 返回的 df 含 prev 列,common_idx 比原始少 1 行(首行 prev=NaN 被 dropna)。"""
+    df = _make_ohlcv(10, 1e6, 1e10)
+    pipe = _FakePipeline({'000001.SH': df, '002475.SZ': df})
+    out = load_pair('002475.SZ', days=10, pipeline=pipe, index_code='000001.SH', lag=1)
+    assert 'Volume_prev' in out['stock_df'].columns
+    assert 'Amount_prev' in out['stock_df'].columns
+    assert 'Volume_prev' in out['index_df'].columns
+    assert 'Amount_prev' in out['index_df'].columns
+    assert len(out['common_idx']) == 9, "首行 prev=NaN 应被 dropna 丢弃"
+    # dropna 后第 0 行(now index 2026-07-02)的 Volume_prev = 原始第 0 行 Volume(2026-07-01)
+    assert out['index_df']['Volume_prev'].iloc[0] == df['Volume'].iloc[0]
+
+
+def test_load_pair_lag1_raises_when_data_too_short():
+    """数据 < 2 行时 lag=1 必须 ValueError。"""
+    df = _make_ohlcv(1, 1e6, 1e10)
+    pipe = _FakePipeline({'000001.SH': df, '002475.SZ': df})
+    with pytest.raises(ValueError, match="≥2"):
+        load_pair('002475.SZ', days=10, pipeline=pipe, index_code='000001.SH', lag=1)
+
