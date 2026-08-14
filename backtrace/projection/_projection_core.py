@@ -198,32 +198,41 @@ def _safe_minmax(values, v_min, v_range):
     return (values - v_min) / v_range
 
 
-def compute_vectors(stock_df, index_df, index_tag, stock_tag):
-    """Min-Max 归一化 Vol/Amt。返回 (vec_index, vec_stock, vec_index_norm, vec_stock_norm, norm_params_str)。"""
-    vec_index = index_df[['Volume', 'Amount']].values
-    vec_stock = stock_df[['Volume', 'Amount']].values
+def compute_vectors(stock_df, index_df, index_tag, stock_tag, lag: int = 0):
+    """Min-Max 归一化 Vol/Amt(及可选的 Vol_prev/Amt_prev)。
 
-    vol_min_ix, vol_max_ix = vec_index[:, 0].min(), vec_index[:, 0].max()
-    amt_min_ix, amt_max_ix = vec_index[:, 1].min(), vec_index[:, 1].max()
-    vol_min_st, vol_max_st = vec_stock[:, 0].min(), vec_stock[:, 0].max()
-    amt_min_st, amt_max_st = vec_stock[:, 1].min(), vec_stock[:, 1].max()
+    Args:
+        lag: 0 = 当前 (Volume, Amount) 2-D(默认,与改动前一致);
+             >=1 时还取 Volume.shift(1) / Amount.shift(1), 输出向量维度 = 2 * (lag + 1)。
+             本次仅实现 lag=0 / lag=1。
+    """
+    cols = ['Volume', 'Amount']
+    if lag >= 1:
+        cols += ['Volume_prev', 'Amount_prev']
+    # 防呆: DataFrame 缺列时直接报错(比 KeyError 友好)
+    for c in cols:
+        if c not in stock_df.columns:
+            raise KeyError(f"compute_vectors(lag={lag}) 需要 stock_df 含列 {c!r}")
+        if c not in index_df.columns:
+            raise KeyError(f"compute_vectors(lag={lag}) 需要 index_df 含列 {c!r}")
 
-    vec_index_norm = np.column_stack([
-        _safe_minmax(vec_index[:, 0], vol_min_ix, vol_max_ix - vol_min_ix),
-        _safe_minmax(vec_index[:, 1], amt_min_ix, amt_max_ix - amt_min_ix),
-    ])
-    vec_stock_norm = np.column_stack([
-        _safe_minmax(vec_stock[:, 0], vol_min_st, vol_max_st - vol_min_st),
-        _safe_minmax(vec_stock[:, 1], amt_min_st, amt_max_st - amt_min_st),
-    ])
+    vec_index = index_df[cols].values
+    vec_stock = stock_df[cols].values
 
-    norm_params = (
-        f"vol_{index_tag}:[{vol_min_ix:.2e},{vol_max_ix:.2e}] "
-        f"amt_{index_tag}:[{amt_min_ix:.2e},{amt_max_ix:.2e}] "
-        f"vol_{stock_tag}:[{vol_min_st:.2e},{vol_max_st:.2e}] "
-        f"amt_{stock_tag}:[{amt_min_st:.2e},{amt_max_st:.2e}]"
-    )
-    return vec_index, vec_stock, vec_index_norm, vec_stock_norm, norm_params
+    # 每个维度独立 Min-Max(向量化)
+    norms_ix = np.zeros_like(vec_index)
+    norms_st = np.zeros_like(vec_stock)
+    params_parts = []
+    for j, c in enumerate(cols):
+        v_min_ix, v_max_ix = vec_index[:, j].min(), vec_index[:, j].max()
+        v_min_st, v_max_st = vec_stock[:, j].min(), vec_stock[:, j].max()
+        norms_ix[:, j] = _safe_minmax(vec_index[:, j], v_min_ix, v_max_ix - v_min_ix)
+        norms_st[:, j] = _safe_minmax(vec_stock[:, j], v_min_st, v_max_st - v_min_st)
+        params_parts.append(f"{c}_{index_tag}:[{v_min_ix:.2e},{v_max_ix:.2e}]")
+        params_parts.append(f"{c}_{stock_tag}:[{v_min_st:.2e},{v_max_st:.2e}]")
+    norm_params = " ".join(params_parts)
+
+    return vec_index, vec_stock, norms_ix, norms_st, norm_params
 
 
 def compute_projections(vec_stock_norm, vec_index_norm):
@@ -264,8 +273,29 @@ def compute_projections(vec_stock_norm, vec_index_norm):
 
 def build_result_df(common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_norm,
                     projections, residuals, dot_after, proj_coeffs, proj_mags,
-                    proj_prices, resi_prices, norm_params, index_tag, stock_tag):
-    """组装 19 列结果 DataFrame(raw + norm + 投影 + 残差 + 4 个汇总 + 正交验证 + 归一化参数)。"""
+                    proj_prices, resi_prices, norm_params, index_tag, stock_tag, lag: int = 0):
+    """组装 19/27 列结果 DataFrame(raw + norm + 投影 + 残差 + 4 个汇总 + 正交验证 + 归一化参数)。"""
+    prev_cols_raw = {}
+    prev_cols_norm = {}
+    if lag >= 1:
+        # 假设 vec_* 已是 4 列 (Vol_t, Amt_t, Vol_prev, Amt_prev),取 [2:4]
+        assert vec_index.shape[1] >= 4 and vec_stock.shape[1] >= 4, (
+            f"build_result_df(lag={lag}) 需要 vec_index/vec_stock 有 4 列,"
+            f" 实际 shape={vec_index.shape}, {vec_stock.shape}"
+        )
+        prev_cols_raw = {
+            f'Vol_{index_tag}_prev_raw': vec_index[:, 2],
+            f'Amt_{index_tag}_prev_raw': vec_index[:, 3],
+            f'Vol_{stock_tag}_prev_raw': vec_stock[:, 2],
+            f'Amt_{stock_tag}_prev_raw': vec_stock[:, 3],
+        }
+        prev_cols_norm = {
+            f'Vol_{index_tag}_prev_norm': vec_index_norm[:, 2],
+            f'Amt_{index_tag}_prev_norm': vec_index_norm[:, 3],
+            f'Vol_{stock_tag}_prev_norm': vec_stock_norm[:, 2],
+            f'Amt_{stock_tag}_prev_norm': vec_stock_norm[:, 3],
+        }
+
     return pd.DataFrame({
         'Date': common_idx,
         f'Vol_{index_tag}_raw': vec_index[:, 0],
@@ -276,6 +306,8 @@ def build_result_df(common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_
         f'Amt_{index_tag}_norm': vec_index_norm[:, 1],
         f'Vol_{stock_tag}_norm': vec_stock_norm[:, 0],
         f'Amt_{stock_tag}_norm': vec_stock_norm[:, 1],
+        **prev_cols_raw,    # lag=0 时为空 dict,不引入新列
+        **prev_cols_norm,
         'Proj_Vol': projections[:, 0],
         'Proj_Amt': projections[:, 1],
         'Residual_Vol': residuals[:, 0],
