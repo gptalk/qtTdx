@@ -229,6 +229,7 @@ def compute_vectors(stock_df, index_df, index_tag, stock_tag, lag: int = 0):
              >=1 时还取 Volume.shift(1) / Amount.shift(1), 输出向量维度 = 2 * (lag + 1)。
              本次仅实现 lag=0 / lag=1。
     """
+    assert lag <= 1, f"compute_vectors: lag={lag} not implemented (only lag=0 or lag=1)"
     cols = ['Volume', 'Amount']
     if lag >= 1:
         cols += ['Volume_prev', 'Amount_prev']

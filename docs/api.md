@@ -359,7 +359,7 @@ vectorbt 多因子选股回测;`vectorbt` 可选(无 vbt 时给等权组合近�
 | [`kline_chart.py`](../backtrace/legacy/kline_chart.py) | K 线 plotly HTML(单只票);早期可视化,改用 `vbt_simple_backtest` |
 | [`ma_cross_signals.py`](../backtrace/legacy/ma_cross_signals.py) | MA 交叉 → TQ 推送(信号推送基础模板);改用 `tsfresh_top1_industry` |
 | [`price_rise_monitor.py`](../backtrace/legacy/price_rise_monitor.py) | 实时涨幅 > 5% 推送预警(订阅板块);唯一带 `__main__` 守卫的 legacy |
-| [`projection_2d.py`](../backtrace/legacy/projection_2d.py) | 2-D 投影 / 正交性可视化;7 个 HTML 落 backtrace/ 根 |
+| [`projection_2d.py`](../backtrace/projection/projection_2d.py) | 2-D 投影 / 正交性可视化;支持 `--two-day-vec` 开启 lag=1 的 4-D 模式(Volume/Amount 各 +prev);7 个 HTML 落 backtrace/ 根 |
 | [`stock_picker.py`](../backtrace/legacy/stock_picker.py) | 连续上涨 N 日选股 → 推 TQ 自定义板块 |
 
 ---
