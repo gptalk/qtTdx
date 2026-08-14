@@ -82,6 +82,13 @@ def parse_args():
             '示例:--index 881427.SH(半导体)/ 000001.SH(上证综指)'
         ),
     )
+    parser.add_argument(
+        '--two-day-vec', action='store_true',
+        help=(
+            '将向量扩展为 (Vol_today, Amt_today, Vol_yesterday, Amt_yesterday) 4-D;'
+            '首日丢弃。默认 2-D。'
+        ),
+    )
     return parser.parse_args()
 
 
@@ -105,10 +112,11 @@ def load_stock_list(path):
     ]
 
 
-def process_one(stock_code, stock_name, days, prefer_industry, index_code):
+def process_one(stock_code, stock_name, days, prefer_industry, index_code, lag: int = 0):
     """处理一只股票。返回 manifest 行 dict(失败也返回,status 字段说明原因)。"""
     try:
-        loaded = load_pair(stock_code, days, P, prefer_industry=prefer_industry, index_code=index_code)
+        loaded = load_pair(stock_code, days, P, prefer_industry=prefer_industry,
+                           index_code=index_code, lag=lag)
         data_stock = loaded['stock_df']
         data_index = loaded['index_df']
         common_idx = loaded['common_idx']
@@ -118,7 +126,7 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code):
         stock_tag = loaded['stock_tag']
 
         vec_index, vec_stock, vec_index_norm, vec_stock_norm, norm_params = compute_vectors(
-            data_stock, data_index, index_tag, stock_tag,
+            data_stock, data_index, index_tag, stock_tag, lag=lag,
         )
         proj = compute_projections(vec_stock_norm, vec_index_norm)
 
@@ -126,7 +134,7 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code):
             common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_norm,
             proj['projections'], proj['residuals'], proj['dot_after'],
             proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'], proj['resi_prices'],
-            norm_params, index_tag, stock_tag,
+            norm_params, index_tag, stock_tag, lag=lag,
         )
 
         csv_name = f'projection_{index_tag}_{stock_tag}.csv'
@@ -178,13 +186,15 @@ def main():
     print(f"输入: {args.input} ({len(stock_list)} 只)")
     print(f"回看天数: {args.days}")
     print(f"投影基线: {baseline}")
+    print(f"向量维度: {'4-D (今日+前一日 Vol/Amt, --two-day-vec)' if args.two_day_vec else '2-D (今日 Vol/Amt)'}")
     print(f"输出目录: {CSV_OUT_DIR}\n")
 
+    lag = 1 if args.two_day_vec else 0
     manifest = []
     for i, (code, name) in enumerate(stock_list, 1):
         label = f"{code} ({name})" if name else code
         print(f"[{i}/{len(stock_list)}] {label}...", end=' ', flush=True)
-        row = process_one(code, name, args.days, prefer_industry, args.index)
+        row = process_one(code, name, args.days, prefer_industry, args.index, lag)
         manifest.append(row)
         if row['status'] == 'ok':
             print(f"✓ {row['rows']} 行 → {row['csv_path']}")
