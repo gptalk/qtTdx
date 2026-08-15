@@ -193,7 +193,7 @@ fig1b.update_layout(
     scene=dict(
         xaxis_title='Volume',
         yaxis_title='Amount',
-        zaxis=dict(title='日期', type='date'),
+        zaxis=dict(title='日期', type='date', tickformat='%Y-%m-%d'),
         aspectmode='manual',
         aspectratio=dict(x=1, y=1, z=2),  # 日期轴拉长,便于看趋势
     ),
