@@ -193,7 +193,12 @@ fig1b.update_layout(
     scene=dict(
         xaxis_title='Volume',
         yaxis_title='Amount',
-        zaxis=dict(title='日期', type='date', tickformat='%Y-%m-%d'),
+        zaxis=dict(
+            title='日期',
+            type='date',
+            tickformat='%Y-%m-%d',
+            dtick='M1',  # 1 个月固定间隔,避免 plotly 自动切成 06:00 / 12:00 等非日期边界
+        ),
         aspectmode='manual',
         aspectratio=dict(x=1, y=1, z=2),  # 日期轴拉长,便于看趋势
     ),
