@@ -67,6 +67,7 @@ from _projection_core import (
     build_result_df,
     compute_movement_projection,
     build_movement_result_df,
+    build_movement_intermediate_df,
 )
 
 # ========================= CLI 参数 =========================
@@ -178,6 +179,7 @@ resi_prices = proj['resi_prices']
 
 # 运动向量投影(可选,与状态投影并存)
 movement_data = None
+movement_intermediate = None
 if args.movement:
     mv = compute_movement_projection(data_stock, data_index)
     movement_data = build_movement_result_df(common_idx[1:], mv, INDEX_TAG, STOCK_TAG)
@@ -186,6 +188,17 @@ if args.movement:
     os.makedirs(CSV_OUT, exist_ok=True)
     movement_data.to_csv(mv_csv, index=False, encoding='utf-8')
     print(f"运动投影: 共 {len(movement_data)} 日 (首行丢弃),CSV → {mv_csv}")
+
+    # 逐日复核:22 列中间值(原始 Vol/Ama、Δ、β 分子分母、proj/resi、点积、|x|>3 异常)
+    # 落到 data/projection/intermediate/,供人工对照公式核对每一步数值
+    movement_intermediate = build_movement_intermediate_df(
+        common_idx[1:], mv, data_stock, data_index, INDEX_TAG, STOCK_TAG,
+    )
+    mv_inter_dir = os.path.join(CSV_OUT, 'intermediate')
+    os.makedirs(mv_inter_dir, exist_ok=True)
+    mv_inter_csv = os.path.join(mv_inter_dir, f'movement_intermediate_{INDEX_TAG}_{STOCK_TAG}.csv')
+    movement_intermediate.to_csv(mv_inter_csv, index=False, encoding='utf-8')
+    print(f"运动投影(逐日复核): 22 列中间值 → {mv_inter_csv}")
 
 # ============== 图形显示 ==============
 
@@ -612,6 +625,9 @@ if args.movement:
     print(f"  M4. {mv_out('movement_orthogonality.html')}      - 运动正交性验证")
     print(f"  M5. {mv_out('movement_proj_prices.html')}        - 运动 proj_prices 时序(叠加Close)")
     print(f"  M6. {mv_out('movement_resi_prices.html')}        - 运动 resi_prices 时序(叠加Close)")
+    print("\n运动向量投影复核 CSV:")
+    print(f"      data/projection/intermediate/movement_intermediate_{INDEX_TAG}_{STOCK_TAG}.csv")
+    print(f"        22 列:Date/原始 Vol·Ama/Δ/β 分子分母/proj·resi/点积/三个 price")
 
 print("\n图形已生成:")
 print(f"  1. {out('vector_scatter.html')}      - Volume-Amount向量散点图")

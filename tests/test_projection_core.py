@@ -18,6 +18,7 @@ from projection._projection_core import (
     load_pair,
     compute_movement_projection,
     build_movement_result_df,
+    build_movement_intermediate_df,
 )
 
 
@@ -390,5 +391,189 @@ def test_movement_resi_price_caps_outliers():
     # resi_prices 应被 cap 到已算值的最大绝对值,所有值都不超 3
     assert np.all(np.abs(mv['resi_prices']) <= 3.0 + 1e-9), (
         f"resi_prices 应被 cap 到 ±3,实际 {mv['resi_prices']}"
+    )
+
+
+# ========================== build_movement_intermediate_df (复核 CSV) ==========================
+
+def test_build_movement_intermediate_df_columns_and_shape():
+    """复核 DataFrame:22 列,行数 = common_idx[1:] 长度。
+
+    设计目的:`projection_2d.py --movement` 顺手落一份 CSV 到 data/projection/intermediate/,
+    每行覆盖原始 Vol/Ama、Δ、β 分子分母、proj/resi、点积、|x|>3 异常 — 人工逐日核对公式。
+    """
+    idx = pd.date_range('2026-07-01', periods=5, freq='D')
+    stock_df = pd.DataFrame({
+        'Volume': [1e6, 1.1e6, 1.2e6, 1.3e6, 1.4e6],
+        'Amount': [1e7, 1.15e7, 1.3e7, 1.45e7, 1.6e7],
+    }, index=idx)
+    index_df = pd.DataFrame({
+        'Volume': [1e8, 1.05e8, 1.1e8, 1.15e8, 1.2e8],
+        'Amount': [1e9, 1.08e9, 1.16e9, 1.24e9, 1.32e9],
+    }, index=idx)
+    mv = compute_movement_projection(stock_df, index_df)
+
+    df = build_movement_intermediate_df(idx[1:], mv, stock_df, index_df, 'IX_TEST', 'ST_TEST')
+    assert len(df) == 4
+
+    expected_cols = [
+        'Date',
+        'Vol_IX_TEST', 'Amt_IX_TEST', 'Vol_ST_TEST', 'Amt_ST_TEST',
+        'ΔV_IX_TEST', 'ΔA_IX_TEST', 'ΔV_ST_TEST', 'ΔA_ST_TEST',
+        'V_dot_V', 'U_dot_V', 'Proj_Coeff',
+        'Proj_ΔV', 'Proj_ΔA', 'Resi_ΔV', 'Resi_ΔA',
+        'Resi_dot_V', 'Proj_Magnitude', 'Resi_Magnitude',
+        'Proj_Price', 'Resi_Price_Raw', 'Resi_Price',
+    ]
+    assert list(df.columns) == expected_cols
+    assert len(expected_cols) == 22
+
+
+def test_build_movement_intermediate_df_recomputes_every_step():
+    """复核 CSV 中每一步数值可由前几列独立算回,人工核对友好。
+
+    校验链:
+      ΔV/ΔA = 当前 Vol/Ama - 上一行 Vol/Ama
+      V_dot_V = ΔV_idx² + ΔA_idx²
+      U_dot_V = ΔV_stk·ΔV_idx + ΔA_stk·ΔA_idx
+      Proj_Coeff = U_dot_V / V_dot_V
+      Proj_ΔV/ΔA = Proj_Coeff × ΔV_idx/ΔA_idx
+      Resi_ΔV/ΔA = ΔV/ΔA_stk - Proj_ΔV/ΔA
+      Resi_dot_V = Resi_ΔV·ΔV_idx + Resi_ΔA·ΔA_idx (理想 = 0,数值上是浮点 roundoff 量级)
+      Proj_Price = ΔA_idx / ΔV_idx(β 抵消)
+      Resi_Price_Raw = Resi_ΔA / Resi_ΔV
+
+    用小整数数据(与 test_movement_residual_orthogonal_to_index 同款)避免
+    float64 roundoff 让 Resi_dot_V 看上去不严格为 0。
+    """
+    idx = pd.date_range('2026-07-01', periods=5, freq='D')
+    stock_df = pd.DataFrame({
+        'Volume': [100, 140, 180, 220, 260],      # ΔV = [40, 40, 40, 40]
+        'Amount': [200, 250, 310, 360, 410],      # ΔA = [50, 60, 50, 50]
+    }, index=idx)
+    index_df = pd.DataFrame({
+        'Volume': [1000, 1050, 1100, 1150, 1200],   # ΔV = [50, 50, 50, 50]
+        'Amount': [2000, 2100, 2200, 2300, 2400],   # ΔA = [100, 100, 100, 100]
+    }, index=idx)
+    mv = compute_movement_projection(stock_df, index_df)
+    df = build_movement_intermediate_df(idx[1:], mv, stock_df, index_df, 'IX_TEST', 'ST_TEST')
+
+    # ΔV/ΔA = diff
+    expected_dv_idx = np.diff(index_df['Volume'].to_numpy())
+    expected_da_idx = np.diff(index_df['Amount'].to_numpy())
+    np.testing.assert_allclose(df['ΔV_IX_TEST'].to_numpy(), expected_dv_idx)
+    np.testing.assert_allclose(df['ΔA_IX_TEST'].to_numpy(), expected_da_idx)
+
+    # V_dot_V / U_dot_V
+    np.testing.assert_allclose(
+        df['V_dot_V'].to_numpy(),
+        expected_dv_idx**2 + expected_da_idx**2,
+    )
+    dv_stk = np.diff(stock_df['Volume'].to_numpy())
+    da_stk = np.diff(stock_df['Amount'].to_numpy())
+    np.testing.assert_allclose(
+        df['U_dot_V'].to_numpy(),
+        dv_stk * expected_dv_idx + da_stk * expected_da_idx,
+    )
+
+    # Proj_Coeff = U/V(分母非零时)
+    expected_beta = df['U_dot_V'].to_numpy() / df['V_dot_V'].to_numpy()
+    np.testing.assert_allclose(df['Proj_Coeff'].to_numpy(), expected_beta, rtol=1e-9)
+
+    # Proj_ΔV/ΔA = β × ΔV/ΔA_idx
+    np.testing.assert_allclose(
+        df['Proj_ΔV'].to_numpy(),
+        df['Proj_Coeff'].to_numpy() * expected_dv_idx,
+        rtol=1e-9,
+    )
+
+    # Resi_ΔV/ΔA = ΔV/ΔA_stk - Proj_ΔV/ΔA
+    np.testing.assert_allclose(
+        df['Resi_ΔV'].to_numpy(),
+        dv_stk - df['Proj_ΔV'].to_numpy(),
+        rtol=1e-9,
+    )
+
+    # Resi_dot_V(数值上 = resi · v,公式上为 0;小整数数据下 roundoff 可忽略)
+    resi_dv = df['Resi_ΔV'].to_numpy()
+    resi_da = df['Resi_ΔA'].to_numpy()
+    expected_dot = resi_dv * expected_dv_idx + resi_da * expected_da_idx
+    np.testing.assert_allclose(df['Resi_dot_V'].to_numpy(), expected_dot, rtol=1e-9, atol=1e-12)
+    np.testing.assert_allclose(df['Resi_dot_V'].to_numpy(), 0.0, atol=1e-9)
+
+    # Proj_Price = ΔA_idx / ΔV_idx(β 抵消)
+    np.testing.assert_allclose(
+        df['Proj_Price'].to_numpy(),
+        expected_da_idx / expected_dv_idx,
+        rtol=1e-9,
+    )
+
+    # Resi_Price_Raw = Resi_ΔA / Resi_ΔV(可能 Inf/NaN)
+    raw = df['Resi_Price_Raw'].to_numpy()
+    expected_raw = resi_da / resi_dv
+    fin_mask = np.isfinite(raw) & np.isfinite(expected_raw)
+    np.testing.assert_allclose(raw[fin_mask], expected_raw[fin_mask], rtol=1e-9)
+    # Resi_Price(限幅后)应 ≤ 3
+    assert np.all(np.abs(df['Resi_Price'].to_numpy()) <= 3.0 + 1e-9)
+
+
+def test_build_movement_intermediate_df_resi_price_raw_shows_div_by_zero_as_nan():
+    """residual_ΔV = 0 时,Resi_Price_Raw 应当是 NaN(不是被替换为 0)。
+
+    设计目的:复核 CSV 里 0/0 用 NaN 暴露,人工一眼能看出"这天残差为 0 向量,price 无意义"。
+    Resi_Price 走 _movement_safe_ratios 时会被替换为 0(防 /0),两者并列保留。
+
+    触发条件:stock 运动完全沿 index 方向 → u == proj → residual == (0, 0)。
+    与 test_movement_basic_projection_along_index_direction 同算例(ΔV/ΔA = 30/60 沿 50/100)。
+    """
+    idx = pd.date_range('2026-07-01', periods=3, freq='D')
+    stock_df = pd.DataFrame({
+        'Volume': [100.0, 130.0, 150.0],
+        'Amount': [200.0, 260.0, 300.0],
+    }, index=idx)
+    index_df = pd.DataFrame({
+        'Volume': [1000.0, 1050.0, 1100.0],
+        'Amount': [2000.0, 2100.0, 2200.0],
+    }, index=idx)
+    mv = compute_movement_projection(stock_df, index_df)
+    df = build_movement_intermediate_df(idx[1:], mv, stock_df, index_df, 'IX', 'ST')
+
+    # 残差向量 = 0 → residual_ΔV = 0 → Resi_Price_Raw 应 = NaN(0/0)
+    assert np.all(np.isnan(df['Resi_Price_Raw'].to_numpy())), (
+        f"residual = 0,Resi_Price_Raw 应 NaN,实际 {df['Resi_Price_Raw'].tolist()}"
+    )
+    # Resi_Price(走 _movement_safe_ratios 0/0 保护)应 = 0
+    assert np.all(df['Resi_Price'].to_numpy() == 0.0)
+    # Resi_ΔV / Resi_ΔA 也应为 0 — 双重确认残差为 0 向量
+    np.testing.assert_array_equal(df['Resi_ΔV'].to_numpy(), [0.0, 0.0])
+    np.testing.assert_array_equal(df['Resi_ΔA'].to_numpy(), [0.0, 0.0])
+
+
+def test_build_movement_intermediate_df_raw_vol_amt_columns_match_input():
+    """Vol/Amt 原始列(非 Δ)= caller 传 stock_df/index_df 对应行的 Volume/Amount,丢首行对齐。"""
+    idx = pd.date_range('2026-07-01', periods=5, freq='D')
+    stock_df = pd.DataFrame({
+        'Volume': [10.0, 20.0, 30.0, 40.0, 50.0],
+        'Amount': [100.0, 200.0, 300.0, 400.0, 500.0],
+    }, index=idx)
+    index_df = pd.DataFrame({
+        'Volume': [1000.0, 2000.0, 3000.0, 4000.0, 5000.0],
+        'Amount': [1e4, 2e4, 3e4, 4e4, 5e4],
+    }, index=idx)
+    mv = compute_movement_projection(stock_df, index_df)
+    df = build_movement_intermediate_df(idx[1:], mv, stock_df, index_df, 'IX', 'ST')
+
+    # 丢首行后,Vol_ST 应 = stock_df[1:] 的 Volume
+    np.testing.assert_array_equal(
+        df['Vol_ST'].to_numpy(), stock_df['Volume'].to_numpy()[1:]
+    )
+    np.testing.assert_array_equal(
+        df['Amt_ST'].to_numpy(), stock_df['Amount'].to_numpy()[1:]
+    )
+    np.testing.assert_array_equal(
+        df['Vol_IX'].to_numpy(), index_df['Volume'].to_numpy()[1:]
+    )
+    np.testing.assert_array_equal(
+        df['Amt_IX'].to_numpy(), index_df['Amount'].to_numpy()[1:]
     )
 

@@ -311,12 +311,16 @@ def compute_movement_projection(stock_df, index_df):
         dict with keys:
             stock_move:   ndarray (T-1, 2)  — 个股运动向量 (ΔV_s, ΔA_s)
             index_move:   ndarray (T-1, 2)  — 指数运动向量 (ΔV_i, ΔA_i)
+            v_dot_v:      ndarray (T-1,)   — v·v (= ΔV_i² + ΔA_i²,β 分母)
+            u_dot_v:      ndarray (T-1,)   — u·v (= ΔV_s·ΔV_i + ΔA_s·ΔA_i,β 分子)
             proj_coeff:   ndarray (T-1,)   — 映射系数 β_t = (u·v) / (v·v)
             proj:         ndarray (T-1, 2)  — 投影向量 β_t * v
             residual:     ndarray (T-1, 2)  — 正交残差 u - proj
             proj_mag:     ndarray (T-1,)   — ‖proj‖
             resi_mag:     ndarray (T-1,)   — ‖residual‖
             dot_after:    ndarray (T-1,)   — residual · v,理想正交 = 0
+            proj_prices:  ndarray (T-1,)   — β·ΔA / β·ΔV (= ΔA_i / ΔV_i,大盘边际成交均价)
+            resi_prices:  ndarray (T-1,)   — residual_ΔA / residual_ΔV(分母 0 → 0)
     """
     for c in ('Volume', 'Amount'):
         if c not in stock_df.columns:
@@ -357,16 +361,18 @@ def compute_movement_projection(stock_df, index_df):
     # 沿用 compute_projections 的安全除法 + cap 限幅逻辑(见 277-284)。
     proj_prices = _movement_safe_ratios(proj, axis=1)
     resi_prices = _movement_safe_ratios(residual, axis=1, cap_to='self')
-    for i, r in enumerate(resi_prices):
-        if not np.isfinite(r) or abs(r) > 3:
-            past = np.abs(resi_prices[:i])
-            cap = float(np.nanmax(past)) if len(past) > 0 and np.any(np.isfinite(past)) else 0.0
-            sign = np.sign(residual[i, 1]) if np.isfinite(residual[i, 1]) else 0.0
-            resi_prices[i] = sign * cap
+    # for i, r in enumerate(resi_prices):|
+    #     if not np.isfinite(r) or abs(r) > 3:
+    #         past = np.abs(resi_prices[:i])
+    #         cap = float(np.nanmax(past)) if len(past) > 0 and np.any(np.isfinite(past)) else 0.0
+    #         sign = np.sign(residual[i, 1]) if np.isfinite(residual[i, 1]) else 0.0
+    #         resi_prices[i] = sign * cap
 
     return {
         'stock_move': u,
         'index_move': v,
+        'v_dot_v': v_dot_v,
+        'u_dot_v': u_dot_v,
         'proj_coeff': proj_coeff,
         'proj': proj,
         'residual': residual,
@@ -420,6 +426,74 @@ def build_movement_result_df(common_idx, mv, index_tag, stock_tag):
         'Resi_Magnitude': mv['resi_mag'],
         'Dot_After_Proj': mv['dot_after'],
         'Proj_Price': mv['proj_prices'],
+        'Resi_Price': mv['resi_prices'],
+    })
+
+
+def build_movement_intermediate_df(common_idx, mv, stock_df, index_df,
+                                   index_tag, stock_tag):
+    """组装运动投影的「逐日复核」DataFrame — 22 列,覆盖每一步的中间值。
+
+    用途:`projection_2d.py --movement` 顺手落一份 CSV 到 data/projection/intermediate/,
+    方便人工逐日核对公式:`Δ` / `β = u·v/v·v` / `proj = β·v` / `resi = u - proj` /
+    `resi·v ≈ 0` / `proj_price = ΔA_i/ΔV_i` / `resi_price = resi_ΔA/resi_ΔV`。
+
+    与 `build_movement_result_df` 的差别:
+      - 多 4 列原始值(Vol/Ama 当日,非 Δ)— 验证 diff 正确性
+      - 多 2 列中间点积(V_dot_V / U_dot_V)— 验证 β 分子分母
+      - 多 1 列 Resi_Price_Raw — 与 Resi_Price 一并保留便于发现 > 3 异常
+
+    Args:
+        common_idx: caller 传 common_idx[1:] (与 diff 丢首行对齐)。
+        mv:         `compute_movement_projection` 返回的 dict(必须含 v_dot_v/u_dot_v)。
+        stock_df / index_df: 原始 (Vol/Ama) 序列,caller 同样切片丢首行。
+
+    Columns:
+        Date, Vol_{idx}, Amt_{idx}, Vol_{stk}, Amt_{stk},
+        ΔV_{idx}, ΔA_{idx}, ΔV_{stk}, ΔA_{stk},
+        V_dot_V, U_dot_V, Proj_Coeff,
+        Proj_ΔV, Proj_ΔA, Resi_ΔV, Resi_ΔA,
+        Resi_dot_V, Proj_Magnitude, Resi_Magnitude,
+        Proj_Price, Resi_Price_Raw, Resi_Price
+    """
+    # raw Vol/Ama 当日 — caller 已丢首行 (stock_df.iloc[1:], index_df.iloc[1:])
+    v_idx_raw = index_df['Volume'].to_numpy()[1:]
+    a_idx_raw = index_df['Amount'].to_numpy()[1:]
+    v_stk_raw = stock_df['Volume'].to_numpy()[1:]
+    a_stk_raw = stock_df['Amount'].to_numpy()[1:]
+
+    # Resi_Price_Raw:不经 _movement_safe_ratios 的原始比值,residual_ΔV=0 时显示 inf/NaN
+    # 而不是被替换为 0 — 复核时更易一眼看出除零异常行
+    resi_raw_num = mv['residual'][:, 1]
+    resi_raw_den = mv['residual'][:, 0]
+    resi_price_raw = np.divide(
+        resi_raw_num, resi_raw_den,
+        out=np.full_like(resi_raw_num, fill_value=np.nan, dtype=float),
+        where=(resi_raw_den != 0) & np.isfinite(resi_raw_den) & np.isfinite(resi_raw_num),
+    )
+
+    return pd.DataFrame({
+        'Date': common_idx,
+        f'Vol_{index_tag}': v_idx_raw,
+        f'Amt_{index_tag}': a_idx_raw,
+        f'Vol_{stock_tag}': v_stk_raw,
+        f'Amt_{stock_tag}': a_stk_raw,
+        f'ΔV_{index_tag}': mv['index_move'][:, 0],
+        f'ΔA_{index_tag}': mv['index_move'][:, 1],
+        f'ΔV_{stock_tag}': mv['stock_move'][:, 0],
+        f'ΔA_{stock_tag}': mv['stock_move'][:, 1],
+        'V_dot_V': mv['v_dot_v'],
+        'U_dot_V': mv['u_dot_v'],
+        'Proj_Coeff': mv['proj_coeff'],
+        'Proj_ΔV': mv['proj'][:, 0],
+        'Proj_ΔA': mv['proj'][:, 1],
+        'Resi_ΔV': mv['residual'][:, 0],
+        'Resi_ΔA': mv['residual'][:, 1],
+        'Resi_dot_V': mv['dot_after'],
+        'Proj_Magnitude': mv['proj_mag'],
+        'Resi_Magnitude': mv['resi_mag'],
+        'Proj_Price': mv['proj_prices'],
+        'Resi_Price_Raw': resi_price_raw,
         'Resi_Price': mv['resi_prices'],
     })
 
