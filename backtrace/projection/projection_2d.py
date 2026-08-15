@@ -551,6 +551,8 @@ if args.movement:
     assert movement_data is not None   # 整段在 if args.movement: 内,必非 None
     mv_proj_prices = movement_data['Proj_Price'].to_numpy()
     mv_resi_prices = movement_data['Resi_Price'].to_numpy()
+    # 副轴:个股 Close,首行与 diff 对齐也丢(同 proj_prices / resi_prices)
+    close_stock_aligned = data_stock['Close'].to_numpy()[1:len(mv_idx) + 1]
     figm5 = go.Figure()
     figm5.add_trace(go.Scatter(
         x=mv_idx, y=mv_proj_prices, mode='lines',
@@ -558,12 +560,20 @@ if args.movement:
         line=dict(color='cyan'),
     ))
     figm5.add_trace(go.Scatter(
+        x=mv_idx, y=close_stock_aligned, mode='lines',
+        name=f'{STOCK_TAG} Close (副轴)',
+        line=dict(color='orange'),
+        yaxis='y2',
+    ))
+    figm5.add_trace(go.Scatter(
         x=mv_idx, y=[0] * len(mv_idx), mode='lines', name='y=0',
         line=dict(color='gray', dash='dash'),
     ))
     figm5.update_layout(
-        title=f'运动 proj_prices 时序 ({STOCK_TAG} → {INDEX_TAG})',
-        xaxis_title='日期', yaxis_title='proj_price = β·ΔA / β·ΔV',
+        title=f'运动 proj_prices 时序 ({STOCK_TAG} → {INDEX_TAG}, 叠加Close)',
+        xaxis_title='日期',
+        yaxis_title='proj_price = β·ΔA / β·ΔV',
+        yaxis2=dict(title=f'{STOCK_TAG} Close', overlaying='y', side='right', showgrid=False),
         template='plotly_dark', height=350,
     )
     figm5.write_html(mv_out('movement_proj_prices.html'))
@@ -577,12 +587,20 @@ if args.movement:
         line=dict(color='magenta'),
     ))
     figm6.add_trace(go.Scatter(
+        x=mv_idx, y=close_stock_aligned, mode='lines',
+        name=f'{STOCK_TAG} Close (副轴)',
+        line=dict(color='orange'),
+        yaxis='y2',
+    ))
+    figm6.add_trace(go.Scatter(
         x=mv_idx, y=[0] * len(mv_idx), mode='lines', name='y=0',
         line=dict(color='gray', dash='dash'),
     ))
     figm6.update_layout(
-        title=f'运动 resi_prices 时序 ({STOCK_TAG} → {INDEX_TAG})',
-        xaxis_title='日期', yaxis_title='resi_price = residual_ΔA / residual_ΔV (限幅 ±3)',
+        title=f'运动 resi_prices 时序 ({STOCK_TAG} → {INDEX_TAG}, 叠加Close)',
+        xaxis_title='日期',
+        yaxis_title='resi_price = residual_ΔA / residual_ΔV (限幅 ±3)',
+        yaxis2=dict(title=f'{STOCK_TAG} Close', overlaying='y', side='right', showgrid=False),
         template='plotly_dark', height=350,
     )
     figm6.write_html(mv_out('movement_resi_prices.html'))
@@ -592,8 +610,8 @@ if args.movement:
     print(f"  M2. {mv_out('movement_projection_verify.html')} - 运动投影分解验证")
     print(f"  M3. {mv_out('movement_coeff.html')}              - β 系数时序")
     print(f"  M4. {mv_out('movement_orthogonality.html')}      - 运动正交性验证")
-    print(f"  M5. {mv_out('movement_proj_prices.html')}        - 运动 proj_prices 时序")
-    print(f"  M6. {mv_out('movement_resi_prices.html')}        - 运动 resi_prices 时序")
+    print(f"  M5. {mv_out('movement_proj_prices.html')}        - 运动 proj_prices 时序(叠加Close)")
+    print(f"  M6. {mv_out('movement_resi_prices.html')}        - 运动 resi_prices 时序(叠加Close)")
 
 print("\n图形已生成:")
 print(f"  1. {out('vector_scatter.html')}      - Volume-Amount向量散点图")
