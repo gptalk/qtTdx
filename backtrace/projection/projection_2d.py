@@ -170,30 +170,30 @@ fig1.update_layout(
 )
 fig1.write_html(out('vector_scatter.html'))
 
-# 图1b: 大盘基线 3-D 散点图 (Amount, Volume, 日期)
-# Z 轴用 pandas.Timestamp 转 int64(纳秒),plotly 会自动渲染为日期格式
+# 图1b: 大盘基线 3-D 连线图 (Amount, Volume, 日期)
+# Z 轴直接传 pandas.DatetimeIndex,plotly zaxis type='date' 自动按日期格式渲染
 fig1b = go.Figure()
 fig1b.add_trace(go.Scatter3d(
     x=vec_index[:, 0], y=vec_index[:, 1],
-    z=pd.to_datetime(list(common_idx)).astype('int64'),
-    mode='markers',
+    z=pd.to_datetime(list(common_idx)),
+    mode='lines+markers',
     name=INDEX_LABEL,
+    line=dict(color='blue', width=3),
     marker=dict(
-        size=4, color='blue', opacity=0.7,
+        size=3, color='cyan', opacity=0.8,
         line=dict(color='white', width=0.2),
     ),
     hovertemplate=(
-        '日期: %{text}<br>'
+        '日期: %{z|%Y-%m-%d}<br>'
         'Volume: %{x:.2e}<br>Amount: %{y:.2e}<extra></extra>'
     ),
-    text=[str(d)[:10] for d in common_idx],
 ))
 fig1b.update_layout(
-    title=f'大盘基线 {INDEX_LABEL} 三维散点 (Amount / Volume / 日期)',
+    title=f'大盘基线 {INDEX_LABEL} 三维连线 (Amount / Volume / 日期)',
     scene=dict(
         xaxis_title='Volume',
         yaxis_title='Amount',
-        zaxis=dict(title='日期', tickformat='%Y-%m-%d'),
+        zaxis=dict(title='日期', type='date'),
         aspectmode='manual',
         aspectratio=dict(x=1, y=1, z=2),  # 日期轴拉长,便于看趋势
     ),
