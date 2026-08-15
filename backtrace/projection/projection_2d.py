@@ -171,11 +171,11 @@ fig1.update_layout(
 fig1.write_html(out('vector_scatter.html'))
 
 # 图1b: 大盘基线 3-D 连线图 (Amount, Volume, 日期)
-# Z 轴直接传 pandas.DatetimeIndex,plotly zaxis type='date' 自动按日期格式渲染
+# Z 轴用 .normalize() 把 Timestamp 截到 00:00:00(日线无日内时间),plotly zaxis type='date' 自动渲染
 fig1b = go.Figure()
 fig1b.add_trace(go.Scatter3d(
     x=vec_index[:, 0], y=vec_index[:, 1],
-    z=pd.to_datetime(list(common_idx)),
+    z=pd.to_datetime(list(common_idx)).normalize(),
     mode='lines+markers',
     name=INDEX_LABEL,
     line=dict(color='blue', width=3),
