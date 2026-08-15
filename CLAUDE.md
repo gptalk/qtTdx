@@ -21,6 +21,7 @@ data/stocks/    沪深 A 股(去 ST/退市)日线,~5000 只
 data/sectors/   申万二级 128 行业指数
 data/indices/   000001.SH 上证综指 / 399001.SZ 深证成指
 data/manifest.json   每只票的行数/首末日期/拉取时间/失败原因
+data/stock_basic.csv  代码 → 名称/交易所/状态 反查表(stocks_info.load_basic_df())
 ```
 
 每只票保留 **500 个交易日**。刷新数据:
@@ -28,6 +29,8 @@ data/manifest.json   每只票的行数/首末日期/拉取时间/失败原因
 ```bash
 PYTHONIOENCODING=utf-8 python backtrace/data_fetch/fetch_daily.py           # 全量,20-40 分钟
 PYTHONIOENCODING=utf-8 python backtrace/data_fetch/fetch_daily.py --limit 5 # 冒烟
+PYTHONIOENCODING=utf-8 python backtrace/data_fetch/fetch_stock_basic.py --limit 10  # 刷新名称表(冒烟)
+PYTHONIOENCODING=utf-8 python backtrace/data_fetch/fetch_stock_basic.py            # 刷名称表(全量,~5 分钟)
 ```
 
 **路径只认 [backtrace/common/data_store.py](backtrace/common/data_store.py)** —— 读写都走 `csv_path()`。

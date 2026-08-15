@@ -109,7 +109,13 @@ args = parse_args()
 TWO_DAY_VEC = args.two_day_vec
 LAG = 1 if TWO_DAY_VEC else 0
 STOCK_CODE = args.code
-STOCK_NAME = args.name if args.name else {'002475.SZ': '立讯精密'}.get(STOCK_CODE, '')
+# --name 缺省时:先从 stocks_info 反查(用户跑过 fetch_stock_basic.py 后),
+# 再回退到 002475.SZ 旧默认(避免非该代码误标);最后才是空字符串。
+if args.name:
+    STOCK_NAME = args.name
+else:
+    from common import stocks_info
+    STOCK_NAME = stocks_info.lookup_name(STOCK_CODE) or {'002475.SZ': '立讯精密'}.get(STOCK_CODE, '')
 days = args.days
 INDEX_OVERRIDE = args.index
 
