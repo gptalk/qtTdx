@@ -169,6 +169,52 @@ fig1.update_layout(
 )
 fig1.write_html(out('vector_scatter.html'))
 
+# 图1b: 个股 stock 当日 - 前一日 (Volume, Amount) 差额的 3-D 折线
+# X = 日序号(int,避免日期轴引入时分秒)、Y = Volume_diff、Z = Amount_diff
+# lag=0 时 np.diff;lag=1 时 vec_stock 已有 Volume_prev / Amount_prev,直接减
+if LAG == 0:
+    vol_today = vec_stock[:, 0]
+    amt_today = vec_stock[:, 1]
+    vol_prev = np.concatenate([[vol_today[0]], vol_today[:-1]])   # pad 首个,保证长度一致
+    amt_prev = np.concatenate([[amt_today[0]], amt_today[:-1]])
+else:
+    vol_today = vec_stock[:, 0]
+    amt_today = vec_stock[:, 1]
+    vol_prev = vec_stock[:, 2]
+    amt_prev = vec_stock[:, 3]
+vol_diff = vol_today - vol_prev
+amt_diff = amt_today - amt_prev
+day_idx = np.arange(len(common_idx))
+
+fig1b = go.Figure()
+fig1b.add_trace(go.Scatter3d(
+    x=day_idx, y=vol_diff, z=amt_diff,
+    mode='lines+markers',
+    name=f'{STOCK_TAG} 日差',
+    line=dict(color='cyan', width=2),
+    marker=dict(
+        size=3, color='orange', opacity=0.9,
+        line=dict(color='white', width=0.2),
+    ),
+    hovertemplate=(
+        'Day#%{x}<br>'
+        'ΔVolume: %{y:.2e}<br>ΔAmount: %{z:.2e}<extra></extra>'
+    ),
+))
+fig1b.update_layout(
+    title=f'{STOCK_LABEL} 日间差额 3-D 折线 (ΔAmount / ΔVolume / 日序)',
+    scene=dict(
+        xaxis_title='日序 (Day #)',
+        yaxis_title='ΔVolume (今日 - 前一日)',
+        zaxis_title='ΔAmount (今日 - 前一日)',
+        aspectmode='manual',
+        aspectratio=dict(x=1.5, y=1, z=1),
+    ),
+    template='plotly_dark',
+    height=700, width=900,
+)
+fig1b.write_html(out('stock_diff_3d.html'))
+
 # 图2: 投影验证 - 选取几个代表性日期(在可用交易日内均匀取样,避免硬编码越界)
 sample_indices = sorted(set(np.linspace(0, len(common_idx) - 1, 4, dtype=int).tolist()))
 
@@ -321,6 +367,7 @@ fig4g.write_html(out('resi_prices.html'))
 
 print("\n图形已生成:")
 print(f"  1. {out('vector_scatter.html')}      - Volume-Amount向量散点图")
+print(f"  1b. {out('stock_diff_3d.html')}      - 个股日间差额 3-D 折线 (ΔVolume/ΔAmount/日序)")
 print(f"  2. {out('projection_verify.html')}  - 投影分解验证图")
 print(f"  3. {out('orthogonality_check.html')} - 正交性时序检验图")
 print(f"  4. {out('proj_coefficient.html')}    - 投影系数时序图")
