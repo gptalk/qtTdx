@@ -40,6 +40,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 import os
 import argparse
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -168,6 +169,38 @@ fig1.update_layout(
     height=600, width=800
 )
 fig1.write_html(out('vector_scatter.html'))
+
+# 图1b: 大盘基线 3-D 散点图 (Amount, Volume, 日期)
+# Z 轴用 pandas.Timestamp 转 int64(纳秒),plotly 会自动渲染为日期格式
+fig1b = go.Figure()
+fig1b.add_trace(go.Scatter3d(
+    x=vec_index[:, 0], y=vec_index[:, 1],
+    z=pd.to_datetime(list(common_idx)).astype('int64'),
+    mode='markers',
+    name=INDEX_LABEL,
+    marker=dict(
+        size=4, color='blue', opacity=0.7,
+        line=dict(color='white', width=0.2),
+    ),
+    hovertemplate=(
+        '日期: %{text}<br>'
+        'Volume: %{x:.2e}<br>Amount: %{y:.2e}<extra></extra>'
+    ),
+    text=[str(d)[:10] for d in common_idx],
+))
+fig1b.update_layout(
+    title=f'大盘基线 {INDEX_LABEL} 三维散点 (Amount / Volume / 日期)',
+    scene=dict(
+        xaxis_title='Volume',
+        yaxis_title='Amount',
+        zaxis=dict(title='日期', tickformat='%Y-%m-%d'),
+        aspectmode='manual',
+        aspectratio=dict(x=1, y=1, z=2),  # 日期轴拉长,便于看趋势
+    ),
+    template='plotly_dark',
+    height=700, width=900,
+)
+fig1b.write_html(out('baseline_3d.html'))
 
 # 图2: 投影验证 - 选取几个代表性日期(在可用交易日内均匀取样,避免硬编码越界)
 sample_indices = sorted(set(np.linspace(0, len(common_idx) - 1, 4, dtype=int).tolist()))
@@ -321,6 +354,7 @@ fig4g.write_html(out('resi_prices.html'))
 
 print("\n图形已生成:")
 print(f"  1. {out('vector_scatter.html')}      - Volume-Amount向量散点图")
+print(f"  1b. {out('baseline_3d.html')}        - 大盘基线三维散点(Amount/Volume/日期)")
 print(f"  2. {out('projection_verify.html')}  - 投影分解验证图")
 print(f"  3. {out('orthogonality_check.html')} - 正交性时序检验图")
 print(f"  4. {out('proj_coefficient.html')}    - 投影系数时序图")
