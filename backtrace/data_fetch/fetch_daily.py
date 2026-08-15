@@ -6,7 +6,8 @@
   - 北交所(.BJ)标的:历史短(2021 开业)、流动性差、交易规则与沪深不同(30% 涨跌幅),
     策略框架不覆盖。在 build_stock_universe 收 sector members 时源头剔除,不进入
     members.csv / union.csv,fetch 阶段自然也不会拉到。
-  - ST/*ST/SST、退市:由 filter_st 在 fetch 前过滤。
+  - ST/*ST/SST、退市:由 build_stock_universe 写 stock_basic.csv 后,按
+    status 列过滤(同一轮里复用 fetch_stock_basic.build_basic,不再重复判)。
 
 职责边界:本模块只做「编排」—— universe、分批、重试、进度。
 落盘一律经由 common.data_store,自己不拼任何路径。
@@ -35,12 +36,15 @@ CALENDAR_MARGIN = 1.05    # 自然日请求余量
 INDEX_CODES = ['000001.SH', '399001.SZ']   # 上证综指 / 深证成分指数
 SW2_LIST_ARG = '11'       # get_stock_list('11', list_type=1) -> 128 申万二级行业
 FIELDS = ['Open', 'High', 'Low', 'Close', 'Volume', 'Amount']
-SW2_OUT_DIR = 'data/sw2'  # 128 行业 + 成分股 long-format + 并集清单,fetch 过程中落盘
+SW2_OUT_DIR = 'sw2'  # 128 行业 + 成分股 long-format + 并集清单,fetch 过程中落盘(路径经 C.DATA_DIR 拼,便于测试切根)
 # ======================================================
 
 
 def filter_st(items):
     """[{'Code','Name'}, ...] -> [code],剔除 ST/*ST/SST、退市标的。
+
+    ⚠️ 仅文档/测试参考用 — build_stock_universe 已改为读 stock_basic.status
+    做过滤(避免对每只股重复跑 ST 名字判定)。新逻辑请走 fetch_stock_basic。
 
     北交所(.BJ)已在更上游(build_stock_universe 收 sector members 时)排除,
     这里不再重复过滤,避免出现「members.csv 有 .BJ、union.csv 无 .BJ」的不一致。
@@ -138,8 +142,8 @@ def build_sector_universe(tq):
         raise RuntimeError(f"get_stock_list({SW2_LIST_ARG!r}) 返回空 —— TQ 客户端可能未启动")
     print(f"  申万二级行业: {len(codes)} 个")
 
-    os.makedirs(SW2_OUT_DIR, exist_ok=True)
-    industries_path = os.path.join(SW2_OUT_DIR, 'industries.csv')
+    os.makedirs(os.path.join(C.DATA_DIR, SW2_OUT_DIR), exist_ok=True)
+    industries_path = os.path.join(C.DATA_DIR, SW2_OUT_DIR, 'industries.csv')
     pd.DataFrame(
         [{'sector_code': c, 'sector_name': names[c]} for c in codes]
     ).to_csv(industries_path, index=False, encoding='utf-8')
@@ -186,7 +190,7 @@ def build_stock_universe(tq, sector_codes, sector_names):
         print(f"  [剔除北证] {bj_excluded} 条 .BJ 成员已在源头过滤(未进入 members.csv / union.csv)")
 
     # 持久化 long-format 成分股(sector_code + sector_name + member_code)
-    os.makedirs(SW2_OUT_DIR, exist_ok=True)
+    os.makedirs(os.path.join(C.DATA_DIR, SW2_OUT_DIR), exist_ok=True)
     member_rows = []
     for s_code in sector_codes:
         s_name = sector_names.get(s_code, '')
@@ -196,7 +200,7 @@ def build_stock_universe(tq, sector_codes, sector_names):
                 'sector_name': s_name,
                 'member_code': m,
             })
-    members_path = os.path.join(SW2_OUT_DIR, 'members.csv')
+    members_path = os.path.join(C.DATA_DIR, SW2_OUT_DIR, 'members.csv')
     pd.DataFrame(member_rows).to_csv(members_path, index=False, encoding='utf-8')
     print(f"  → {members_path} ({len(member_rows)} 行 long-format)")
 
@@ -219,14 +223,33 @@ def build_stock_universe(tq, sector_codes, sector_names):
         items.append({'Code': c, 'Name': name})
 
     # 持久化 union(去重后、ST 过滤前的所有代码)
-    union_path = os.path.join(SW2_OUT_DIR, 'union.csv')
+    union_path = os.path.join(C.DATA_DIR, SW2_OUT_DIR, 'union.csv')
     pd.DataFrame(
         [{'code': it['Code'], 'name': it['Name']} for it in items]
     ).to_csv(union_path, index=False, encoding='utf-8')
     print(f"  → {union_path} ({len(items)} 行,ST 过滤前)")
 
-    kept = filter_st(items)
-    print(f"  个股 universe: 并集 {len(all_codes)} 只 -> 去 ST/退市后 {len(kept)} 只 (get_stock_info 空名 {empty_name_count} 只)")
+    # 复用 fetch_stock_basic:同样要拉 5200+ 次 get_stock_info,在 union 写完后
+    # 直接调一遍,把分类结果落 data/stock_basic.csv。之后任何脚本/stocks_info 都能
+    # 直接读这张表,不用再问 TQ,也省了 filter_st 重新跑 ST 名字判断。
+    from fetch_stock_basic import build_basic as build_basic_table
+    basic_df = build_basic_table(tq, union_path=union_path)
+    basic_path = os.path.join(C.DATA_DIR, 'stock_basic.csv')
+    os.makedirs(os.path.dirname(basic_path), exist_ok=True)
+    tmp = basic_path + '.tmp'
+    basic_df.to_csv(tmp, index=False, encoding='utf-8')
+    os.replace(tmp, basic_path)
+    print(f"  → {basic_path} ({len(basic_df)} 行,4 列:code/market/name/status)")
+
+    # 用 stock_basic.status 列做过滤 — 一次性查表,不再重复跑 ST 名字判定
+    status_by_code = dict(zip(basic_df['code'], basic_df['status']))
+    kept = [c for c in all_codes if status_by_code.get(c) == 'active']
+    dropped_st = sum(1 for c in all_codes if status_by_code.get(c) == 'st')
+    dropped_del = sum(1 for c in all_codes if status_by_code.get(c) == 'delisted')
+    dropped_bj = sum(1 for c in all_codes if status_by_code.get(c) == 'bj')
+    dropped_unk = sum(1 for c in all_codes if status_by_code.get(c) == 'unknown')
+    print(f"  个股 universe: 并集 {len(all_codes)} 只 -> 去 ST({dropped_st}) "
+          f"退市({dropped_del}) 北证({dropped_bj}) 异常({dropped_unk}) 后剩 {len(kept)} 只")
     return kept
 
 

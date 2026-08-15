@@ -69,7 +69,11 @@ def classify_status(name: str, market: str) -> str:
 
 
 def build_basic(tq, union_path: str = UNION_CSV, limit: int = 0) -> pd.DataFrame:
-    """读 union.csv → 拉 name → 组装 DataFrame。limit=0 表示全部。"""
+    """读 union.csv → 拉 name → 组装 DataFrame。limit=0 表示全部。
+
+    tq 兼容两种调用:既接受 tq 实例(用 tq.get_stock_info 一对一查),
+    也接受任意有 .get_stock_info 方法的对象(便于 mock)。
+    """
     if not os.path.exists(union_path):
         raise FileNotFoundError(
             f"{union_path} 缺失。先跑:\n"

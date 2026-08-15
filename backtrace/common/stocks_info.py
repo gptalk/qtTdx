@@ -49,7 +49,11 @@ def load_basic_df() -> pd.DataFrame:
             stacklevel=2,
         )
         return _EMPTY.copy()
-    df = pd.read_csv(BASIC_CSV, dtype={'code': str})
+    df = pd.read_csv(
+        BASIC_CSV,
+        dtype={'code': str, 'name': str, 'market': str, 'status': str},
+        keep_default_na=False,   # 空名保持 '' 不变成 NaN
+    )
     df.set_index('code', inplace=True)
     return df
 
