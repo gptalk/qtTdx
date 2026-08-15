@@ -171,11 +171,19 @@ fig1.update_layout(
 fig1.write_html(out('vector_scatter.html'))
 
 # 图1b: 大盘基线 3-D 连线图 (Amount, Volume, 日期)
-# Z 轴用 .normalize() 把 Timestamp 截到 00:00:00(日线无日内时间),plotly zaxis type='date' 自动渲染
+# Z 轴用 .normalize() 把 Timestamp 截到 00:00:00(日线无日内时间)
+# tickvals / ticktext 显式指定,避免 plotly auto 算法插入 12:00 等非日期 tick
+z_dates = pd.to_datetime(list(common_idx)).normalize()
+n_ticks = min(8, len(z_dates))                                  # 最多 8 个 tick,够看月份趋势又不挤
+tick_step = max(1, len(z_dates) // n_ticks)
+tick_idxs = list(range(0, len(z_dates), tick_step))
+tickvals = [z_dates[i] for i in tick_idxs]
+ticktext = [z_dates[i].strftime('%Y-%m-%d') for i in tick_idxs]
+
 fig1b = go.Figure()
 fig1b.add_trace(go.Scatter3d(
     x=vec_index[:, 0], y=vec_index[:, 1],
-    z=pd.to_datetime(list(common_idx)).normalize(),
+    z=z_dates,
     mode='lines+markers',
     name=INDEX_LABEL,
     line=dict(color='blue', width=3),
@@ -196,8 +204,8 @@ fig1b.update_layout(
         zaxis=dict(
             title='日期',
             type='date',
-            tickformat='%Y-%m-%d',
-            dtick='M1',  # 1 个月固定间隔,避免 plotly 自动切成 06:00 / 12:00 等非日期边界
+            tickvals=tickvals,
+            ticktext=ticktext,
         ),
         aspectmode='manual',
         aspectratio=dict(x=1, y=1, z=2),  # 日期轴拉长,便于看趋势
