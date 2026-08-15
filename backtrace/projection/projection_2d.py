@@ -41,6 +41,7 @@ import os
 import argparse
 import numpy as np
 import pandas as pd
+import vectorbt as vbt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -170,45 +171,38 @@ fig1.update_layout(
 )
 fig1.write_html(out('vector_scatter.html'))
 
-# 图1b: 大盘基线 3-D 连线图 (Amount, Volume, 日期)
-# Z 轴用 .normalize() 把 Timestamp 截到 00:00:00(日线无日内时间)
-# tickvals / ticktext 显式指定,避免 plotly auto 算法插入 12:00 等非日期 tick
+# 图1b: 大盘基线 vectorbt 3-D 体积图 (Amount / Volume / 日期)
+# 把 (Volume, Amount, Date) 三维点云用 np.histogramdd 分箱,密度喂给 vbt.plotting.Volume
+# 这样既保留三维结构,又不需要 plotly 自己渲染 0/1 散点
 z_dates = pd.to_datetime(list(common_idx)).normalize()
-n_ticks = min(8, len(z_dates))                                  # 最多 8 个 tick,够看月份趋势又不挤
-tick_step = max(1, len(z_dates) // n_ticks)
-tick_idxs = list(range(0, len(z_dates), tick_step))
-tickvals = [z_dates[i] for i in tick_idxs]
-ticktext = [z_dates[i].strftime('%Y-%m-%d') for i in tick_idxs]
+points = np.column_stack([
+    vec_index[:, 0],           # X = Volume
+    vec_index[:, 1],           # Y = Amount
+    z_dates.astype('int64'),    # Z = 日期(ns),histogramdd 需要数值轴
+])
 
-fig1b = go.Figure()
-fig1b.add_trace(go.Scatter3d(
-    x=vec_index[:, 0], y=vec_index[:, 1],
-    z=z_dates,
-    mode='lines+markers',
-    name=INDEX_LABEL,
-    line=dict(color='blue', width=3),
-    marker=dict(
-        size=3, color='cyan', opacity=0.8,
-        line=dict(color='white', width=0.2),
-    ),
-    hovertemplate=(
-        '日期: %{z|%Y-%m-%d}<br>'
-        'Volume: %{x:.2e}<br>Amount: %{y:.2e}<extra></extra>'
-    ),
-))
+N_BINS = 10
+hist, edges = np.histogramdd(points, bins=(N_BINS, N_BINS, N_BINS))
+
+# Volume 接受 array_like,vectorbt 内部转 numpy
+volume_obj = vbt.plotting.Volume(
+    data=hist,
+    # vectorbt 要求 labels 长度 = data 维度长度(每箱 1 个标签),用箱中心数值 / 箱起始日期
+    x_labels=[f'{(edges[0][i] + edges[0][i+1]) / 2:.2e}' for i in range(N_BINS)],
+    y_labels=[f'{(edges[1][i] + edges[1][i+1]) / 2:.2e}' for i in range(N_BINS)],
+    z_labels=[pd.to_datetime(edges[2][i], unit='ns').strftime('%Y-%m-%d')
+              for i in range(N_BINS)],
+    trace_kwargs=dict(opacity=0.5, surface_count=15, colorscale='Plasma'),
+)
+fig1b = volume_obj.fig
 fig1b.update_layout(
-    title=f'大盘基线 {INDEX_LABEL} 三维连线 (Amount / Volume / 日期)',
+    title=f'大盘基线 {INDEX_LABEL} 三维体积图 (Amount / Volume / 日期)',
     scene=dict(
         xaxis_title='Volume',
         yaxis_title='Amount',
-        zaxis=dict(
-            title='日期',
-            type='date',
-            tickvals=tickvals,
-            ticktext=ticktext,
-        ),
+        zaxis=dict(title='日期'),
         aspectmode='manual',
-        aspectratio=dict(x=1, y=1, z=2),  # 日期轴拉长,便于看趋势
+        aspectratio=dict(x=1, y=1, z=2),
     ),
     template='plotly_dark',
     height=700, width=900,
