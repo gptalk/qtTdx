@@ -416,21 +416,34 @@ if args.movement:
     def mv_out(name):
         return os.path.join(OUT_DIR, MOVEMENT_PREFIX + name).replace('\\', '/')
 
-    # M1: 个股/大盘 运动向量散点 (ΔV, ΔA)
-    figm1 = go.Figure()
+    # M1: 个股/大盘 运动向量散点 (ΔV, ΔA) — 两行独立 Y 轴避免量纲差异
+    #     (大盘 Amount Δ ≈ 1e7, 个股 Amount Δ ≈ 1e4,共享轴会让个股被压扁到 y≈0)
+    figm1 = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=(
+            f'Δ{INDEX_LABEL} (大盘基线)',
+            f'Δ{STOCK_LABEL} (个股)',
+        ),
+        vertical_spacing=0.15,
+        shared_xaxes=False,
+    )
     figm1.add_trace(go.Scatter(
         x=mv_iv, y=mv_ia, mode='markers', name=f'Δ{INDEX_LABEL}',
-        marker=dict(color='blue', size=6, opacity=0.7)
-    ))
+        marker=dict(color='blue', size=6, opacity=0.7),
+        legendgroup='idx',
+    ), row=1, col=1)
     figm1.add_trace(go.Scatter(
         x=mv_stock, y=mv_amt, mode='markers', name=f'Δ{STOCK_LABEL}',
-        marker=dict(color='red', size=6, opacity=0.7)
-    ))
+        marker=dict(color='red', size=6, opacity=0.7),
+        legendgroup='stk',
+    ), row=2, col=1)
+    figm1.update_xaxes(title_text='ΔVolume', row=1, col=1)
+    figm1.update_xaxes(title_text='ΔVolume', row=2, col=1)
+    figm1.update_yaxes(title_text='ΔAmount', row=1, col=1)
+    figm1.update_yaxes(title_text='ΔAmount', row=2, col=1)
     figm1.update_layout(
-        title='运动向量散点 (ΔAmount / ΔVolume,原始量纲)',
-        xaxis_title='ΔVolume',
-        yaxis_title='ΔAmount',
-        template='plotly_dark', height=600, width=800,
+        title='运动向量散点 (ΔAmount / ΔVolume,原始量纲;上下分轴避免量纲压缩)',
+        template='plotly_dark', height=800, width=800,
     )
     figm1.write_html(mv_out('movement_scatter.html'))
 
