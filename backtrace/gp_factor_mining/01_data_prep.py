@@ -187,7 +187,8 @@ def fetch_panel():
             for c in panel['code'].unique():
                 try:
                     info = tq.get_stock_info(c) or {}
-                    name = str(info.get('name', ''))
+                    # TQ 返回字段名是 'Name'(大写 N),容错小写 — 2026-08-15 实测
+                    name = str(info.get('Name', '') or info.get('name', ''))
                     if 'ST' in name or '退' in name:
                         st_codes.add(c)
                 except Exception:

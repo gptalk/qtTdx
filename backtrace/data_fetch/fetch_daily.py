@@ -213,9 +213,10 @@ def build_stock_universe(tq, sector_codes, sector_names):
     empty_name_count = 0
     for c in all_codes:
         try:
-            # get_stock_info 返回 dict 含 'name' 字段(小写) — 已由
-            # backtrace/gp_factor_mining/01_data_prep.py:189 验证可用
-            name = tq.get_stock_info(c).get('name', '')
+            # TQ 返回字段名是 'Name'(大写 N),实测于 2026-08-15
+            # 容错小写 'name' 以备将来 TQ 改大小写
+            info = tq.get_stock_info(c) or {}
+            name = info.get('Name', '') or info.get('name', '') or ''
         except Exception:
             name = ''
         if not name:

@@ -90,7 +90,9 @@ def build_basic(tq, union_path: str = UNION_CSV, limit: int = 0) -> pd.DataFrame
     for i, code in enumerate(codes, 1):
         try:
             info = tq.get_stock_info(code) or {}
-            name = info.get('name', '') or ''
+            # TQ 返回 dict 的 key 是 'Name'(大写 N),实测于 2026-08-15
+            # 容错小写 'name',防将来某天 TQ 改大小写
+            name = info.get('Name', '') or info.get('name', '') or ''
         except Exception as e:
             print(f"  [{i}/{len(codes)}] [WARN] {code} get_stock_info 失败: {type(e).__name__}: {e}")
             name = ''

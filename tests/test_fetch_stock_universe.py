@@ -25,11 +25,15 @@ if DATA_FETCH not in sys.path:
 
 
 class _FakeTq:
-    """最小化的 TQ 替身,只覆盖 build_stock_universe 调到的两个方法。"""
+    """最小化的 TQ 替身,只覆盖 build_stock_universe 调到的两个方法。
+
+    TQ 实际返回字段名是 'Name'(大写 N),实测于 2026-08-15。
+    测试桩也用 'Name' 反映真实行为;容错 'name' 由 build_basic 内部保证。
+    """
 
     def __init__(self, members_by_sector, info_by_code):
         self._members = members_by_sector   # {sector_code: [member_code, ...]}
-        self._info = info_by_code           # {code: {'name': '...'}, ...}
+        self._info = info_by_code           # {code: {'Name': '...'}, ...}
 
     def get_stock_list_in_sector(self, sector_code, block_type=0):
         return self._members.get(sector_code, [])
@@ -66,13 +70,14 @@ def test_build_stock_universe_writes_union_and_basic_and_filters(tmp_data):
         '881001.SH': ['600000.SH', '600001.SH', 'ST.SH'],
         '881002.SH': ['000001.SZ', '000002.SZ', '退.SZ'],
     }
+    # TQ 实际返回 'Name'(大写 N),实测于 2026-08-15
     info_by_code = {
-        '600000.SH': {'name': '浦发银行'},
-        '600001.SH': {'name': '邯郸钢铁'},
-        'ST.SH':     {'name': 'ST华联'},          # 应被 status='st' 过滤
-        '000001.SZ': {'name': '平安银行'},
-        '000002.SZ': {'name': '万科A'},
-        '退.SZ':     {'name': '退市某'},          # 应被 status='delisted' 过滤
+        '600000.SH': {'Name': '浦发银行'},
+        '600001.SH': {'Name': '邯郸钢铁'},
+        'ST.SH':     {'Name': 'ST华联'},          # 应被 status='st' 过滤
+        '000001.SZ': {'Name': '平安银行'},
+        '000002.SZ': {'Name': '万科A'},
+        '退.SZ':     {'Name': '退市某'},          # 应被 status='delisted' 过滤
     }
     tq = _FakeTq(members_by_sector, info_by_code)
 
@@ -120,8 +125,8 @@ def test_build_stock_universe_strips_bj_at_sector_stage(tmp_data):
     sector_names = {'881001.SH': '行业A'}
     members_by_sector = {'881001.SH': ['400001.BJ', '600000.SH']}
     info_by_code = {
-        '400001.BJ': {'name': '北证某'},
-        '600000.SH': {'name': '上证某'},
+        '400001.BJ': {'Name': '北证某'},
+        '600000.SH': {'Name': '上证某'},
     }
     tq = _FakeTq(members_by_sector, info_by_code)
 
@@ -143,8 +148,8 @@ def test_build_stock_universe_handles_empty_name(tmp_data):
     sector_names = {'881001.SH': '行业A'}
     members_by_sector = {'881001.SH': ['600000.SH', '600001.SH']}
     info_by_code = {
-        '600000.SH': {'name': '正常股'},
-        '600001.SH': {'name': ''},            # 空名 → unknown
+        '600000.SH': {'Name': '正常股'},
+        '600001.SH': {'Name': ''},            # 空名 → unknown
     }
     tq = _FakeTq(members_by_sector, info_by_code)
 
@@ -167,3 +172,22 @@ def test_filter_st_legacy_still_works(tmp_data):
     ]
     kept = fd_mod.filter_st(items)
     assert kept == ['600000.SH', '600003.SH']
+
+
+def test_build_stock_universe_accepts_lowercase_name_fallback(tmp_data):
+    """TQ 真机返回 'Name'(大写),但代码容错 'name' 小写,防未来 TQ 改大小写。"""
+    import fetch_daily as fd_mod
+
+    sectors = ['881001.SH']
+    sector_names = {'881001.SH': '行业A'}
+    members_by_sector = {'881001.SH': ['600000.SH']}
+    info_by_code = {
+        '600000.SH': {'name': '小写name也OK'},   # 不是大写 Name
+    }
+    tq = _FakeTq(members_by_sector, info_by_code)
+
+    kept = _run_build(fd_mod, tq, sectors, sector_names)
+    assert kept == ['600000.SH']
+    basic_df = pd.read_csv(tmp_data / 'stock_basic.csv', dtype={'code': str})
+    assert basic_df.set_index('code').at['600000.SH', 'name'] == '小写name也OK'
+    assert basic_df.set_index('code').at['600000.SH', 'status'] == 'active'
