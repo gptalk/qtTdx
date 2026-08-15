@@ -8,22 +8,32 @@
 # 批量版见 projection_batch.py
 #
 # 参数:
-#   --code      str   个股代码(带 .SH / .SZ 后缀)。默认 002475.SZ
-#   --name      str   个股中文名(仅用于图例标签)。默认 立讯精密
-#   --days      int   回看交易日数。默认 240
-#   --index     str   基线指数代码(带 .SH / .SZ 后缀)。默认 None 时按个股交易所自动选大盘。
-#                    示例:
-#                      881427.SH(申万二级行业-体育)
-#                      000001.SH(上证综指,显式指定)
-#                      399001.SZ(深证成指,显式指定)
-#                    任意能解析的 TQ 代码均可;数据需在 data/sectors/ 或 data/indices/ 缓存中。
+#   --code          str   个股代码(带 .SH / .SZ 后缀)。默认 002475.SZ
+#   --name          str   个股中文名(仅用于图例标签)。默认 立讯精密
+#   --days          int   回看交易日数。默认 240
+#   --index         str   基线指数代码(带 .SH / .SZ 后缀)。默认 None 时按个股交易所自动选大盘。
+#                        示例:
+#                          881427.SH(申万二级行业-体育)
+#                          000001.SH(上证综指,显式指定)
+#                          399001.SZ(深证成指,显式指定)
+#                        任意能解析的 TQ 代码均可;数据需在 data/sectors/ 或 data/indices/ 缓存中。
+#   --two-day-vec   flag  向量扩展为 4-D(今日+前一日 Vol/Amt);首日丢弃。默认 2-D。
+#
+# 向量维度说明:
+#   默认(2-D):向量 v = (Volume, Amount),每个交易日产出 19 列 CSV;
+#     HTML 文件前缀 `proj2d_*.html`(例:proj2d_002475_index.html)
+#   --two-day-vec(4-D):v = (Volume_today, Amount_today, Volume_yesterday, Amount_yesterday),
+#     产生 27 列 CSV(新增 prev_raw / prev_norm 两组共 8 列);首日无前一日数据被丢弃;
+#     HTML 文件前缀切到 `proj2d_4d_*.html`(例:proj2d_4d_002475_index.html)避免覆盖 2-D 结果。
 #
 # CLI:
-#   python backtrace/projection/projection_2d.py                                       # 默认 002475.SZ / 立讯精密 / 240 日 / 大盘基线
+#   python backtrace/projection/projection_2d.py                                       # 默认 002475.SZ / 立讯精密 / 240 日 / 大盘基线 / 2-D
 #   python backtrace/projection/projection_2d.py --code 688318.SH                      # 科创板虹软 → 上证综指
 #   python backtrace/projection/projection_2d.py --code 600519.SH --name 贵州茅台 --days 120
 #   python backtrace/projection/projection_2d.py --code 300651.SZ --index 881427.SH     # 金陵体育 → 申万二级体育指数
 #   python backtrace/projection/projection_2d.py --code 002475.SZ --index 000001.SH    # 立讯精密 → 上证综指(显式)
+#   python backtrace/projection/projection_2d.py --code 002475.SZ --two-day-vec        # 4-D:含前一日 Vol/Amt,HTML 落到 proj2d_4d_*.html
+#   python backtrace/projection/projection_2d.py --code 600519.SH --two-day-vec --days 120 # 4-D + 120 日回看
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 

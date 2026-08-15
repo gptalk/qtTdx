@@ -15,6 +15,8 @@
 #   --market-baseline    flag  全部回退到大盘基线(覆盖默认行业基线)。
 #   --index              str   强制指定基线指数(覆盖个股自动解析);所有股票共用。
 #                              示例:--index 881427.SH(半导体)/ 000001.SH(上证综指)
+#   --two-day-vec        flag  向量扩展为 4-D(今日+前一日 Vol/Amt);首日丢弃(无前一日)。
+#                              默认 2-D(仅今日 Vol/Amt)。
 #
 # 用法:
 #   1. 准备股票列表 CSV,至少一列 `code`,可选 `name`(例:
@@ -24,20 +26,33 @@
 #      )
 #      默认读取 data/projection/stocks.csv
 #   2. PYTHONIOENCODING=utf-8 python backtrace/projection/projection_batch.py
-#      [可选 --input PATH / --days N / --limit N / --market-baseline / --index CODE]
+#      [可选 --input PATH / --days N / --limit N / --market-baseline / --index CODE
+#       / --two-day-vec]
+#
+# 向量维度说明:
+#   默认(2-D):每只票每个交易日产出 19 列 CSV,向量 v = (Volume, Amount)。
+#   --two-day-vec(4-D):v = (Volume_today, Amount_today, Volume_yesterday, Amount_yesterday),
+#     产生 27 列 CSV(新增 Vol_prev / Amt_prev / prev_norm 两组共 8 列);首日无前一日数据被丢弃。
+#   2-D 与 4-D CSV 文件名相同,会相互覆盖 — 跑完一种模式后建议备份或改名再跑另一种。
+#   下游 find_resi_positive.py 同时支持两种模式(按 `Date`+`Resi_Price` 读)。
 #
 # CLI 示例:
-#   python backtrace/projection/projection_batch.py                              # 默认按个股所属行业基线跑
+#   python backtrace/projection/projection_batch.py                              # 默认 2-D,按个股所属行业基线跑
 #   python backtrace/projection/projection_batch.py --market-baseline            # 全部用大盘基线
 #   python backtrace/projection/projection_batch.py --index 881427.SH            # 全部用申万二级体育指数
 #   python backtrace/projection/projection_batch.py --index 000001.SH --days 120 # 上证综指,回看 120 日
 #   python backtrace/projection/projection_batch.py --limit 50                   # 只跑列表前 50 只
+#   python backtrace/projection/projection_batch.py --two-day-vec                # 4-D 模式:含前一日 Vol/Amt
+#   python backtrace/projection/projection_batch.py --two-day-vec --limit 20     # 4-D + 只跑 20 只(冒烟)
+#   python backtrace/projection/projection_batch.py --two-day-vec --index 000001.SH # 4-D + 大盘基线
 #
 # 输出:
 #   - 每只股票一个 CSV:data/projection/projection_{INDEX_TAG}_{STOCK_TAG}.csv
 #     (INDEX_TAG 是行业代码 881xxx 或大盘代码 000001/399001,或 --index 显式指定的代码)
+#     2-D:19 列 / 4-D:27 列(每个交易日一行)
 #   - 批量清单:data/projection/batch_manifest.csv
 #     列: code, name, index_code, index_name, rows, date_start, date_end, csv_path, status
+#     rows 已扣除 4-D 模式丢弃的首日(实际写入 CSV 的行数)
 #
 # 注:本脚本不产 HTML。可视化请用 projection_2d.py 单股跑或自行读 CSV 画。
 # 数学/数据载入/CSV 组装统一在 _projection_core.py。
