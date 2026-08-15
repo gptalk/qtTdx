@@ -73,7 +73,13 @@ from _projection_core import (
 def parse_args():
     p = argparse.ArgumentParser(description='单股 2-D 投影分析(HTML + CSV)')
     p.add_argument('--code', default='002475.SZ', help='个股代码(带 .SH / .SZ 后缀)。默认 002475.SZ')
-    p.add_argument('--name', default='立讯精密', help='个股中文名(仅用于图例标签)。默认 立讯精密')
+    p.add_argument(
+        '--name', default=None,
+        help=(
+            '个股中文名(仅用于图例标签)。不传时按 --code 推默认名 '
+            '(002475.SZ → 立讯精密);其他代码不传则空,避免误标。'
+        ),
+    )
     p.add_argument('--days', type=int, default=240, help='回看交易日数。默认 240')
     p.add_argument(
         '--index', default=None,
@@ -103,7 +109,7 @@ args = parse_args()
 TWO_DAY_VEC = args.two_day_vec
 LAG = 1 if TWO_DAY_VEC else 0
 STOCK_CODE = args.code
-STOCK_NAME = args.name
+STOCK_NAME = args.name if args.name else {'002475.SZ': '立讯精密'}.get(STOCK_CODE, '')
 days = args.days
 INDEX_OVERRIDE = args.index
 
