@@ -14,6 +14,7 @@ if BACKTRACE not in sys.path:
 
 from projection._projection_core import (
     compute_vectors,
+    compute_projections,
     build_result_df,
     load_pair,
     compute_movement_projection,
@@ -89,43 +90,53 @@ def test_compute_vectors_norm_params_lists_four_ranges_at_lag1():
     assert params.count('[') == 8
 
 
-def test_build_result_df_lag0_returns_19_columns():
-    """回归: lag=0 保持 19 列。"""
+def _make_proj_dict(n, k):
+    """造一个 compute_projections 风格的返回 dict,k=2 或 4 表示向量维度。"""
+    return {
+        'projections': np.zeros((n, k)), 'residuals': np.zeros((n, k)),
+        'dot_after': np.zeros(n), 'proj_coeffs': np.zeros(n),
+        'proj_mags': np.zeros(n), 'proj_prices': np.zeros(n), 'resi_prices': np.zeros(n),
+        # 8 维度框架新增(state_)
+        'state_stock_mag': np.zeros(n), 'state_index_mag': np.zeros(n),
+        'state_relative_move': np.zeros(n),
+    }
+
+
+def test_build_result_df_lag0_returns_22_columns():
+    """回归: lag=0 → 22 列(State_ 前缀 + 8 维度幅度量)。"""
     n = 10
     common_idx = pd.date_range('2026-07-01', periods=n, freq='D')
     v_ix = np.random.rand(n, 2)
     v_st = np.random.rand(n, 2)
-    proj = {'projections': np.zeros((n, 2)), 'residuals': np.zeros((n, 2)),
-            'dot_after': np.zeros(n), 'proj_coeffs': np.zeros(n),
-            'proj_mags': np.zeros(n), 'proj_prices': np.zeros(n), 'resi_prices': np.zeros(n)}
+    proj = _make_proj_dict(n, 2)
     df = build_result_df(
         common_idx, v_ix, v_st, v_ix, v_st,
         proj['projections'], proj['residuals'], proj['dot_after'],
         proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'], proj['resi_prices'],
+        proj['state_stock_mag'], proj['state_index_mag'], proj['state_relative_move'],
         "vol_000001:[1,2] amt_000001:[1,2] vol_002475:[1,2] amt_002475:[1,2]",
         '000001', '002475',
     )
-    assert df.shape == (n, 19)
+    assert df.shape == (n, 22)
 
 
-def test_build_result_df_lag1_returns_27_columns():
-    """lag=1: 增加 8 个 prev 列 = 27 列。"""
+def test_build_result_df_lag1_returns_30_columns():
+    """lag=1: 22 + 8 个 prev 列 = 30 列。"""
     n = 10
     common_idx = pd.date_range('2026-07-01', periods=n, freq='D')
     v_ix = np.random.rand(n, 4)
     v_st = np.random.rand(n, 4)
-    proj = {'projections': np.zeros((n, 4)), 'residuals': np.zeros((n, 4)),
-            'dot_after': np.zeros(n), 'proj_coeffs': np.zeros(n),
-            'proj_mags': np.zeros(n), 'proj_prices': np.zeros(n), 'resi_prices': np.zeros(n)}
+    proj = _make_proj_dict(n, 4)
     df = build_result_df(
         common_idx, v_ix, v_st, v_ix, v_st,
         proj['projections'], proj['residuals'], proj['dot_after'],
         proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'], proj['resi_prices'],
+        proj['state_stock_mag'], proj['state_index_mag'], proj['state_relative_move'],
         "vol_000001:[1,2] amt_000001:[1,2] vol_002475:[1,2] amt_002475:[1,2] "
         "vol_prev_000001:[1,2] amt_prev_000001:[1,2] vol_prev_002475:[1,2] amt_prev_002475:[1,2]",
         '000001', '002475', lag=1,
     )
-    assert df.shape == (n, 27)
+    assert df.shape == (n, 30)
     # 检查 prev_raw + prev_norm 4 对列都在
     for tag in ('000001', '002475'):
         for kind in ('Vol', 'Amt'):
@@ -134,42 +145,46 @@ def test_build_result_df_lag1_returns_27_columns():
 
 
 def test_build_result_df_lag1_preserves_projection_columns_after_prev_block():
-    """lag=1 时,Proj_Vol 仍是第 18 列(prev 块在 10-17)。"""
+    """lag=1 时,3 个 State_*_Magnitude/Relative 落在 idx 17/18/19,
+    State_Proj_Vol/Amt 在 idx 20/21(prev 块在 9-16)。"""
     n = 5
     common_idx = pd.date_range('2026-07-01', periods=n, freq='D')
     v_ix = np.random.rand(n, 4)
     v_st = np.random.rand(n, 4)
-    proj = {'projections': np.zeros((n, 4)), 'residuals': np.zeros((n, 4)),
-            'dot_after': np.zeros(n), 'proj_coeffs': np.zeros(n),
-            'proj_mags': np.zeros(n), 'proj_prices': np.zeros(n), 'resi_prices': np.zeros(n)}
+    proj = _make_proj_dict(n, 4)
     df = build_result_df(
         common_idx, v_ix, v_st, v_ix, v_st,
         proj['projections'], proj['residuals'], proj['dot_after'],
         proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'], proj['resi_prices'],
+        proj['state_stock_mag'], proj['state_index_mag'], proj['state_relative_move'],
         "x", '000001', '002475', lag=1,
     )
     cols = list(df.columns)
     assert cols[0] == 'Date'
-    assert cols[17] == 'Proj_Vol'
-    assert cols[18] == 'Proj_Amt'
+    # 8 维度幅度量在 prev 块后(9-16)
+    assert cols[17] == 'State_Stock_Magnitude'
+    assert cols[18] == 'State_Index_Magnitude'
+    assert cols[19] == 'State_Relative_Move'
+    # 然后是 State_Proj_Vol/Amt
+    assert cols[20] == 'State_Proj_Vol'
+    assert cols[21] == 'State_Proj_Amt'
 
 
-def test_build_result_df_lag1_resi_price_present():
-    """find_resi_positive.py 依赖 Resi_Price 列,lag=1 必须保留。"""
+def test_build_result_df_lag1_state_resi_price_present():
+    """find_resi_positive.py 依赖 State_Resi_Price 列,lag=1 必须保留。"""
     n = 5
     common_idx = pd.date_range('2026-07-01', periods=n, freq='D')
     v_ix = np.random.rand(n, 4)
     v_st = np.random.rand(n, 4)
-    proj = {'projections': np.zeros((n, 4)), 'residuals': np.zeros((n, 4)),
-            'dot_after': np.zeros(n), 'proj_coeffs': np.zeros(n),
-            'proj_mags': np.zeros(n), 'proj_prices': np.zeros(n), 'resi_prices': np.zeros(n)}
+    proj = _make_proj_dict(n, 4)
     df = build_result_df(
         common_idx, v_ix, v_st, v_ix, v_st,
         proj['projections'], proj['residuals'], proj['dot_after'],
         proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'], proj['resi_prices'],
+        proj['state_stock_mag'], proj['state_index_mag'], proj['state_relative_move'],
         "x", '000001', '002475', lag=1,
     )
-    assert 'Resi_Price' in df.columns
+    assert 'State_Resi_Price' in df.columns
 
 
 class _FakePipeline:
@@ -295,9 +310,9 @@ def test_movement_raises_when_missing_column():
 
 
 def test_build_movement_result_df_columns():
-    """build_movement_result_df 产 15 列(含 Date),行数 = common_idx[1:] 长度。
+    """build_movement_result_df 产 18 列(含 Date),行数 = common_idx[1:] 长度。
 
-    新增 Proj_Price / Resi_Price 两列(2026-08-15 加)。
+    8 维度框架:所有运动列加 Move_ 前缀,新增 |u|/|v|/R=|u|/|v| 3 列幅度量。
     """
     idx = pd.date_range('2026-07-01', periods=5, freq='D')
     common_idx = idx  # 5 日
@@ -308,6 +323,10 @@ def test_build_movement_result_df_columns():
     mv = {
         'stock_move': stock_move,
         'index_move': index_move,
+        # 8 维度框架新增
+        'stock_move_mag': np.linalg.norm(stock_move, axis=1),
+        'index_move_mag': np.linalg.norm(index_move, axis=1),
+        'relative_move': np.array([0.1, 0.1, 0.1, 0.1]),
         'proj_coeff': np.array([1.0, 1.0, 1.0, 1.0]),
         'proj': proj,
         'residual': residual,
@@ -321,37 +340,50 @@ def test_build_movement_result_df_columns():
     assert len(df) == 4
     expected_cols = [
         'Date',
-        'ΔV_IX_TEST', 'ΔA_IX_TEST', 'ΔV_ST_TEST', 'ΔA_ST_TEST',
-        'Proj_Coeff', 'Proj_Delta_Vol', 'Proj_Delta_Amt',
-        'Resi_Delta_Vol', 'Resi_Delta_Amt',
-        'Proj_Magnitude', 'Resi_Magnitude', 'Dot_After_Proj',
-        'Proj_Price', 'Resi_Price',
+        'Move_Delta_Vol_IX_TEST', 'Move_Delta_Amt_IX_TEST',
+        'Move_Delta_Vol_ST_TEST', 'Move_Delta_Amt_ST_TEST',
+        'Move_Stock_Magnitude', 'Move_Index_Magnitude', 'Move_Relative_Move',
+        'Move_Proj_Coeff', 'Move_Proj_Vol', 'Move_Proj_Amt',
+        'Move_Proj_Magnitude', 'Move_Proj_Price',
+        'Move_Resi_Vol', 'Move_Resi_Amt', 'Move_Resi_Magnitude', 'Move_Resi_Price',
+        'Move_Dot_After',
     ]
     assert list(df.columns) == expected_cols
-    np.testing.assert_array_equal(df['ΔV_ST_TEST'].to_numpy(), stock_move[:, 0])
-    np.testing.assert_array_equal(df['ΔV_IX_TEST'].to_numpy(), index_move[:, 0])
-    # 新增两列数据透传
-    np.testing.assert_allclose(df['Proj_Price'].to_numpy(), [2.0, 1.333, 1.2, 1.143], rtol=1e-3)
-    np.testing.assert_array_equal(df['Resi_Price'].to_numpy(), [0.0, 0.0, 0.0, 0.0])
+    np.testing.assert_array_equal(df['Move_Delta_Vol_ST_TEST'].to_numpy(), stock_move[:, 0])
+    np.testing.assert_array_equal(df['Move_Delta_Vol_IX_TEST'].to_numpy(), index_move[:, 0])
+    # Move_ 前缀的 price 列数据透传
+    np.testing.assert_allclose(df['Move_Proj_Price'].to_numpy(), [2.0, 1.333, 1.2, 1.143], rtol=1e-3)
+    np.testing.assert_array_equal(df['Move_Resi_Price'].to_numpy(), [0.0, 0.0, 0.0, 0.0])
 
 
 def test_movement_returns_proj_price_and_resi_price():
-    """compute_movement_projection 同时返回 proj_prices / resi_prices,与现有字段同 4 维一致性。"""
+    """compute_movement_projection 同时返回 proj_prices / resi_prices,
+    以及 8 维度幅度量 stock_move_mag / index_move_mag / relative_move。"""
     idx = pd.date_range('2026-07-01', periods=4, freq='D')
     df = pd.DataFrame({
         'Volume': [10.0, 12.0, 15.0, 18.0],
         'Amount': [100.0, 130.0, 160.0, 200.0],
     }, index=idx)
     mv = compute_movement_projection(df, df)
+    # 价格(slope)
     assert 'proj_prices' in mv
     assert 'resi_prices' in mv
+    # 幅度量(8 维度框架新增)
+    assert 'stock_move_mag' in mv
+    assert 'index_move_mag' in mv
+    assert 'relative_move' in mv
     # 长度对齐
     assert len(mv['proj_prices']) == 3
     assert len(mv['resi_prices']) == 3
+    assert len(mv['stock_move_mag']) == 3
+    assert len(mv['index_move_mag']) == 3
+    assert len(mv['relative_move']) == 3
     # 这里 stock == index,β=1,residual=0 → proj_price = ΔA/ΔV 大盘,
     # resi_price 应该是 0(residual 是 0 向量,被 safe_ratios 算 0/0 → 0)
     # 注意:numpy 0/0 用 where 分支保护返回 0,不是 nan
     assert all(np.isfinite(mv['proj_prices'])) or all(mv['proj_prices'] == 0)
+    # relative_move = stock_move_mag / index_move_mag → stock==index 时 = 1
+    np.testing.assert_allclose(mv['relative_move'], [1.0, 1.0, 1.0])
 
 
 def test_movement_proj_price_matches_index_movement_direction():
@@ -397,10 +429,11 @@ def test_movement_resi_price_caps_outliers():
 # ========================== build_movement_intermediate_df (复核 CSV) ==========================
 
 def test_build_movement_intermediate_df_columns_and_shape():
-    """复核 DataFrame:22 列,行数 = common_idx[1:] 长度。
+    """复核 DataFrame:25 列,行数 = common_idx[1:] 长度。
 
     设计目的:`projection_2d.py --movement` 顺手落一份 CSV 到 data/projection/intermediate/,
-    每行覆盖原始 Vol/Ama、Δ、β 分子分母、proj/resi、点积、|x|>3 异常 — 人工逐日核对公式。
+    每行覆盖原始 Vol/Ama、Δ、β 分子分母、|u|/|v|/R、proj/resi、点积、|x|>3 异常 —
+    人工逐日核对公式。
     """
     idx = pd.date_range('2026-07-01', periods=5, freq='D')
     stock_df = pd.DataFrame({
@@ -418,15 +451,19 @@ def test_build_movement_intermediate_df_columns_and_shape():
 
     expected_cols = [
         'Date',
-        'Vol_IX_TEST', 'Amt_IX_TEST', 'Vol_ST_TEST', 'Amt_ST_TEST',
-        'ΔV_IX_TEST', 'ΔA_IX_TEST', 'ΔV_ST_TEST', 'ΔA_ST_TEST',
-        'V_dot_V', 'U_dot_V', 'Proj_Coeff',
-        'Proj_ΔV', 'Proj_ΔA', 'Resi_ΔV', 'Resi_ΔA',
-        'Resi_dot_V', 'Proj_Magnitude', 'Resi_Magnitude',
-        'Proj_Price', 'Resi_Price_Raw', 'Resi_Price',
+        'Move_Vol_IX_TEST', 'Move_Amt_IX_TEST', 'Move_Vol_ST_TEST', 'Move_Amt_ST_TEST',
+        'Move_Delta_Vol_IX_TEST', 'Move_Delta_Amt_IX_TEST',
+        'Move_Delta_Vol_ST_TEST', 'Move_Delta_Amt_ST_TEST',
+        'Move_V_dot_V', 'Move_U_dot_V',
+        'Move_Stock_Magnitude', 'Move_Index_Magnitude', 'Move_Relative_Move',
+        'Move_Proj_Coeff', 'Move_Proj_Vol', 'Move_Proj_Amt',
+        'Move_Proj_Magnitude', 'Move_Proj_Price',
+        'Move_Resi_Vol', 'Move_Resi_Amt', 'Move_Resi_Magnitude',
+        'Move_Resi_Price_Raw', 'Move_Resi_Price',
+        'Move_Dot_After',
     ]
     assert list(df.columns) == expected_cols
-    assert len(expected_cols) == 22
+    assert len(expected_cols) == 25
 
 
 def test_build_movement_intermediate_df_recomputes_every_step():
@@ -436,15 +473,17 @@ def test_build_movement_intermediate_df_recomputes_every_step():
       ΔV/ΔA = 当前 Vol/Ama - 上一行 Vol/Ama
       V_dot_V = ΔV_idx² + ΔA_idx²
       U_dot_V = ΔV_stk·ΔV_idx + ΔA_stk·ΔA_idx
+      |u| = √(ΔV_stk² + ΔA_stk²),|v| = √(ΔV_idx² + ΔA_idx²)
+      R = |u| / |v|
       Proj_Coeff = U_dot_V / V_dot_V
-      Proj_ΔV/ΔA = Proj_Coeff × ΔV_idx/ΔA_idx
-      Resi_ΔV/ΔA = ΔV/ΔA_stk - Proj_ΔV/ΔA
-      Resi_dot_V = Resi_ΔV·ΔV_idx + Resi_ΔA·ΔA_idx (理想 = 0,数值上是浮点 roundoff 量级)
+      Proj_Vol/Amt = Proj_Coeff × ΔV/ΔA_idx
+      Resi_Vol/Amt = ΔV/ΔA_stk - Proj_Vol/Amt
+      Dot_After = Resi_Vol·ΔV_idx + Resi_Amt·ΔA_idx (理想 = 0)
       Proj_Price = ΔA_idx / ΔV_idx(β 抵消)
-      Resi_Price_Raw = Resi_ΔA / Resi_ΔV
+      Resi_Price_Raw = Resi_Amt / Resi_Vol
 
     用小整数数据(与 test_movement_residual_orthogonal_to_index 同款)避免
-    float64 roundoff 让 Resi_dot_V 看上去不严格为 0。
+    float64 roundoff 让 Dot_After 看上去不严格为 0。
     """
     idx = pd.date_range('2026-07-01', periods=5, freq='D')
     stock_df = pd.DataFrame({
@@ -461,67 +500,82 @@ def test_build_movement_intermediate_df_recomputes_every_step():
     # ΔV/ΔA = diff
     expected_dv_idx = np.diff(index_df['Volume'].to_numpy())
     expected_da_idx = np.diff(index_df['Amount'].to_numpy())
-    np.testing.assert_allclose(df['ΔV_IX_TEST'].to_numpy(), expected_dv_idx)
-    np.testing.assert_allclose(df['ΔA_IX_TEST'].to_numpy(), expected_da_idx)
+    np.testing.assert_allclose(df['Move_Delta_Vol_IX_TEST'].to_numpy(), expected_dv_idx)
+    np.testing.assert_allclose(df['Move_Delta_Amt_IX_TEST'].to_numpy(), expected_da_idx)
 
     # V_dot_V / U_dot_V
     np.testing.assert_allclose(
-        df['V_dot_V'].to_numpy(),
+        df['Move_V_dot_V'].to_numpy(),
         expected_dv_idx**2 + expected_da_idx**2,
     )
     dv_stk = np.diff(stock_df['Volume'].to_numpy())
     da_stk = np.diff(stock_df['Amount'].to_numpy())
     np.testing.assert_allclose(
-        df['U_dot_V'].to_numpy(),
+        df['Move_U_dot_V'].to_numpy(),
         dv_stk * expected_dv_idx + da_stk * expected_da_idx,
     )
 
+    # |u|/|v|/R
+    np.testing.assert_allclose(
+        df['Move_Stock_Magnitude'].to_numpy(),
+        np.sqrt(dv_stk**2 + da_stk**2),
+    )
+    np.testing.assert_allclose(
+        df['Move_Index_Magnitude'].to_numpy(),
+        np.sqrt(expected_dv_idx**2 + expected_da_idx**2),
+    )
+    np.testing.assert_allclose(
+        df['Move_Relative_Move'].to_numpy(),
+        np.sqrt(dv_stk**2 + da_stk**2) / np.sqrt(expected_dv_idx**2 + expected_da_idx**2),
+        rtol=1e-9,
+    )
+
     # Proj_Coeff = U/V(分母非零时)
-    expected_beta = df['U_dot_V'].to_numpy() / df['V_dot_V'].to_numpy()
-    np.testing.assert_allclose(df['Proj_Coeff'].to_numpy(), expected_beta, rtol=1e-9)
+    expected_beta = df['Move_U_dot_V'].to_numpy() / df['Move_V_dot_V'].to_numpy()
+    np.testing.assert_allclose(df['Move_Proj_Coeff'].to_numpy(), expected_beta, rtol=1e-9)
 
-    # Proj_ΔV/ΔA = β × ΔV/ΔA_idx
+    # Proj_Vol/Amt = β × ΔV/ΔA_idx
     np.testing.assert_allclose(
-        df['Proj_ΔV'].to_numpy(),
-        df['Proj_Coeff'].to_numpy() * expected_dv_idx,
+        df['Move_Proj_Vol'].to_numpy(),
+        df['Move_Proj_Coeff'].to_numpy() * expected_dv_idx,
         rtol=1e-9,
     )
 
-    # Resi_ΔV/ΔA = ΔV/ΔA_stk - Proj_ΔV/ΔA
+    # Resi_Vol/Amt = ΔV/ΔA_stk - Proj_Vol/Amt
     np.testing.assert_allclose(
-        df['Resi_ΔV'].to_numpy(),
-        dv_stk - df['Proj_ΔV'].to_numpy(),
+        df['Move_Resi_Vol'].to_numpy(),
+        dv_stk - df['Move_Proj_Vol'].to_numpy(),
         rtol=1e-9,
     )
 
-    # Resi_dot_V(数值上 = resi · v,公式上为 0;小整数数据下 roundoff 可忽略)
-    resi_dv = df['Resi_ΔV'].to_numpy()
-    resi_da = df['Resi_ΔA'].to_numpy()
+    # Dot_After(数值上 = resi · v,公式上为 0;小整数数据下 roundoff 可忽略)
+    resi_dv = df['Move_Resi_Vol'].to_numpy()
+    resi_da = df['Move_Resi_Amt'].to_numpy()
     expected_dot = resi_dv * expected_dv_idx + resi_da * expected_da_idx
-    np.testing.assert_allclose(df['Resi_dot_V'].to_numpy(), expected_dot, rtol=1e-9, atol=1e-12)
-    np.testing.assert_allclose(df['Resi_dot_V'].to_numpy(), 0.0, atol=1e-9)
+    np.testing.assert_allclose(df['Move_Dot_After'].to_numpy(), expected_dot, rtol=1e-9, atol=1e-12)
+    np.testing.assert_allclose(df['Move_Dot_After'].to_numpy(), 0.0, atol=1e-9)
 
     # Proj_Price = ΔA_idx / ΔV_idx(β 抵消)
     np.testing.assert_allclose(
-        df['Proj_Price'].to_numpy(),
+        df['Move_Proj_Price'].to_numpy(),
         expected_da_idx / expected_dv_idx,
         rtol=1e-9,
     )
 
-    # Resi_Price_Raw = Resi_ΔA / Resi_ΔV(可能 Inf/NaN)
-    raw = df['Resi_Price_Raw'].to_numpy()
+    # Resi_Price_Raw = Resi_Amt / Resi_Vol(可能 Inf/NaN)
+    raw = df['Move_Resi_Price_Raw'].to_numpy()
     expected_raw = resi_da / resi_dv
     fin_mask = np.isfinite(raw) & np.isfinite(expected_raw)
     np.testing.assert_allclose(raw[fin_mask], expected_raw[fin_mask], rtol=1e-9)
     # Resi_Price(限幅后)应 ≤ 3
-    assert np.all(np.abs(df['Resi_Price'].to_numpy()) <= 3.0 + 1e-9)
+    assert np.all(np.abs(df['Move_Resi_Price'].to_numpy()) <= 3.0 + 1e-9)
 
 
 def test_build_movement_intermediate_df_resi_price_raw_shows_div_by_zero_as_nan():
-    """residual_ΔV = 0 时,Resi_Price_Raw 应当是 NaN(不是被替换为 0)。
+    """residual_Vol = 0 时,Move_Resi_Price_Raw 应当是 NaN(不是被替换为 0)。
 
     设计目的:复核 CSV 里 0/0 用 NaN 暴露,人工一眼能看出"这天残差为 0 向量,price 无意义"。
-    Resi_Price 走 _movement_safe_ratios 时会被替换为 0(防 /0),两者并列保留。
+    Move_Resi_Price 走 _movement_safe_ratios 时会被替换为 0(防 /0),两者并列保留。
 
     触发条件:stock 运动完全沿 index 方向 → u == proj → residual == (0, 0)。
     与 test_movement_basic_projection_along_index_direction 同算例(ΔV/ΔA = 30/60 沿 50/100)。
@@ -538,19 +592,20 @@ def test_build_movement_intermediate_df_resi_price_raw_shows_div_by_zero_as_nan(
     mv = compute_movement_projection(stock_df, index_df)
     df = build_movement_intermediate_df(idx[1:], mv, stock_df, index_df, 'IX', 'ST')
 
-    # 残差向量 = 0 → residual_ΔV = 0 → Resi_Price_Raw 应 = NaN(0/0)
-    assert np.all(np.isnan(df['Resi_Price_Raw'].to_numpy())), (
-        f"residual = 0,Resi_Price_Raw 应 NaN,实际 {df['Resi_Price_Raw'].tolist()}"
+    # 残差向量 = 0 → residual_Vol = 0 → Move_Resi_Price_Raw 应 = NaN(0/0)
+    assert np.all(np.isnan(df['Move_Resi_Price_Raw'].to_numpy())), (
+        f"residual = 0,Move_Resi_Price_Raw 应 NaN,实际 {df['Move_Resi_Price_Raw'].tolist()}"
     )
-    # Resi_Price(走 _movement_safe_ratios 0/0 保护)应 = 0
-    assert np.all(df['Resi_Price'].to_numpy() == 0.0)
-    # Resi_ΔV / Resi_ΔA 也应为 0 — 双重确认残差为 0 向量
-    np.testing.assert_array_equal(df['Resi_ΔV'].to_numpy(), [0.0, 0.0])
-    np.testing.assert_array_equal(df['Resi_ΔA'].to_numpy(), [0.0, 0.0])
+    # Move_Resi_Price(走 _movement_safe_ratios 0/0 保护)应 = 0
+    assert np.all(df['Move_Resi_Price'].to_numpy() == 0.0)
+    # Move_Resi_Vol / Move_Resi_Amt 也应为 0 — 双重确认残差为 0 向量
+    np.testing.assert_array_equal(df['Move_Resi_Vol'].to_numpy(), [0.0, 0.0])
+    np.testing.assert_array_equal(df['Move_Resi_Amt'].to_numpy(), [0.0, 0.0])
 
 
 def test_build_movement_intermediate_df_raw_vol_amt_columns_match_input():
-    """Vol/Amt 原始列(非 Δ)= caller 传 stock_df/index_df 对应行的 Volume/Amount,丢首行对齐。"""
+    """Move_Vol/Move_Amt 原始列(非 Δ)= caller 传 stock_df/index_df 对应行的
+    Volume/Amount,丢首行对齐。"""
     idx = pd.date_range('2026-07-01', periods=5, freq='D')
     stock_df = pd.DataFrame({
         'Volume': [10.0, 20.0, 30.0, 40.0, 50.0],
@@ -563,17 +618,123 @@ def test_build_movement_intermediate_df_raw_vol_amt_columns_match_input():
     mv = compute_movement_projection(stock_df, index_df)
     df = build_movement_intermediate_df(idx[1:], mv, stock_df, index_df, 'IX', 'ST')
 
-    # 丢首行后,Vol_ST 应 = stock_df[1:] 的 Volume
+    # 丢首行后,Move_Vol_ST 应 = stock_df[1:] 的 Volume
     np.testing.assert_array_equal(
-        df['Vol_ST'].to_numpy(), stock_df['Volume'].to_numpy()[1:]
+        df['Move_Vol_ST'].to_numpy(), stock_df['Volume'].to_numpy()[1:]
     )
     np.testing.assert_array_equal(
-        df['Amt_ST'].to_numpy(), stock_df['Amount'].to_numpy()[1:]
+        df['Move_Amt_ST'].to_numpy(), stock_df['Amount'].to_numpy()[1:]
     )
     np.testing.assert_array_equal(
-        df['Vol_IX'].to_numpy(), index_df['Volume'].to_numpy()[1:]
+        df['Move_Vol_IX'].to_numpy(), index_df['Volume'].to_numpy()[1:]
     )
     np.testing.assert_array_equal(
-        df['Amt_IX'].to_numpy(), index_df['Amount'].to_numpy()[1:]
+        df['Move_Amt_IX'].to_numpy(), index_df['Amount'].to_numpy()[1:]
     )
+
+
+# ========================== 8 维度幅度量(magnitude / R)单测 ==========================
+
+def test_movement_returns_magnitudes_and_relative_move():
+    """compute_movement_projection 的 stock_move_mag / index_move_mag / relative_move
+    应等于手算的 ‖u‖ / ‖v‖ / ‖u‖/‖v‖,大盘运动太小(v·v < 1e-12)时 R → 0。
+
+    设计要点:这是 8 维度框架里「幅度量」与原 Price(方向斜率)的区分 —
+    Price 是 β·ΔA/β·ΔV(方向),Magnitude 是 √(ΔV² + ΔA²)(大小),识别
+    「大盘没动 / 个股暴动」靠 Magnitude 而不是 Price。
+    """
+    idx = pd.date_range('2026-07-01', periods=3, freq='D')
+    stock_df = pd.DataFrame({
+        'Volume': [100.0, 130.0, 150.0],   # ΔV = [30, 20]
+        'Amount': [200.0, 260.0, 300.0],   # ΔA = [60, 40]
+    }, index=idx)
+    index_df = pd.DataFrame({
+        'Volume': [1000.0, 1050.0, 1100.0],  # ΔV = [50, 50]
+        'Amount': [2000.0, 2100.0, 2200.0],  # ΔA = [100, 100]
+    }, index=idx)
+    mv = compute_movement_projection(stock_df, index_df)
+
+    # 丢首行剩 2 行
+    assert mv['stock_move_mag'].shape == (2,)
+    assert mv['index_move_mag'].shape == (2,)
+    assert mv['relative_move'].shape == (2,)
+
+    # |u| = √(ΔV_s² + ΔA_s²)
+    # 第一行:√(30² + 60²) = √(900+3600) = √4500 ≈ 67.082
+    # 第二行:√(20² + 40²) = √(400+1600) = √2000 ≈ 44.721
+    np.testing.assert_allclose(mv['stock_move_mag'], [np.sqrt(4500), np.sqrt(2000)], rtol=1e-9)
+
+    # |v| = √(ΔV_i² + ΔA_i²) = √(50² + 100²) = √12500 ≈ 111.803(两行一样)
+    np.testing.assert_allclose(mv['index_move_mag'], [np.sqrt(12500), np.sqrt(12500)], rtol=1e-9)
+
+    # R = |u|/|v|
+    np.testing.assert_allclose(
+        mv['relative_move'],
+        [np.sqrt(4500) / np.sqrt(12500), np.sqrt(2000) / np.sqrt(12500)],
+        rtol=1e-9,
+    )
+
+
+def test_movement_relative_move_handles_zero_index_movement():
+    """大盘运动 ‖v‖ → 0 时,relative_move 应为 0(沿用 β 阈值同款保护),
+    而不是 NaN/Inf。这样下游图表不会因少量 Inf 行被刷坏。
+    """
+    idx = pd.date_range('2026-07-01', periods=3, freq='D')
+    stock_df = pd.DataFrame({
+        'Volume': [100.0, 110.0, 120.0],
+        'Amount': [200.0, 210.0, 220.0],
+    }, index=idx)
+    index_df = pd.DataFrame({
+        'Volume': [1000.0, 1000.0, 1000.0],   # 完全不变 → ΔV = 0
+        'Amount': [2000.0, 2000.0, 2000.0],   # ΔA = 0
+    }, index=idx)
+    mv = compute_movement_projection(stock_df, index_df)
+
+    # ‖v‖ = 0,但 ‖u‖ = √(10² + 10²) ≠ 0。R 应被保护为 0,不爆 NaN/Inf
+    assert np.all(np.isfinite(mv['relative_move'])), (
+        f"相对运动应全 finite(被 where 分支保护),实际 {mv['relative_move']}"
+    )
+    np.testing.assert_array_equal(mv['relative_move'], [0.0, 0.0])
+    # 自身幅度量仍正常
+    np.testing.assert_allclose(mv['index_move_mag'], [0.0, 0.0])
+    np.testing.assert_allclose(mv['stock_move_mag'], [np.sqrt(200), np.sqrt(200)], rtol=1e-9)
+
+
+def test_state_returns_magnitudes_and_relative_move():
+    """compute_projections 的 state_stock_mag / state_index_mag / state_relative_move
+    应等于手算的 ‖u‖ / ‖v‖ / ‖u‖/‖v‖(归一化后)。
+    """
+    # 简单造 4 行:u/v 都是单位向量不同比例
+    # u1=[1, 0],v1=[1, 0]  → |u|=1, |v|=1, R=1
+    # u2=[0, 1],v2=[0, 1]  → |u|=1, |v|=1, R=1
+    # u3=[1, 1],v3=[1, 0]  → |u|=√2, |v|=1, R=√2
+    # u4=[0, 0],v4=[0, 0]  → |u|=0, |v|=0, R=0(0/0 保护)
+    vec_stock_norm = np.array([
+        [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.0, 0.0],
+    ])
+    vec_index_norm = np.array([
+        [1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [0.0, 0.0],
+    ])
+    proj = compute_projections(vec_stock_norm, vec_index_norm)
+    assert 'state_stock_mag' in proj
+    assert 'state_index_mag' in proj
+    assert 'state_relative_move' in proj
+    assert proj['state_stock_mag'].shape == (4,)
+    assert proj['state_index_mag'].shape == (4,)
+    assert proj['state_relative_move'].shape == (4,)
+
+    # 归一化空间里 |v|=1 在第 1/2/3 行,|v|=0 在第 4 行
+    np.testing.assert_allclose(
+        proj['state_index_mag'], [1.0, 1.0, 1.0, 0.0], atol=1e-12,
+    )
+    # |u| = 1, 1, √2, 0
+    np.testing.assert_allclose(
+        proj['state_stock_mag'], [1.0, 1.0, np.sqrt(2), 0.0], atol=1e-12,
+    )
+    # R = 1, 1, √2, 0(0/0 保护)
+    np.testing.assert_allclose(
+        proj['state_relative_move'], [1.0, 1.0, np.sqrt(2), 0.0], atol=1e-12,
+    )
+    # 全 finite
+    assert np.all(np.isfinite(proj['state_relative_move']))
 

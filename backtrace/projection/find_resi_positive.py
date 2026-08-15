@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
-"""扫描 data/projection/ 下所有配对 CSV,选出指定日期 Resi_Price > 0 的个股并推送到通达信自选股。
+"""扫描 data/projection/ 下所有配对 CSV,选出指定日期 State_Resi_Price > 0 的个股并推送到通达信自选股。
 
 每个 CSV 文件名形如 projection_<codeA>_<codeB>.csv,内含一对股票的残差序列。
-Resi_Price 是该配对在当日投影模型拟合后的残差(>0 表示真实价偏离投影价正向)。
+State_Resi_Price 是该配对在当日 state 投影模型拟合后的残差方向斜率
+(>0 表示真实方向斜率偏离投影方向斜率正向)。
+
+注:2026-08-15 列名从 `Resi_Price` 重命名为 `State_Resi_Price`(加 State_ 前缀),
+跟 movement 投影的 `Move_Resi_Price` 列明确区分。
 
 基线类型(codeA):
   - 000001 / 399001 → 大盘(上证综指 / 深证成指)
@@ -92,16 +96,16 @@ def is_pushable(code: str) -> bool:
 
 
 def latest_date_with_positive(data_dir: str) -> str:
-    """扫描目录,返回最近一个有 Resi_Price>0 的日期 YYYY-MM-DD。"""
+    """扫描目录,返回最近一个有 State_Resi_Price>0 的日期 YYYY-MM-DD。"""
     paths = sorted(glob.glob(os.path.join(data_dir, 'projection_*.csv')))
     from collections import defaultdict
     pos = defaultdict(int)
     for p in paths:
         try:
-            df = pd.read_csv(p, usecols=['Date', 'Resi_Price'])
+            df = pd.read_csv(p, usecols=['Date', 'State_Resi_Price'])
         except Exception:
             continue
-        for d, r in zip(df['Date'], df['Resi_Price']):
+        for d, r in zip(df['Date'], df['State_Resi_Price']):
             if pd.notna(r) and r > 0:
                 pos[d] += 1
     if not pos:
@@ -126,7 +130,7 @@ def latest_date_any(data_dir: str) -> str:
 
 
 def scan(data_dir: str, target_date: str, baseline_type: str = 'all') -> pd.DataFrame:
-    """扫描所有 projection CSV,挑出 target_date 当日 Resi_Price > 0 的配对。
+    """扫描所有 projection CSV,挑出 target_date 当日 State_Resi_Price > 0 的配对。
 
     baseline_type:
       'all'   — 全部配对(向后兼容)
@@ -146,13 +150,13 @@ def scan(data_dir: str, target_date: str, baseline_type: str = 'all') -> pd.Data
         if baseline_type != 'all' and btype != baseline_type:
             continue
         try:
-            df = pd.read_csv(path, usecols=['Date', 'Resi_Price'])
+            df = pd.read_csv(path, usecols=['Date', 'State_Resi_Price'])
         except Exception:
             continue
         hit = df[df['Date'] == target_date]
         if len(hit) == 0:
             continue
-        resi = float(hit['Resi_Price'].iloc[0])
+        resi = float(hit['State_Resi_Price'].iloc[0])
         if resi > 0:
             rows.append({
                 'baseline_type': btype,
@@ -255,12 +259,12 @@ def main():
     df = scan(args.data_dir, target, baseline_type=args.type)
     if len(df) == 0:
         scanned = len(glob.glob(os.path.join(args.data_dir, 'projection_*.csv')))
-        print(f'❌ {target} 当日无 Resi_Price>0 的配对(过滤类型={args.type},共扫描 {scanned} 文件)')
+        print(f'❌ {target} 当日无 State_Resi_Price>0 的配对(过滤类型={args.type},共扫描 {scanned} 文件)')
         sys.exit(0)
 
     df = df.sort_values('resi_price', ascending=False).reset_index(drop=True)
     df.to_csv(args.out, index=False, encoding='utf-8-sig')
-    print(f'✅ {target} Resi_Price>0 配对数:{len(df)}')
+    print(f'✅ {target} State_Resi_Price>0 配对数:{len(df)}')
     print(f'   已保存:{args.out}')
 
     # 按基线类型统计(只对 all 模式有意义;过滤模式下只有一类)

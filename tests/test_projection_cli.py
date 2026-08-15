@@ -43,8 +43,8 @@ def _fake_pair(n=5):
     return base
 
 
-def test_batch_process_one_lag0_writes_19_col_csv(tmp_path, monkeypatch):
-    """process_one 默认 lag=0 写出 19 列 CSV。"""
+def test_batch_process_one_lag0_writes_22_col_csv(tmp_path, monkeypatch):
+    """process_one 默认 lag=0 写出 22 列 CSV(State_ 前缀 + 8 维度幅度量)。"""
     # 切 cwd 到 tmp,避免污染 data/projection/
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('projection_batch.CSV_OUT_DIR', str(tmp_path))
@@ -63,12 +63,16 @@ def test_batch_process_one_lag0_writes_19_col_csv(tmp_path, monkeypatch):
     assert row['rows'] == 5
     assert os.path.exists(row['csv_path'])
     csv_df = pd.read_csv(row['csv_path'])
-    assert csv_df.shape[1] == 19
-    assert 'Resi_Price' in csv_df.columns
+    assert csv_df.shape[1] == 22
+    assert 'State_Resi_Price' in csv_df.columns
+    # 8 维度幅度量
+    assert 'State_Stock_Magnitude' in csv_df.columns
+    assert 'State_Index_Magnitude' in csv_df.columns
+    assert 'State_Relative_Move' in csv_df.columns
 
 
-def test_batch_process_one_lag1_writes_27_col_csv(tmp_path, monkeypatch):
-    """process_one lag=1 写出 27 列 CSV,首行降。"""
+def test_batch_process_one_lag1_writes_30_col_csv(tmp_path, monkeypatch):
+    """process_one lag=1 写出 30 列 CSV,首行降;State_ 前缀。"""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('projection_batch.CSV_OUT_DIR', str(tmp_path))
 
@@ -84,8 +88,8 @@ def test_batch_process_one_lag1_writes_27_col_csv(tmp_path, monkeypatch):
     assert row['status'] == 'ok', row
     assert row['rows'] == 4, f"5 行 - 首行 = 4 行,实际 {row['rows']}"
     csv_df = pd.read_csv(row['csv_path'])
-    assert csv_df.shape[1] == 27
-    assert 'Resi_Price' in csv_df.columns
+    assert csv_df.shape[1] == 30
+    assert 'State_Resi_Price' in csv_df.columns
     assert 'Vol_000001_prev_raw' in csv_df.columns
     assert 'Vol_000001_prev_norm' in csv_df.columns
 
@@ -120,7 +124,7 @@ def test_single_two_day_vec_sets_4d_prefix(tmp_path, monkeypatch):
 # ========================== --movement flag ==========================
 
 def test_batch_process_one_with_movement_writes_extra_csv(tmp_path, monkeypatch):
-    """--movement 开启时,process_one 除常规 CSV 外,额外产 movement_*.csv(行数 = 共同交易日 - 1,13 列)。"""
+    """--movement 开启时,process_one 除常规 CSV 外,额外产 movement_*.csv(行数 = 共同交易日 - 1,18 列,Move_ 前缀)。"""
     import projection_batch as pb_mod
 
     n = 6
@@ -144,14 +148,18 @@ def test_batch_process_one_with_movement_writes_extra_csv(tmp_path, monkeypatch)
     mv_csv = tmp_path / 'data' / 'projection' / 'movement_000001_002475.csv'
     assert mv_csv.exists(), f"movement CSV 未生成: {mv_csv}"
     mv_df = pd.read_csv(mv_csv)
-    # 15 列:13 基础列 + Proj_Price + Resi_Price(2026-08-15 加)
-    assert mv_df.shape == (n - 1, 15), f"期望 {n-1} 行 × 15 列, 实际 {mv_df.shape}"
-    assert 'ΔV_000001' in mv_df.columns
-    assert 'ΔV_002475' in mv_df.columns
-    assert 'Proj_Coeff' in mv_df.columns
-    assert 'Dot_After_Proj' in mv_df.columns
-    assert 'Proj_Price' in mv_df.columns
-    assert 'Resi_Price' in mv_df.columns
+    # 18 列:13 基础列 + Proj_Price + Resi_Price + 3 个幅度量(Move_ 前缀)
+    assert mv_df.shape == (n - 1, 18), f"期望 {n-1} 行 × 18 列, 实际 {mv_df.shape}"
+    assert 'Move_Delta_Vol_000001' in mv_df.columns
+    assert 'Move_Delta_Vol_002475' in mv_df.columns
+    assert 'Move_Proj_Coeff' in mv_df.columns
+    assert 'Move_Dot_After' in mv_df.columns
+    assert 'Move_Proj_Price' in mv_df.columns
+    assert 'Move_Resi_Price' in mv_df.columns
+    # 8 维度幅度量
+    assert 'Move_Stock_Magnitude' in mv_df.columns
+    assert 'Move_Index_Magnitude' in mv_df.columns
+    assert 'Move_Relative_Move' in mv_df.columns
 
 
 def test_batch_process_one_without_movement_does_not_write_movement_csv(tmp_path, monkeypatch):

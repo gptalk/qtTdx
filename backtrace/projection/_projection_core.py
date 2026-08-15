@@ -260,9 +260,16 @@ def compute_vectors(stock_df, index_df, index_tag, stock_tag, lag: int = 0):
 
 
 def compute_projections(vec_stock_norm, vec_index_norm):
-    """对每行跑 project_u_onto_v,返回 7 个 np.array。"""
+    """对每行跑 project_u_onto_v,返回 10 个 np.array(原 7 + 新增 3 个幅度量)。
+
+    新增 3 个 dict key(state_ 前缀,与 movement 区分):
+        state_stock_mag:    ndarray (T,) — |u| 归一化空间向量模长
+        state_index_mag:    ndarray (T,) — |v| 归一化空间向量模长
+        state_relative_move: ndarray (T,) — |u| / |v|,|v|≈0 时 → 0(沿用 β 默认容错)
+    """
     projections, residuals, dot_after = [], [], []
     proj_coeffs, proj_mags, proj_prices, resi_prices = [], [], [], []
+    state_stock_mag, state_index_mag = [], []
 
     for i in range(len(vec_stock_norm)):
         u = vec_stock_norm[i]
@@ -283,6 +290,16 @@ def compute_projections(vec_stock_norm, vec_index_norm):
             sign = np.sign(residual[1]) if np.isfinite(residual[1]) else 0.0
             resi_price = sign * cap
         resi_prices.append(resi_price)
+        state_stock_mag.append(np.linalg.norm(u))
+        state_index_mag.append(np.linalg.norm(v))
+
+    state_stock_mag = np.array(state_stock_mag)
+    state_index_mag = np.array(state_index_mag)
+    state_relative_move = np.divide(
+        state_stock_mag, state_index_mag,
+        out=np.zeros_like(state_stock_mag),
+        where=state_index_mag > 1e-12,
+    )
 
     return {
         'projections': np.array(projections),
@@ -292,6 +309,9 @@ def compute_projections(vec_stock_norm, vec_index_norm):
         'proj_mags': np.array(proj_mags),
         'proj_prices': np.array(proj_prices),
         'resi_prices': np.array(resi_prices),
+        'state_stock_mag': state_stock_mag,
+        'state_index_mag': state_index_mag,
+        'state_relative_move': state_relative_move,
     }
 
 
@@ -309,18 +329,21 @@ def compute_movement_projection(stock_df, index_df):
 
     Returns:
         dict with keys:
-            stock_move:   ndarray (T-1, 2)  — 个股运动向量 (ΔV_s, ΔA_s)
-            index_move:   ndarray (T-1, 2)  — 指数运动向量 (ΔV_i, ΔA_i)
-            v_dot_v:      ndarray (T-1,)   — v·v (= ΔV_i² + ΔA_i²,β 分母)
-            u_dot_v:      ndarray (T-1,)   — u·v (= ΔV_s·ΔV_i + ΔA_s·ΔA_i,β 分子)
-            proj_coeff:   ndarray (T-1,)   — 映射系数 β_t = (u·v) / (v·v)
-            proj:         ndarray (T-1, 2)  — 投影向量 β_t * v
-            residual:     ndarray (T-1, 2)  — 正交残差 u - proj
-            proj_mag:     ndarray (T-1,)   — ‖proj‖
-            resi_mag:     ndarray (T-1,)   — ‖residual‖
-            dot_after:    ndarray (T-1,)   — residual · v,理想正交 = 0
-            proj_prices:  ndarray (T-1,)   — β·ΔA / β·ΔV (= ΔA_i / ΔV_i,大盘边际成交均价)
-            resi_prices:  ndarray (T-1,)   — residual_ΔA / residual_ΔV(分母 0 → 0)
+            stock_move:    ndarray (T-1, 2)  — 个股运动向量 (ΔV_s, ΔA_s)
+            index_move:    ndarray (T-1, 2)  — 指数运动向量 (ΔV_i, ΔA_i)
+            stock_move_mag: ndarray (T-1,)  — |u| = √(ΔV_s² + ΔA_s²)【运动幅度】
+            index_move_mag: ndarray (T-1,)  — |v| = √(ΔV_i² + ΔA_i²)【大盘运动幅度】
+            relative_move:  ndarray (T-1,)  — |u| / |v|【个股相对大盘运动倍数;|v|≈0 时 → 0】
+            v_dot_v:       ndarray (T-1,)   — v·v (= ΔV_i² + ΔA_i²,β 分母)
+            u_dot_v:       ndarray (T-1,)   — u·v (= ΔV_s·ΔV_i + ΔA_s·ΔA_i,β 分子)
+            proj_coeff:    ndarray (T-1,)   — 映射系数 β_t = (u·v) / (v·v)
+            proj:          ndarray (T-1, 2)  — 投影向量 β_t * v
+            residual:      ndarray (T-1, 2)  — 正交残差 u - proj
+            proj_mag:      ndarray (T-1,)   — ‖proj‖
+            resi_mag:      ndarray (T-1,)   — ‖residual‖
+            dot_after:     ndarray (T-1,)   — residual · v,理想正交 = 0
+            proj_prices:   ndarray (T-1,)   — β·ΔA / β·ΔV (= ΔA_i / ΔV_i,大盘边际成交均价)
+            resi_prices:   ndarray (T-1,)   — residual_ΔA / residual_ΔV(分母 0 → 0)
     """
     for c in ('Volume', 'Amount'):
         if c not in stock_df.columns:
@@ -351,6 +374,16 @@ def compute_movement_projection(stock_df, index_df):
     resi_mag = np.linalg.norm(residual, axis=1)
     dot_after = np.sum(residual * v, axis=1)                  # 理想正交 → 0
 
+    # 8 维度框架的「幅度」量 — 与 Price (方向斜率) 区分:
+    #   stock_move_mag / index_move_mag 描述运动大小(单位:手 / 元,与 Price 同空间)
+    #   relative_move 描述「个股比大盘大几倍」,大盘没动个股暴动时 → 大值
+    #   β 阈值同款保护:v 太小时 relative_move → 0,避免除零
+    stock_move_mag = np.linalg.norm(u, axis=1)
+    index_move_mag = np.linalg.norm(v, axis=1)
+    relative_move = np.divide(stock_move_mag, index_move_mag,
+                              out=np.zeros_like(stock_move_mag),
+                              where=index_move_mag > 1e-12)
+
     # proj_price / resi_price:投影向量/残差向量的 Amount/Volume 比。
     # 几何含义:
     #   - proj_price = β·ΔA / (β·ΔV) = ΔA_i / ΔV_i
@@ -371,6 +404,9 @@ def compute_movement_projection(stock_df, index_df):
     return {
         'stock_move': u,
         'index_move': v,
+        'stock_move_mag': stock_move_mag,
+        'index_move_mag': index_move_mag,
+        'relative_move': relative_move,
         'v_dot_v': v_dot_v,
         'u_dot_v': u_dot_v,
         'proj_coeff': proj_coeff,
@@ -400,61 +436,64 @@ def _movement_safe_ratios(arr2d, axis=1, cap_to=None):
 
 
 def build_movement_result_df(common_idx, mv, index_tag, stock_tag):
-    """组装运动投影结果 DataFrame — 15 列。
+    """组装运动投影结果 DataFrame — 18 列(8 维度框架)。
 
-    Columns:
-        Date, ΔV_{index_tag}, ΔA_{index_tag}, ΔV_{stock_tag}, ΔA_{stock_tag},
-        Proj_Coeff, Proj_Delta_Vol, Proj_Delta_Amt,
-        Resi_Delta_Vol, Resi_Delta_Amt,
-        Proj_Magnitude, Resi_Magnitude, Dot_After_Proj,
-        Proj_Price, Resi_Price
+    所有运动向量相关列加 Move_ 前缀,与 state projection 的 State_ 前缀列明确区分。
+    列分组:
+      1. 运动向量本身:Move_Delta_Vol/Amt_{idx/stk} (4 列)
+      2. 幅度量:Move_Stock_Magnitude / Move_Index_Magnitude / Move_Relative_Move (3 列)
+      3. 投影侧:Move_Proj_Coeff / Vol / Amt / Magnitude / Price (5 列)
+      4. 残差侧:Move_Resi_Vol / Amt / Magnitude / Price (4 列)
+      5. 正交验证:Move_Dot_After (1 列)
 
-    caller 负责传 common_idx[1:] (丢首行与 diff 对齐)。
+    设计要点:
+      - Magnitude (‖proj‖ / ‖resi‖) 描述运动「大小」,Price (slope) 描述「方向斜率」
+      - 这两个维度在用户分析中应分别看 — 用户曾贴分析指出 Price 数值小不一定说明
+        「运动弱」,而是「方向斜率浅」;真正识别「大盘没动 / 个股暴动」靠 Magnitude +
+        Relative_Move
+      - caller 负责传 common_idx[1:] (丢首行与 diff 对齐)
     """
     return pd.DataFrame({
         'Date': common_idx,
-        f'ΔV_{index_tag}': mv['index_move'][:, 0],
-        f'ΔA_{index_tag}': mv['index_move'][:, 1],
-        f'ΔV_{stock_tag}': mv['stock_move'][:, 0],
-        f'ΔA_{stock_tag}': mv['stock_move'][:, 1],
-        'Proj_Coeff': mv['proj_coeff'],
-        'Proj_Delta_Vol': mv['proj'][:, 0],
-        'Proj_Delta_Amt': mv['proj'][:, 1],
-        'Resi_Delta_Vol': mv['residual'][:, 0],
-        'Resi_Delta_Amt': mv['residual'][:, 1],
-        'Proj_Magnitude': mv['proj_mag'],
-        'Resi_Magnitude': mv['resi_mag'],
-        'Dot_After_Proj': mv['dot_after'],
-        'Proj_Price': mv['proj_prices'],
-        'Resi_Price': mv['resi_prices'],
+        f'Move_Delta_Vol_{index_tag}': mv['index_move'][:, 0],
+        f'Move_Delta_Amt_{index_tag}': mv['index_move'][:, 1],
+        f'Move_Delta_Vol_{stock_tag}': mv['stock_move'][:, 0],
+        f'Move_Delta_Amt_{stock_tag}': mv['stock_move'][:, 1],
+        'Move_Stock_Magnitude': mv['stock_move_mag'],
+        'Move_Index_Magnitude': mv['index_move_mag'],
+        'Move_Relative_Move': mv['relative_move'],
+        'Move_Proj_Coeff': mv['proj_coeff'],
+        'Move_Proj_Vol': mv['proj'][:, 0],
+        'Move_Proj_Amt': mv['proj'][:, 1],
+        'Move_Proj_Magnitude': mv['proj_mag'],
+        'Move_Proj_Price': mv['proj_prices'],
+        'Move_Resi_Vol': mv['residual'][:, 0],
+        'Move_Resi_Amt': mv['residual'][:, 1],
+        'Move_Resi_Magnitude': mv['resi_mag'],
+        'Move_Resi_Price': mv['resi_prices'],
+        'Move_Dot_After': mv['dot_after'],
     })
 
 
 def build_movement_intermediate_df(common_idx, mv, stock_df, index_df,
                                    index_tag, stock_tag):
-    """组装运动投影的「逐日复核」DataFrame — 22 列,覆盖每一步的中间值。
+    """组装运动投影的「逐日复核」DataFrame — 25 列,覆盖每一步的中间值。
 
     用途:`projection_2d.py --movement` 顺手落一份 CSV 到 data/projection/intermediate/,
     方便人工逐日核对公式:`Δ` / `β = u·v/v·v` / `proj = β·v` / `resi = u - proj` /
-    `resi·v ≈ 0` / `proj_price = ΔA_i/ΔV_i` / `resi_price = resi_ΔA/resi_ΔV`。
+    `resi·v ≈ 0` / `proj_price = ΔA_i/ΔV_i` / `resi_price = resi_ΔA/resi_ΔV` /
+    `|u| / |v| / R = |u|/|v|`。
 
-    与 `build_movement_result_df` 的差别:
-      - 多 4 列原始值(Vol/Ama 当日,非 Δ)— 验证 diff 正确性
-      - 多 2 列中间点积(V_dot_V / U_dot_V)— 验证 β 分子分母
-      - 多 1 列 Resi_Price_Raw — 与 Resi_Price 一并保留便于发现 > 3 异常
+    与 `build_movement_result_df`(18 列)的差别:
+      - 多 4 列原始值(Move_Vol/Amt_{idx/stk},非 Δ)— 验证 diff 正确性
+      - 多 2 列中间点积(Move_V_dot_V / Move_U_dot_V)— 验证 β 分子分母
+      - 多 1 列 Move_Resi_Price_Raw — 裸除法,residual_ΔV=0 时显示 NaN(暴露异常)
+      - 多 0 列 magnitude — build_result_df 已含
 
     Args:
         common_idx: caller 传 common_idx[1:] (与 diff 丢首行对齐)。
-        mv:         `compute_movement_projection` 返回的 dict(必须含 v_dot_v/u_dot_v)。
+        mv:         `compute_movement_projection` 返回的 dict。
         stock_df / index_df: 原始 (Vol/Ama) 序列,caller 同样切片丢首行。
-
-    Columns:
-        Date, Vol_{idx}, Amt_{idx}, Vol_{stk}, Amt_{stk},
-        ΔV_{idx}, ΔA_{idx}, ΔV_{stk}, ΔA_{stk},
-        V_dot_V, U_dot_V, Proj_Coeff,
-        Proj_ΔV, Proj_ΔA, Resi_ΔV, Resi_ΔA,
-        Resi_dot_V, Proj_Magnitude, Resi_Magnitude,
-        Proj_Price, Resi_Price_Raw, Resi_Price
     """
     # raw Vol/Ama 当日 — caller 已丢首行 (stock_df.iloc[1:], index_df.iloc[1:])
     v_idx_raw = index_df['Volume'].to_numpy()[1:]
@@ -474,34 +513,50 @@ def build_movement_intermediate_df(common_idx, mv, stock_df, index_df,
 
     return pd.DataFrame({
         'Date': common_idx,
-        f'Vol_{index_tag}': v_idx_raw,
-        f'Amt_{index_tag}': a_idx_raw,
-        f'Vol_{stock_tag}': v_stk_raw,
-        f'Amt_{stock_tag}': a_stk_raw,
-        f'ΔV_{index_tag}': mv['index_move'][:, 0],
-        f'ΔA_{index_tag}': mv['index_move'][:, 1],
-        f'ΔV_{stock_tag}': mv['stock_move'][:, 0],
-        f'ΔA_{stock_tag}': mv['stock_move'][:, 1],
-        'V_dot_V': mv['v_dot_v'],
-        'U_dot_V': mv['u_dot_v'],
-        'Proj_Coeff': mv['proj_coeff'],
-        'Proj_ΔV': mv['proj'][:, 0],
-        'Proj_ΔA': mv['proj'][:, 1],
-        'Resi_ΔV': mv['residual'][:, 0],
-        'Resi_ΔA': mv['residual'][:, 1],
-        'Resi_dot_V': mv['dot_after'],
-        'Proj_Magnitude': mv['proj_mag'],
-        'Resi_Magnitude': mv['resi_mag'],
-        'Proj_Price': mv['proj_prices'],
-        'Resi_Price_Raw': resi_price_raw,
-        'Resi_Price': mv['resi_prices'],
+        f'Move_Vol_{index_tag}': v_idx_raw,
+        f'Move_Amt_{index_tag}': a_idx_raw,
+        f'Move_Vol_{stock_tag}': v_stk_raw,
+        f'Move_Amt_{stock_tag}': a_stk_raw,
+        f'Move_Delta_Vol_{index_tag}': mv['index_move'][:, 0],
+        f'Move_Delta_Amt_{index_tag}': mv['index_move'][:, 1],
+        f'Move_Delta_Vol_{stock_tag}': mv['stock_move'][:, 0],
+        f'Move_Delta_Amt_{stock_tag}': mv['stock_move'][:, 1],
+        'Move_V_dot_V': mv['v_dot_v'],
+        'Move_U_dot_V': mv['u_dot_v'],
+        'Move_Stock_Magnitude': mv['stock_move_mag'],
+        'Move_Index_Magnitude': mv['index_move_mag'],
+        'Move_Relative_Move': mv['relative_move'],
+        'Move_Proj_Coeff': mv['proj_coeff'],
+        'Move_Proj_Vol': mv['proj'][:, 0],
+        'Move_Proj_Amt': mv['proj'][:, 1],
+        'Move_Proj_Magnitude': mv['proj_mag'],
+        'Move_Proj_Price': mv['proj_prices'],
+        'Move_Resi_Vol': mv['residual'][:, 0],
+        'Move_Resi_Amt': mv['residual'][:, 1],
+        'Move_Resi_Magnitude': mv['resi_mag'],
+        'Move_Resi_Price_Raw': resi_price_raw,
+        'Move_Resi_Price': mv['resi_prices'],
+        'Move_Dot_After': mv['dot_after'],
     })
 
 
 def build_result_df(common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_norm,
                     projections, residuals, dot_after, proj_coeffs, proj_mags,
-                    proj_prices, resi_prices, norm_params, index_tag, stock_tag, lag: int = 0):
-    """组装 19/27 列结果 DataFrame(raw + norm + 投影 + 残差 + 4 个汇总 + 正交验证 + 归一化参数)。"""
+                    proj_prices, resi_prices, state_stock_mag, state_index_mag,
+                    state_relative_move, norm_params, index_tag, stock_tag, lag: int = 0):
+    """组装 22/30 列 state 投影结果 DataFrame(raw + norm + 幅度量 + 投影 + 残差 + 4 个汇总 + 归一化参数)。
+
+    lag=0 → 22 列;lag=1 → 30 列(追加 4 prev_raw + 4 prev_norm)。
+
+    所有 projection / magnitude / price 相关列加 State_ 前缀,与 movement 的 Move_ 列
+    明确区分。列分组:
+      1. 原始值(4 列)+ 归一化值(4 列)+ prev 列(lag=1 时 +8)
+      2. 幅度量:State_Stock_Magnitude / State_Index_Magnitude / State_Relative_Move (3 列)
+      3. 投影侧:State_Proj_Vol / Amt / Coeff / Magnitude / Price (5 列)
+      4. 残差侧:State_Resi_Vol / Amt / Price (3 列)
+      5. 正交验证:State_Dot_After (1 列)
+      6. 归一化参数:Norm_Params (1 列)
+    """
     prev_cols_raw = {}
     prev_cols_norm = {}
     if lag >= 1:
@@ -535,14 +590,17 @@ def build_result_df(common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_
         f'Amt_{stock_tag}_norm': vec_stock_norm[:, 1],
         **prev_cols_raw,    # lag=0 时为空 dict,不引入新列
         **prev_cols_norm,
-        'Proj_Vol': projections[:, 0],
-        'Proj_Amt': projections[:, 1],
-        'Residual_Vol': residuals[:, 0],
-        'Residual_Amt': residuals[:, 1],
-        'Proj_Coeff': proj_coeffs,
-        'Proj_Magnitude': proj_mags,
-        'Proj_Price': proj_prices,
-        'Resi_Price': resi_prices,
-        'Dot_After_Proj': dot_after,
+        'State_Stock_Magnitude': state_stock_mag,
+        'State_Index_Magnitude': state_index_mag,
+        'State_Relative_Move': state_relative_move,
+        'State_Proj_Vol': projections[:, 0],
+        'State_Proj_Amt': projections[:, 1],
+        'State_Resi_Vol': residuals[:, 0],
+        'State_Resi_Amt': residuals[:, 1],
+        'State_Proj_Coeff': proj_coeffs,
+        'State_Proj_Magnitude': proj_mags,
+        'State_Proj_Price': proj_prices,
+        'State_Resi_Price': resi_prices,
+        'State_Dot_After': dot_after,
         'Norm_Params': [norm_params] * len(common_idx),
     })

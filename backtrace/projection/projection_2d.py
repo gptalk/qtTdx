@@ -176,6 +176,9 @@ proj_coefficients = proj['proj_coeffs']
 proj_magnitudes = proj['proj_mags']
 proj_prices = proj['proj_prices']
 resi_prices = proj['resi_prices']
+state_stock_mag = proj['state_stock_mag']
+state_index_mag = proj['state_index_mag']
+state_relative_move = proj['state_relative_move']
 
 # 运动向量投影(可选,与状态投影并存)
 movement_data = None
@@ -382,11 +385,11 @@ fig4a.update_layout(
 )
 fig4a.write_html(out('proj_coefficient.html'))
 
-# 4f: proj_prices 时序图
+# 4f: state_proj_prices 时序图(state 投影的 proj_price)
 fig4f = go.Figure()
 fig4f.add_trace(go.Scatter(
     x=list(common_idx), y=proj_prices,
-    mode='lines', name='proj_prices (Amount/Volume 投影)',
+    mode='lines', name='state_proj_prices (归一化空间投影向量的 Amount/Volume 比)',
     line=dict(color='purple')
 ))
 fig4f.add_trace(go.Scatter(
@@ -395,19 +398,19 @@ fig4f.add_trace(go.Scatter(
     line=dict(color='cyan'), opacity=0.7, yaxis='y2'
 ))
 fig4f.update_layout(
-    title='proj_prices 时序图 (投影向量的 Amount/Volume 比,叠加Close)',
+    title='state_proj_prices 时序 (归一化空间投影方向斜率,叠加Close)',
     xaxis_title='日期',
-    yaxis=dict(title='proj_prices'),
+    yaxis=dict(title='state_proj_prices'),
     yaxis2=dict(title=f'{STOCK_TAG} Close', overlaying='y', side='right', showgrid=False),
     template='plotly_dark', height=350
 )
 fig4f.write_html(out('proj_prices.html'))
 
-# 4g: resi_prices 时序图
+# 4g: state_resi_prices 时序图(state 投影的 resi_price)
 fig4g = go.Figure()
 fig4g.add_trace(go.Scatter(
     x=list(common_idx), y=resi_prices,
-    mode='lines', name='resi_prices (Amount/Volume 残差)',
+    mode='lines', name='state_resi_prices (归一化空间残差方向斜率)',
     line=dict(color='red')
 ))
 fig4g.add_trace(go.Scatter(
@@ -416,9 +419,9 @@ fig4g.add_trace(go.Scatter(
     line=dict(color='cyan'), opacity=0.7, yaxis='y2'
 ))
 fig4g.update_layout(
-    title='resi_prices 时序图 (残差向量的 Amount/Volume 比,叠加Close)',
+    title='state_resi_prices 时序 (归一化空间残差方向斜率,叠加Close)',
     xaxis_title='日期',
-    yaxis=dict(title='resi_prices'),
+    yaxis=dict(title='state_resi_prices'),
     yaxis2=dict(title=f'{STOCK_TAG} Close', overlaying='y', side='right', showgrid=False),
     template='plotly_dark', height=350
 )
@@ -427,16 +430,22 @@ fig4g.write_html(out('resi_prices.html'))
 # 图 M: 运动向量投影(仅 --movement 启用时绘制)
 if args.movement:
     mv_idx = list(common_idx[1:])           # common_idx 丢首行,与 diff 对齐
-    mv_stock = movement_data[f'ΔV_{STOCK_TAG}'].to_numpy()
-    mv_amt = movement_data[f'ΔA_{STOCK_TAG}'].to_numpy()
-    mv_iv = movement_data[f'ΔV_{INDEX_TAG}'].to_numpy()
-    mv_ia = movement_data[f'ΔA_{INDEX_TAG}'].to_numpy()
-    mv_proj_v = movement_data['Proj_Delta_Vol'].to_numpy()
-    mv_proj_a = movement_data['Proj_Delta_Amt'].to_numpy()
-    mv_res_v = movement_data['Resi_Delta_Vol'].to_numpy()
-    mv_res_a = movement_data['Resi_Delta_Amt'].to_numpy()
-    mv_coeff = movement_data['Proj_Coeff'].to_numpy()
-    mv_dot_after = movement_data['Dot_After_Proj'].to_numpy()
+    mv_stock = movement_data[f'Move_Delta_Vol_{STOCK_TAG}'].to_numpy()
+    mv_amt = movement_data[f'Move_Delta_Amt_{STOCK_TAG}'].to_numpy()
+    mv_iv = movement_data[f'Move_Delta_Vol_{INDEX_TAG}'].to_numpy()
+    mv_ia = movement_data[f'Move_Delta_Amt_{INDEX_TAG}'].to_numpy()
+    mv_proj_v = movement_data['Move_Proj_Vol'].to_numpy()
+    mv_proj_a = movement_data['Move_Proj_Amt'].to_numpy()
+    mv_res_v = movement_data['Move_Resi_Vol'].to_numpy()
+    mv_res_a = movement_data['Move_Resi_Amt'].to_numpy()
+    mv_coeff = movement_data['Move_Proj_Coeff'].to_numpy()
+    mv_dot_after = movement_data['Move_Dot_After'].to_numpy()
+    # 8 维度框架的幅度量(M7 chart 用)
+    mv_u_mag = movement_data['Move_Stock_Magnitude'].to_numpy()
+    mv_v_mag = movement_data['Move_Index_Magnitude'].to_numpy()
+    mv_proj_mag = movement_data['Move_Proj_Magnitude'].to_numpy()
+    mv_resi_mag = movement_data['Move_Resi_Magnitude'].to_numpy()
+    mv_relative = movement_data['Move_Relative_Move'].to_numpy()
 
     def mv_out(name):
         return os.path.join(OUT_DIR, MOVEMENT_PREFIX + name).replace('\\', '/')
@@ -562,8 +571,8 @@ if args.movement:
     # 与状态投影 4f/4g 同主题但语义不同:这里是大盘边际成交均价,描述市场状态
     # 切换时的成交均价,与个股 Volume 方向相同;残差是个股偏离大盘方向的程度。
     assert movement_data is not None   # 整段在 if args.movement: 内,必非 None
-    mv_proj_prices = movement_data['Proj_Price'].to_numpy()
-    mv_resi_prices = movement_data['Resi_Price'].to_numpy()
+    mv_proj_prices = movement_data['Move_Proj_Price'].to_numpy()
+    mv_resi_prices = movement_data['Move_Resi_Price'].to_numpy()
     # 副轴:个股 Close,首行与 diff 对齐也丢(同 proj_prices / resi_prices)
     close_stock_aligned = data_stock['Close'].to_numpy()[1:len(mv_idx) + 1]
     figm5 = go.Figure()
@@ -618,6 +627,54 @@ if args.movement:
     )
     figm6.write_html(mv_out('movement_resi_prices.html'))
 
+    # M7: 运动幅度 + 相对运动 — 8 维度框架的「幅度量」可视化
+    # 上一版只有 Price (slope) 时,大盘没动个股暴动会让 Proj_Price/Resi_Price 看上去很小
+    # (因为方向斜率浅,不代表运动小)。这一版同时把 ‖u‖/‖v‖/‖proj‖/‖resi‖/R=‖u‖/‖v‖ 显式画出来。
+    from plotly.subplots import make_subplots
+    figm7 = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        subplot_titles=(
+            f'运动幅度时序 |u|/{INDEX_TAG}=‖v‖/‖proj‖/‖resi‖',
+            f'个股/大盘 相对运动 R=‖u‖/‖v‖ (大盘运动 ‖v‖ 太小时 R→0)',
+        ),
+        vertical_spacing=0.12,
+    )
+    # 上:四条幅度曲线(原始数量级差异大,按值自适应 y 轴;不开 log 避免小值噪)
+    figm7.add_trace(go.Scatter(
+        x=mv_idx, y=mv_u_mag, mode='lines', name='|u| 个股',
+        line=dict(color='orange'), legendgroup='mag',
+    ), row=1, col=1)
+    figm7.add_trace(go.Scatter(
+        x=mv_idx, y=mv_v_mag, mode='lines', name=f'|v| {INDEX_TAG}',
+        line=dict(color='cyan'), legendgroup='mag',
+    ), row=1, col=1)
+    figm7.add_trace(go.Scatter(
+        x=mv_idx, y=mv_proj_mag, mode='lines', name='‖proj‖',
+        line=dict(color='lime', dash='dot'), legendgroup='mag',
+    ), row=1, col=1)
+    figm7.add_trace(go.Scatter(
+        x=mv_idx, y=mv_resi_mag, mode='lines', name='‖resi‖',
+        line=dict(color='magenta', dash='dot'), legendgroup='mag',
+    ), row=1, col=1)
+    # 下:R = |u|/|v|,大盘完全没动时 = 0
+    figm7.add_trace(go.Scatter(
+        x=mv_idx, y=mv_relative, mode='lines', name='R = |u|/|v|',
+        line=dict(color='red'),
+    ), row=2, col=1)
+    figm7.add_trace(go.Scatter(
+        x=mv_idx, y=[1.0] * len(mv_idx), mode='lines', name='y=1 (个股=大盘)',
+        line=dict(color='gray', dash='dash'),
+    ), row=2, col=1)
+    figm7.update_xaxes(title_text='日期', row=2, col=1)
+    figm7.update_yaxes(title_text='幅度 (手/元,共享空间)', row=1, col=1)
+    figm7.update_yaxes(title_text='R (倍数)', row=2, col=1)
+    figm7.update_layout(
+        template='plotly_dark', height=700,
+        title_text=f'运动幅度与相对运动 ({STOCK_TAG} → {INDEX_TAG})',
+        legend=dict(orientation='h', yanchor='bottom', y=1.05, xanchor='right', x=1),
+    )
+    figm7.write_html(mv_out('movement_magnitudes.html'))
+
     print("\n运动向量投影 HTML 已生成:")
     print(f"  M1. {mv_out('movement_scatter.html')}            - ΔV/ΔA 运动向量散点")
     print(f"  M2. {mv_out('movement_projection_verify.html')} - 运动投影分解验证")
@@ -625,9 +682,10 @@ if args.movement:
     print(f"  M4. {mv_out('movement_orthogonality.html')}      - 运动正交性验证")
     print(f"  M5. {mv_out('movement_proj_prices.html')}        - 运动 proj_prices 时序(叠加Close)")
     print(f"  M6. {mv_out('movement_resi_prices.html')}        - 运动 resi_prices 时序(叠加Close)")
+    print(f"  M7. {mv_out('movement_magnitudes.html')}         - 运动幅度 + 相对运动 R=|u|/|v|")
     print("\n运动向量投影复核 CSV:")
     print(f"      data/projection/intermediate/movement_intermediate_{INDEX_TAG}_{STOCK_TAG}.csv")
-    print(f"        22 列:Date/原始 Vol·Ama/Δ/β 分子分母/proj·resi/点积/三个 price")
+    print(f"        25 列:Date/原始 Vol·Ama/Δ/β 分子分母/幅度量/proj·resi/点积/三个 price")
 
 print("\n图形已生成:")
 print(f"  1. {out('vector_scatter.html')}      - Volume-Amount向量散点图")
@@ -635,14 +693,15 @@ print(f"  1b. {out('stock_diff_3d.html')}      - 个股日间差额 3-D 折线 (
 print(f"  2. {out('projection_verify.html')}  - 投影分解验证图")
 print(f"  3. {out('orthogonality_check.html')} - 正交性时序检验图")
 print(f"  4. {out('proj_coefficient.html')}    - 投影系数时序图")
-print(f"  5. {out('proj_prices.html')}        - proj_prices 时序图")
-print(f"  6. {out('resi_prices.html')}        - resi_prices 时序图")
+print(f"  5. {out('proj_prices.html')}        - state_proj_prices 时序图(state 投影方向斜率)")
+print(f"  6. {out('resi_prices.html')}        - state_resi_prices 时序图(state 残差方向斜率)")
 
-# 保存CSV(组装 19 列 DataFrame)
+# 保存CSV(组装 22/30 列 DataFrame)
 result_df = build_result_df(
     common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_norm,
     projections, residuals, dot_products_after,
     proj_coefficients, proj_magnitudes, proj_prices, resi_prices,
+    state_stock_mag, state_index_mag, state_relative_move,
     norm_params, INDEX_TAG, STOCK_TAG, lag=LAG,
 )
 csv_path = out_csv(f'projection_{INDEX_TAG}_{STOCK_TAG}.csv')
