@@ -40,8 +40,6 @@ sys.stdout.reconfigure(encoding='utf-8')
 import os
 import argparse
 import numpy as np
-import pandas as pd
-import vectorbt as vbt
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -170,44 +168,6 @@ fig1.update_layout(
     height=600, width=800
 )
 fig1.write_html(out('vector_scatter.html'))
-
-# 图1b: 大盘基线 vectorbt 3-D 体积图 (Amount / Volume / 日期)
-# 把 (Volume, Amount, Date) 三维点云用 np.histogramdd 分箱,密度喂给 vbt.plotting.Volume
-# 这样既保留三维结构,又不需要 plotly 自己渲染 0/1 散点
-z_dates = pd.to_datetime(list(common_idx)).normalize()
-points = np.column_stack([
-    vec_index[:, 0],           # X = Volume
-    vec_index[:, 1],           # Y = Amount
-    z_dates.astype('int64'),    # Z = 日期(ns),histogramdd 需要数值轴
-])
-
-N_BINS = 10
-hist, edges = np.histogramdd(points, bins=(N_BINS, N_BINS, N_BINS))
-
-# Volume 接受 array_like,vectorbt 内部转 numpy
-volume_obj = vbt.plotting.Volume(
-    data=hist,
-    # vectorbt 要求 labels 长度 = data 维度长度(每箱 1 个标签),用箱中心数值 / 箱起始日期
-    x_labels=[f'{(edges[0][i] + edges[0][i+1]) / 2:.2e}' for i in range(N_BINS)],
-    y_labels=[f'{(edges[1][i] + edges[1][i+1]) / 2:.2e}' for i in range(N_BINS)],
-    z_labels=[pd.to_datetime(edges[2][i], unit='ns').strftime('%Y-%m-%d')
-              for i in range(N_BINS)],
-    trace_kwargs=dict(opacity=0.5, surface_count=15, colorscale='Plasma'),
-)
-fig1b = volume_obj.fig
-fig1b.update_layout(
-    title=f'大盘基线 {INDEX_LABEL} 三维体积图 (Amount / Volume / 日期)',
-    scene=dict(
-        xaxis_title='Volume',
-        yaxis_title='Amount',
-        zaxis=dict(title='日期'),
-        aspectmode='manual',
-        aspectratio=dict(x=1, y=1, z=2),
-    ),
-    template='plotly_dark',
-    height=700, width=900,
-)
-fig1b.write_html(out('baseline_3d.html'))
 
 # 图2: 投影验证 - 选取几个代表性日期(在可用交易日内均匀取样,避免硬编码越界)
 sample_indices = sorted(set(np.linspace(0, len(common_idx) - 1, 4, dtype=int).tolist()))
@@ -361,7 +321,6 @@ fig4g.write_html(out('resi_prices.html'))
 
 print("\n图形已生成:")
 print(f"  1. {out('vector_scatter.html')}      - Volume-Amount向量散点图")
-print(f"  1b. {out('baseline_3d.html')}        - 大盘基线三维散点(Amount/Volume/日期)")
 print(f"  2. {out('projection_verify.html')}  - 投影分解验证图")
 print(f"  3. {out('orthogonality_check.html')} - 正交性时序检验图")
 print(f"  4. {out('proj_coefficient.html')}    - 投影系数时序图")
