@@ -168,7 +168,12 @@ print(f"Amount {STOCK_TAG} 范围: [{vec_stock[:,1].min():.2e}, {vec_stock[:,1].
 print(f"\n归一化后向量范围: [0, 1]")
 
 # 二维投影计算(全部委托给 _projection_core)
-proj = compute_projections(vec_stock_norm, vec_index_norm)
+# 用原始向量,proj/resi/price/magnitude 都在原始量纲(Volume=手,Amount=元)。
+# 切换原因:归一化空间下 proj_price 是 slope,不是真实边际成交均价;
+# magnitudes 是 [0,√2] 区间,丢失真实成交量级。原始量纲下两者都直观。
+proj = compute_projections(vec_stock, vec_index)
+print(f"投影量纲: 原始(Volume=手, Amount=元) — proj_prices 是大盘边际成交均价(元/手)")
+print(f"  ⚠ State_Resi_Price 在 2-D 投影下与个股无关(= -Vol_idx/Amt_idx,仅大盘函数),不建议用于选股")
 projections = proj['projections']
 residuals = proj['residuals']
 dot_products_after = proj['dot_after']
@@ -287,8 +292,10 @@ fig2 = make_subplots(
 )
 
 for idx, (si, row, col) in enumerate(zip(sample_indices, [1,1,2,2], [1,2,1,2])):
-    u = vec_stock_norm[si]
-    v = vec_index_norm[si]
+    # 用原始向量,与 projections / residuals 的量纲一致(否则归一化 u/v ≈1
+    # 叠加原始 proj/residual ≈1e8,u/v 会塌缩到原点)
+    u = vec_stock[si]
+    v = vec_index[si]
     proj_pt = projections[si]
     residual = residuals[si]
 
@@ -335,14 +342,15 @@ fig2.update_layout(
 )
 fig2.write_html(out('projection_verify.html'))
 
-# 图3: 正交性时序图 (叠加Close收盘价)
+# 图3: 正交性时序图 (叠加 Close 收盘价)
+# 切原始量纲后 dot_after ≈ 1e8 量纲,Close (几十元) 会被压扁成底部横线 —
+# 这是「原始关系」的副作用,不是 bug:yaxis label 明示量纲,使用者自行判读
 close_stock = data_stock['Close'].to_numpy()
-close_stock_norm = (close_stock - close_stock.min()) / (close_stock.max() - close_stock.min())
 
 fig3 = go.Figure()
 fig3.add_trace(go.Scatter(
     x=list(common_idx), y=dot_products_after,
-    mode='lines', name='residual · v',
+    mode='lines', name='residual · v (1e8 量纲)',
     line=dict(color='orange')
 ))
 fig3.add_trace(go.Scatter(
@@ -351,45 +359,45 @@ fig3.add_trace(go.Scatter(
     line=dict(color='gray', dash='dash')
 ))
 fig3.add_trace(go.Scatter(
-    x=list(common_idx), y=close_stock_norm,
-    mode='lines', name=f'{STOCK_TAG} Close收盘价 (归一化到点积范围)',
+    x=list(common_idx), y=close_stock,
+    mode='lines', name=f'{STOCK_TAG} Close收盘价 (元,会被点积压扁)',
     line=dict(color='cyan'),
-    opacity=0.7
+    opacity=0.7,
+    yaxis='y2',
 ))
 fig3.update_layout(
-    title='正交性验证: (u - proj) · v 应为 0 (叠加Close收盘价)',
-    xaxis_title='日期', yaxis_title='点积值 / 收盘价(归一化)',
+    title='正交性验证: (u - proj) · v 应为 0 (叠加 Close 收盘价原始量纲)',
+    xaxis_title='日期',
+    yaxis=dict(title='点积值 (原始量纲,1e8) / Close (元,被压扁)'),
+    yaxis2=dict(title=f'{STOCK_TAG} Close (元)', overlaying='y', side='right', showgrid=False),
     template='plotly_dark', height=400
 )
 fig3.write_html(out('orthogonality_check.html'))
 
 # 图4: 投影函数图形
 # 4a: 投影系数时序图
-dot_abs_max = np.abs(proj_coefficients).max()
+# 原始量纲下 β ≈ 0.1 量级(Vol/Amt 独立 min-max 后 β 不再 scale-invariant),
+# 不再叠加 Close 收盘价 — 二者量级差异大,叠加会误导。详见 fig4f。
 fig4a = go.Figure()
 fig4a.add_trace(go.Scatter(
     x=list(common_idx), y=proj_coefficients,
-    mode='lines', name='投影系数',
+    mode='lines', name='投影系数 β(原始量纲)',
     line=dict(color='green')
 ))
-fig4a.add_trace(go.Scatter(
-    x=list(common_idx), y=close_stock_norm * dot_abs_max,
-    mode='lines', name=f'{STOCK_TAG} Close收盘价 (归一化到点积范围)',
-    line=dict(color='cyan'),
-    opacity=0.7
-))
 fig4a.update_layout(
-    title=f'投影系数时序 ({STOCK_TAG}→{INDEX_TAG})',
-    xaxis_title='日期', yaxis_title='系数 (u·v / v·v)',
+    title=f'投影系数时序 ({STOCK_TAG}→{INDEX_TAG},原始量纲)',
+    xaxis_title='日期', yaxis_title='系数 (u·v / v·v, 原始量纲)',
     template='plotly_dark', height=300
 )
 fig4a.write_html(out('proj_coefficient.html'))
 
 # 4f: state_proj_prices 时序图(state 投影的 proj_price)
+# 原始量纲:proj_price = β·Amt_idx / β·Vol_idx = Amt_idx / Vol_idx
+# = 大盘边际成交均价(元/手)。β 抵消后与个股无关 — 刻画大盘成交均价时序。
 fig4f = go.Figure()
 fig4f.add_trace(go.Scatter(
     x=list(common_idx), y=proj_prices,
-    mode='lines', name='state_proj_prices (归一化空间投影向量的 Amount/Volume 比)',
+    mode='lines', name='state_proj_prices (大盘边际成交均价 Amt_idx/Vol_idx,元/手)',
     line=dict(color='purple')
 ))
 fig4f.add_trace(go.Scatter(
@@ -398,19 +406,21 @@ fig4f.add_trace(go.Scatter(
     line=dict(color='cyan'), opacity=0.7, yaxis='y2'
 ))
 fig4f.update_layout(
-    title='state_proj_prices 时序 (归一化空间投影方向斜率,叠加Close)',
+    title='state_proj_prices 时序 (大盘边际成交均价,叠加Close)',
     xaxis_title='日期',
-    yaxis=dict(title='state_proj_prices'),
-    yaxis2=dict(title=f'{STOCK_TAG} Close', overlaying='y', side='right', showgrid=False),
+    yaxis=dict(title='state_proj_prices (元/手)'),
+    yaxis2=dict(title=f'{STOCK_TAG} Close (元)', overlaying='y', side='right', showgrid=False),
     template='plotly_dark', height=350
 )
 fig4f.write_html(out('proj_prices.html'))
 
 # 4g: state_resi_prices 时序图(state 投影的 resi_price)
+# 原始量纲:residual ⊥ v 强制 resi_price = -Vol_idx / Amt_idx = -1/proj_price
+# 与个股无关(2-D 退化)。仅作历史一致性保留,不建议用于选股。
 fig4g = go.Figure()
 fig4g.add_trace(go.Scatter(
     x=list(common_idx), y=resi_prices,
-    mode='lines', name='state_resi_prices (归一化空间残差方向斜率)',
+    mode='lines', name='state_resi_prices (残差斜率,2-D 下与个股无关)',
     line=dict(color='red')
 ))
 fig4g.add_trace(go.Scatter(
@@ -419,10 +429,10 @@ fig4g.add_trace(go.Scatter(
     line=dict(color='cyan'), opacity=0.7, yaxis='y2'
 ))
 fig4g.update_layout(
-    title='state_resi_prices 时序 (归一化空间残差方向斜率,叠加Close)',
+    title='state_resi_prices 时序 (残差方向斜率,2-D 下退化,不建议选股)',
     xaxis_title='日期',
     yaxis=dict(title='state_resi_prices'),
-    yaxis2=dict(title=f'{STOCK_TAG} Close', overlaying='y', side='right', showgrid=False),
+    yaxis2=dict(title=f'{STOCK_TAG} Close (元)', overlaying='y', side='right', showgrid=False),
     template='plotly_dark', height=350
 )
 fig4g.write_html(out('resi_prices.html'))

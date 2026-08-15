@@ -164,7 +164,7 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
         vec_index, vec_stock, vec_index_norm, vec_stock_norm, norm_params = compute_vectors(
             data_stock, data_index, index_tag, stock_tag, lag=lag,
         )
-        proj = compute_projections(vec_stock_norm, vec_index_norm)
+        proj = compute_projections(vec_stock, vec_index)
 
         result_df = build_result_df(
             common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_norm,

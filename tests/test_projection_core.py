@@ -702,20 +702,21 @@ def test_movement_relative_move_handles_zero_index_movement():
 
 def test_state_returns_magnitudes_and_relative_move():
     """compute_projections 的 state_stock_mag / state_index_mag / state_relative_move
-    应等于手算的 ‖u‖ / ‖v‖ / ‖u‖/‖v‖(归一化后)。
+    应等于手算的 ‖u‖ / ‖v‖ / ‖u‖/‖v‖。切原始量纲后输入是原始向量
+    (这里用 0/1 数值,既是 valid 原始值也是 valid 归一化值,数字断言不变)。
     """
     # 简单造 4 行:u/v 都是单位向量不同比例
     # u1=[1, 0],v1=[1, 0]  → |u|=1, |v|=1, R=1
     # u2=[0, 1],v2=[0, 1]  → |u|=1, |v|=1, R=1
     # u3=[1, 1],v3=[1, 0]  → |u|=√2, |v|=1, R=√2
     # u4=[0, 0],v4=[0, 0]  → |u|=0, |v|=0, R=0(0/0 保护)
-    vec_stock_norm = np.array([
+    vec_stock = np.array([
         [1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.0, 0.0],
     ])
-    vec_index_norm = np.array([
+    vec_index = np.array([
         [1.0, 0.0], [0.0, 1.0], [1.0, 0.0], [0.0, 0.0],
     ])
-    proj = compute_projections(vec_stock_norm, vec_index_norm)
+    proj = compute_projections(vec_stock, vec_index)
     assert 'state_stock_mag' in proj
     assert 'state_index_mag' in proj
     assert 'state_relative_move' in proj
@@ -723,7 +724,7 @@ def test_state_returns_magnitudes_and_relative_move():
     assert proj['state_index_mag'].shape == (4,)
     assert proj['state_relative_move'].shape == (4,)
 
-    # 归一化空间里 |v|=1 在第 1/2/3 行,|v|=0 在第 4 行
+    # |v|=1 在第 1/2/3 行,|v|=0 在第 4 行
     np.testing.assert_allclose(
         proj['state_index_mag'], [1.0, 1.0, 1.0, 0.0], atol=1e-12,
     )
@@ -737,4 +738,57 @@ def test_state_returns_magnitudes_and_relative_move():
     )
     # 全 finite
     assert np.all(np.isfinite(proj['state_relative_move']))
+
+
+def test_state_resi_price_no_cap_in_raw_scale():
+    """原始量纲下 resi_price 不再被 cap:典型值(几元/手 量级)全 pass。
+
+    之前 cap=3 在归一化空间里合理;原始量纲下 raw |resi_price| ≈ 6
+    (大盘 Vol/Amt 比),会被 cap 误判 → 历史 cap 分支 bug 让 89-100% 行的
+    State_Resi_Price 被压成 0。本次去掉 cap 后,正常 slope 直接透传。
+    """
+    # 真实数据量级:大盘 Volume ≈ 1e7(手),Amount ≈ 1e10(元)
+    # 大盘 Vol/Amt 比 ≈ 1e-3 → raw |resi_price| = 1/proj_price ≈ 1e3
+    vec_stock = np.array([
+        [1.0e8, 1.0e10],   # 个股成交与大盘同量级
+        [5.0e8, 5.0e10],   # 个股更大
+        [1.0e6, 1.0e8],    # 个股较小
+    ])
+    vec_index = np.array([
+        [1.0e7, 1.0e10],
+        [1.0e7, 1.0e10],
+        [1.0e7, 1.0e10],
+    ])
+    proj = compute_projections(vec_stock, vec_index)
+    # 三行 resi_price 都应 finite 且非 0(原 cap=3 分支不再触发)
+    assert np.all(np.isfinite(proj['resi_prices']))
+    assert np.all(proj['resi_prices'] != 0.0)
+    # 2-D 退化性质:resi_price = -v[0]/v[1] = -1e7/1e10 = -1e-3(三行一样)
+    np.testing.assert_allclose(proj['resi_prices'], [-1e-3, -1e-3, -1e-3], rtol=1e-9)
+
+
+def test_state_resi_price_safe_when_residual_vol_zero():
+    """residual[0]=0 时(残差 Volume 分量为 0),resi_price 应被 _safe_ratio 保护
+    为 NaN(默认),不触发 numpy RuntimeWarning 也不产生 Inf。
+
+    2-D 投影几何:residual ⊥ v 强制 residual ∝ (-v[1], v[0]),
+    所以 residual[0]=0 ⇒ v[1]=0(大盘 Amount=0,例如停牌)。
+
+    触发场景:大盘 Amount=0,residual[0]=0 → _safe_ratio 走 den=0 分支 → NaN。
+    """
+    vec_stock = np.array([
+        [1.0e8, 1.0e10],
+        [2.0e8, 2.0e10],
+    ])
+    vec_index = np.array([
+        [1.0e7, 0.0],   # v[1]=0 → β = u·v / v·v = 1e15 / 1e14 = 10
+                        #   proj = [1e8, 0], residual = [0, 1e10]
+                        #   resi_price = 1e10 / 0 → _safe_ratio NaN(default)
+        [5.0e6, 0.0],   # 同上
+    ])
+    proj = compute_projections(vec_stock, vec_index)
+    # 不应产生 Inf(安全除法)
+    assert not np.any(np.isinf(proj['resi_prices'])), proj['resi_prices']
+    # 两行都是 NaN(residual[0]=0,_safe_ratio 默认值)
+    assert np.all(np.isnan(proj['resi_prices'])), proj['resi_prices']
 

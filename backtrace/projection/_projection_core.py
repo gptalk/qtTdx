@@ -2,8 +2,8 @@
 """Shared math + I/O for projection_2d.py and projection_batch.py.
 
 Single source of truth for: market→index map, stock→industry map,
-local-cache loading, 2-D vector projection math, and 19-column result
-DataFrame assembly.
+local-cache loading, 2-D vector projection math (原始量纲), and 22-column
+result DataFrame assembly.
 
 No plotly / HTML / file writes — those are the calling scripts' jobs.
 """
@@ -259,21 +259,34 @@ def compute_vectors(stock_df, index_df, index_tag, stock_tag, lag: int = 0):
     return vec_index, vec_stock, norms_ix, norms_st, norm_params
 
 
-def compute_projections(vec_stock_norm, vec_index_norm):
+def compute_projections(vec_stock, vec_index):
     """对每行跑 project_u_onto_v,返回 10 个 np.array(原 7 + 新增 3 个幅度量)。
 
-    新增 3 个 dict key(state_ 前缀,与 movement 区分):
-        state_stock_mag:    ndarray (T,) — |u| 归一化空间向量模长
-        state_index_mag:    ndarray (T,) — |v| 归一化空间向量模长
+    Args:
+        vec_stock:  ndarray (T, k) — 个股原始向量(Volume, Amount, ...)
+                   切到原始量纲后 `proj_prices` 是真实边际成交均价(元/手),
+                   `magnitudes` 是原始 ‖u‖ (1e7+ 量纲),`relative_move` 是
+                   「个股成交规模 / 大盘成交规模」的真实倍数。
+        vec_index:  ndarray (T, k) — 大盘原始向量,同 k 列结构。
+
+    Returns dict keys:
+        projections / residuals / dot_after / proj_coeffs / proj_mags /
+        proj_prices / resi_prices: 7 个核心投影输出(原始量纲)。
+        state_stock_mag:    ndarray (T,) — |u| 原始向量模长(元/手量纲)
+        state_index_mag:    ndarray (T,) — |v| 原始向量模长
         state_relative_move: ndarray (T,) — |u| / |v|,|v|≈0 时 → 0(沿用 β 默认容错)
+
+    注意:`resi_prices` 不再限幅。原始量纲下 residual ⊥ v 强制
+    `resi_price = −v[0]/v[1]`(= −1/proj_price),与个股无关(2-D 退化)。
+    caller 不应拿此列做个股选股;选股请用 `state_*_mag` 或 lag=1 (4-D)。
     """
     projections, residuals, dot_after = [], [], []
     proj_coeffs, proj_mags, proj_prices, resi_prices = [], [], [], []
     state_stock_mag, state_index_mag = [], []
 
-    for i in range(len(vec_stock_norm)):
-        u = vec_stock_norm[i]
-        v = vec_index_norm[i]
+    for i in range(len(vec_stock)):
+        u = vec_stock[i]
+        v = vec_index[i]
         proj = project_u_onto_v(u, v)
         residual = u - proj
         projections.append(proj)
@@ -282,14 +295,9 @@ def compute_projections(vec_stock_norm, vec_index_norm):
         proj_coeffs.append(_safe_ratio(np.dot(u, v), np.dot(v, v), default=0.0))
         proj_mags.append(np.linalg.norm(proj))
         proj_prices.append(_safe_ratio(proj[1], proj[0], default=np.sign(proj[1]) if np.isfinite(proj[1]) else 0.0))
-        resi_price = _safe_ratio(residual[1], residual[0])
-        # NaN 或 | > 3 视为 Volume≈0 导致的异常比值,限幅到已算值
-        if not np.isfinite(resi_price) or abs(resi_price) > 3:
-            past = np.abs(resi_prices[:-2]) if len(resi_prices) > 2 else None
-            cap = float(np.nanmax(past)) if past is not None and len(past) > 0 and np.any(np.isfinite(past)) else 0.0
-            sign = np.sign(residual[1]) if np.isfinite(residual[1]) else 0.0
-            resi_price = sign * cap
-        resi_prices.append(resi_price)
+        # resi_price: 只走 _safe_ratio 保护 NaN/Inf/0(不再 cap;原始量纲下
+        # 阈值无业务意义,残差 Vol≈0 时 resi_price → Inf 被 _safe_ratio 压 0)。
+        resi_prices.append(_safe_ratio(residual[1], residual[0]))
         state_stock_mag.append(np.linalg.norm(u))
         state_index_mag.append(np.linalg.norm(v))
 
