@@ -144,11 +144,14 @@ def test_batch_process_one_with_movement_writes_extra_csv(tmp_path, monkeypatch)
     mv_csv = tmp_path / 'data' / 'projection' / 'movement_000001_002475.csv'
     assert mv_csv.exists(), f"movement CSV 未生成: {mv_csv}"
     mv_df = pd.read_csv(mv_csv)
-    assert mv_df.shape == (n - 1, 13), f"期望 {n-1} 行 × 13 列, 实际 {mv_df.shape}"
+    # 15 列:13 基础列 + Proj_Price + Resi_Price(2026-08-15 加)
+    assert mv_df.shape == (n - 1, 15), f"期望 {n-1} 行 × 15 列, 实际 {mv_df.shape}"
     assert 'ΔV_000001' in mv_df.columns
     assert 'ΔV_002475' in mv_df.columns
     assert 'Proj_Coeff' in mv_df.columns
     assert 'Dot_After_Proj' in mv_df.columns
+    assert 'Proj_Price' in mv_df.columns
+    assert 'Resi_Price' in mv_df.columns
 
 
 def test_batch_process_one_without_movement_does_not_write_movement_csv(tmp_path, monkeypatch):

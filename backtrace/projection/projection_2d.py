@@ -545,11 +545,55 @@ if args.movement:
     )
     figm4.write_html(mv_out('movement_orthogonality.html'))
 
+    # M5: proj_prices 时序图 — 运动投影的边际成交价(β·ΔA / β·ΔV = ΔA_i / ΔV_i)
+    # 与状态投影 4f/4g 同主题但语义不同:这里是大盘边际成交均价,描述市场状态
+    # 切换时的成交均价,与个股 Volume 方向相同;残差是个股偏离大盘方向的程度。
+    assert movement_data is not None   # 整段在 if args.movement: 内,必非 None
+    mv_proj_prices = movement_data['Proj_Price'].to_numpy()
+    mv_resi_prices = movement_data['Resi_Price'].to_numpy()
+    figm5 = go.Figure()
+    figm5.add_trace(go.Scatter(
+        x=mv_idx, y=mv_proj_prices, mode='lines',
+        name='proj_price (大盘边际成交均价 ΔA_i/ΔV_i)',
+        line=dict(color='cyan'),
+    ))
+    figm5.add_trace(go.Scatter(
+        x=mv_idx, y=[0] * len(mv_idx), mode='lines', name='y=0',
+        line=dict(color='gray', dash='dash'),
+    ))
+    figm5.update_layout(
+        title=f'运动 proj_prices 时序 ({STOCK_TAG} → {INDEX_TAG})',
+        xaxis_title='日期', yaxis_title='proj_price = β·ΔA / β·ΔV',
+        template='plotly_dark', height=350,
+    )
+    figm5.write_html(mv_out('movement_proj_prices.html'))
+
+    # M6: resi_prices 时序图 — 残差向量的 Amount/Volume 比(已限幅到 ±3)。
+    # 识别个股是否在大盘方向之外额外放量(>0)/缩量(<0)。
+    figm6 = go.Figure()
+    figm6.add_trace(go.Scatter(
+        x=mv_idx, y=mv_resi_prices, mode='lines',
+        name='resi_price (个股残差边际价)',
+        line=dict(color='magenta'),
+    ))
+    figm6.add_trace(go.Scatter(
+        x=mv_idx, y=[0] * len(mv_idx), mode='lines', name='y=0',
+        line=dict(color='gray', dash='dash'),
+    ))
+    figm6.update_layout(
+        title=f'运动 resi_prices 时序 ({STOCK_TAG} → {INDEX_TAG})',
+        xaxis_title='日期', yaxis_title='resi_price = residual_ΔA / residual_ΔV (限幅 ±3)',
+        template='plotly_dark', height=350,
+    )
+    figm6.write_html(mv_out('movement_resi_prices.html'))
+
     print("\n运动向量投影 HTML 已生成:")
     print(f"  M1. {mv_out('movement_scatter.html')}            - ΔV/ΔA 运动向量散点")
     print(f"  M2. {mv_out('movement_projection_verify.html')} - 运动投影分解验证")
     print(f"  M3. {mv_out('movement_coeff.html')}              - β 系数时序")
     print(f"  M4. {mv_out('movement_orthogonality.html')}      - 运动正交性验证")
+    print(f"  M5. {mv_out('movement_proj_prices.html')}        - 运动 proj_prices 时序")
+    print(f"  M6. {mv_out('movement_resi_prices.html')}        - 运动 resi_prices 时序")
 
 print("\n图形已生成:")
 print(f"  1. {out('vector_scatter.html')}      - Volume-Amount向量散点图")

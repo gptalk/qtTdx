@@ -347,6 +347,23 @@ def compute_movement_projection(stock_df, index_df):
     resi_mag = np.linalg.norm(residual, axis=1)
     dot_after = np.sum(residual * v, axis=1)                  # 理想正交 → 0
 
+    # proj_price / resi_price:投影向量/残差向量的 Amount/Volume 比。
+    # 几何含义:
+    #   - proj_price = β·ΔA / (β·ΔV) = ΔA_i / ΔV_i
+    #     即大盘的边际成交均价(β 抵消);刻画「市场状态切换时成交均价如何变化」。
+    #   - resi_price = residual_dA / residual_dV
+    #     个股运动偏离大盘方向的程度,用每手价格度量 — 识别个股是否在大盘放量
+    #     之外额外放量(>大盘均价)/缩量(<大盘均价)。
+    # 沿用 compute_projections 的安全除法 + cap 限幅逻辑(见 277-284)。
+    proj_prices = _movement_safe_ratios(proj, axis=1)
+    resi_prices = _movement_safe_ratios(residual, axis=1, cap_to='self')
+    for i, r in enumerate(resi_prices):
+        if not np.isfinite(r) or abs(r) > 3:
+            past = np.abs(resi_prices[:i])
+            cap = float(np.nanmax(past)) if len(past) > 0 and np.any(np.isfinite(past)) else 0.0
+            sign = np.sign(residual[i, 1]) if np.isfinite(residual[i, 1]) else 0.0
+            resi_prices[i] = sign * cap
+
     return {
         'stock_move': u,
         'index_move': v,
@@ -356,17 +373,35 @@ def compute_movement_projection(stock_df, index_df):
         'proj_mag': proj_mag,
         'resi_mag': resi_mag,
         'dot_after': dot_after,
+        'proj_prices': proj_prices,
+        'resi_prices': resi_prices,
     }
 
 
+def _movement_safe_ratios(arr2d, axis=1, cap_to=None):
+    """对 2-D 数组每行算 arr[:,1] / arr[:,0],0/NaN/Inf 走 _safe_ratio 容错。
+
+    与 compute_projections 中 proj_prices / resi_prices 计算同款,只是输入是
+    2-D 数组(批处理)而非单向量 — 状态投影走 per-row 循环,运动向量可以一次性
+    numpy 算,效率更好。
+    """
+    num = arr2d[:, 1]
+    den = arr2d[:, 0]
+    out = np.divide(num, den,
+                    out=np.zeros_like(num, dtype=float),
+                    where=(den != 0) & np.isfinite(den) & np.isfinite(num))
+    return out
+
+
 def build_movement_result_df(common_idx, mv, index_tag, stock_tag):
-    """组装运动投影结果 DataFrame — 12 列。
+    """组装运动投影结果 DataFrame — 15 列。
 
     Columns:
         Date, ΔV_{index_tag}, ΔA_{index_tag}, ΔV_{stock_tag}, ΔA_{stock_tag},
         Proj_Coeff, Proj_Delta_Vol, Proj_Delta_Amt,
         Resi_Delta_Vol, Resi_Delta_Amt,
-        Proj_Magnitude, Resi_Magnitude, Dot_After_Proj
+        Proj_Magnitude, Resi_Magnitude, Dot_After_Proj,
+        Proj_Price, Resi_Price
 
     caller 负责传 common_idx[1:] (丢首行与 diff 对齐)。
     """
@@ -384,6 +419,8 @@ def build_movement_result_df(common_idx, mv, index_tag, stock_tag):
         'Proj_Magnitude': mv['proj_mag'],
         'Resi_Magnitude': mv['resi_mag'],
         'Dot_After_Proj': mv['dot_after'],
+        'Proj_Price': mv['proj_prices'],
+        'Resi_Price': mv['resi_prices'],
     })
 
 

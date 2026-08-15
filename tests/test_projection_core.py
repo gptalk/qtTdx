@@ -294,7 +294,10 @@ def test_movement_raises_when_missing_column():
 
 
 def test_build_movement_result_df_columns():
-    """build_movement_result_df 产 13 列(含 Date),行数 = common_idx[1:] 长度。"""
+    """build_movement_result_df 产 15 列(含 Date),行数 = common_idx[1:] 长度。
+
+    新增 Proj_Price / Resi_Price 两列(2026-08-15 加)。
+    """
     idx = pd.date_range('2026-07-01', periods=5, freq='D')
     common_idx = idx  # 5 日
     stock_move = np.array([[1, 2], [3, 4], [5, 6], [7, 8]], dtype=float)
@@ -310,6 +313,8 @@ def test_build_movement_result_df_columns():
         'proj_mag': np.linalg.norm(proj, axis=1),
         'resi_mag': np.zeros(4),
         'dot_after': np.zeros(4),
+        'proj_prices': np.array([2.0, 1.333, 1.2, 1.143]),
+        'resi_prices': np.array([0.0, 0.0, 0.0, 0.0]),
     }
     df = build_movement_result_df(common_idx[1:], mv, 'IX_TEST', 'ST_TEST')
     assert len(df) == 4
@@ -319,8 +324,71 @@ def test_build_movement_result_df_columns():
         'Proj_Coeff', 'Proj_Delta_Vol', 'Proj_Delta_Amt',
         'Resi_Delta_Vol', 'Resi_Delta_Amt',
         'Proj_Magnitude', 'Resi_Magnitude', 'Dot_After_Proj',
+        'Proj_Price', 'Resi_Price',
     ]
     assert list(df.columns) == expected_cols
     np.testing.assert_array_equal(df['ΔV_ST_TEST'].to_numpy(), stock_move[:, 0])
     np.testing.assert_array_equal(df['ΔV_IX_TEST'].to_numpy(), index_move[:, 0])
+    # 新增两列数据透传
+    np.testing.assert_allclose(df['Proj_Price'].to_numpy(), [2.0, 1.333, 1.2, 1.143], rtol=1e-3)
+    np.testing.assert_array_equal(df['Resi_Price'].to_numpy(), [0.0, 0.0, 0.0, 0.0])
+
+
+def test_movement_returns_proj_price_and_resi_price():
+    """compute_movement_projection 同时返回 proj_prices / resi_prices,与现有字段同 4 维一致性。"""
+    idx = pd.date_range('2026-07-01', periods=4, freq='D')
+    df = pd.DataFrame({
+        'Volume': [10.0, 12.0, 15.0, 18.0],
+        'Amount': [100.0, 130.0, 160.0, 200.0],
+    }, index=idx)
+    mv = compute_movement_projection(df, df)
+    assert 'proj_prices' in mv
+    assert 'resi_prices' in mv
+    # 长度对齐
+    assert len(mv['proj_prices']) == 3
+    assert len(mv['resi_prices']) == 3
+    # 这里 stock == index,β=1,residual=0 → proj_price = ΔA/ΔV 大盘,
+    # resi_price 应该是 0(residual 是 0 向量,被 safe_ratios 算 0/0 → 0)
+    # 注意:numpy 0/0 用 where 分支保护返回 0,不是 nan
+    assert all(np.isfinite(mv['proj_prices'])) or all(mv['proj_prices'] == 0)
+
+
+def test_movement_proj_price_matches_index_movement_direction():
+    """proj_price = β·ΔA_i / β·ΔV_i = ΔA_i / ΔV_i(β 抵消)。
+
+    所以 proj_price 应等于大盘运动方向的边际成交均价,不含个股信息。
+    """
+    idx = pd.date_range('2026-07-01', periods=4, freq='D')
+    # 大盘 Amount/Volume 比恒为 2.5(ΔA/ΔV = 5/2)
+    index_df = pd.DataFrame({
+        'Volume': [100.0, 102.0, 104.0, 106.0],
+        'Amount': [250.0, 255.0, 260.0, 265.0],
+    }, index=idx)
+    # 个股运动完全不同方向
+    stock_df = pd.DataFrame({
+        'Volume': [10.0, 13.0, 11.0, 14.0],
+        'Amount': [40.0, 60.0, 50.0, 70.0],
+    }, index=idx)
+    mv = compute_movement_projection(stock_df, index_df)
+    # proj_price 应当 = ΔA_i / ΔV_i = 5/2 = 2.5,不受 stock 影响
+    np.testing.assert_allclose(mv['proj_prices'], [2.5, 2.5, 2.5], rtol=1e-6)
+
+
+def test_movement_resi_price_caps_outliers():
+    """resi_price 在 residual_ΔV≈0 时应被限幅(沿用 compute_projections 的 cap 逻辑)。"""
+    idx = pd.date_range('2026-07-01', periods=5, freq='D')
+    # 大盘 ΔV 大、个股 ΔV 极小(接近 0):残差近似 = -大盘方向,residual_ΔV 也很小
+    index_df = pd.DataFrame({
+        'Volume': [100.0, 200.0, 300.0, 400.0, 500.0],
+        'Amount': [1000.0, 2000.0, 3000.0, 4000.0, 5000.0],
+    }, index=idx)
+    stock_df = pd.DataFrame({
+        'Volume': [10.0, 10.001, 10.002, 10.003, 10.004],   # ΔV ≈ 0
+        'Amount': [100.0, 100.1, 100.2, 100.3, 100.4],
+    }, index=idx)
+    mv = compute_movement_projection(stock_df, index_df)
+    # resi_prices 应被 cap 到已算值的最大绝对值,所有值都不超 3
+    assert np.all(np.abs(mv['resi_prices']) <= 3.0 + 1e-9), (
+        f"resi_prices 应被 cap 到 ±3,实际 {mv['resi_prices']}"
+    )
 
