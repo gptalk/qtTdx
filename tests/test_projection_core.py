@@ -12,7 +12,13 @@ PROJECTION = os.path.join(BACKTRACE, 'projection')
 if BACKTRACE not in sys.path:
     sys.path.insert(0, BACKTRACE)
 
-from projection._projection_core import compute_vectors, build_result_df, load_pair
+from projection._projection_core import (
+    compute_vectors,
+    build_result_df,
+    load_pair,
+    compute_movement_projection,
+    build_movement_result_df,
+)
 
 
 def _make_pair(n=10):
@@ -214,4 +220,107 @@ def test_load_pair_lag1_raises_when_data_too_short():
     pipe = _FakePipeline({'000001.SH': df, '002475.SZ': df})
     with pytest.raises(ValueError, match="≥2"):
         load_pair('002475.SZ', days=10, pipeline=pipe, index_code='000001.SH', lag=1)
+
+
+# ========================== compute_movement_projection ==========================
+
+def test_movement_basic_projection_along_index_direction():
+    """claude 建议里的算例验证: stock 运动 (30,60) 完全落在 index 运动 (50,100) 上 → β=0.6, proj=(30,60), residual=(0,0)"""
+    idx = pd.date_range('2026-07-01', periods=3, freq='D')
+    stock_df = pd.DataFrame({
+        'Volume': [100.0, 130.0, 150.0],   # Δ = [30, 20]
+        'Amount': [200.0, 260.0, 300.0],   # Δ = [60, 40]
+    }, index=idx)
+    index_df = pd.DataFrame({
+        'Volume': [1000.0, 1050.0, 1100.0],  # Δ = [50, 50]
+        'Amount': [2000.0, 2100.0, 2200.0],  # Δ = [100, 100]
+    }, index=idx)
+    mv = compute_movement_projection(stock_df, index_df)
+    # 丢首行后剩 2 行
+    assert mv['stock_move'].shape == (2, 2)
+    assert mv['index_move'].shape == (2, 2)
+    # 第一日: stock Δ=(30,60), index Δ=(50,100)
+    # β = (30·50 + 60·100) / (50² + 100²) = 7500 / 12500 = 0.6
+    np.testing.assert_allclose(mv['proj_coeff'][0], 0.6, rtol=1e-9)
+    np.testing.assert_allclose(mv['proj'][0], [30.0, 60.0], rtol=1e-9)
+    np.testing.assert_allclose(mv['residual'][0], [0.0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(mv['dot_after'][0], 0.0, atol=1e-9)
+
+
+def test_movement_residual_orthogonal_to_index():
+    """claude 算例 6: stock Δ=(40,50), index Δ=(50,100) → β=0.56, proj=(28,56), residual=(12,-6), residual·index=0"""
+    idx = pd.date_range('2026-07-01', periods=2, freq='D')
+    stock_df = pd.DataFrame({
+        'Volume': [100.0, 140.0],   # Δ = 40
+        'Amount': [200.0, 250.0],   # Δ = 50
+    }, index=idx)
+    index_df = pd.DataFrame({
+        'Volume': [1000.0, 1050.0],  # Δ = 50
+        'Amount': [2000.0, 2100.0],  # Δ = 100
+    }, index=idx)
+    mv = compute_movement_projection(stock_df, index_df)
+    # β = (40·50 + 50·100) / (50² + 100²) = 7000/12500 = 0.56
+    np.testing.assert_allclose(mv['proj_coeff'][0], 0.56, rtol=1e-9)
+    np.testing.assert_allclose(mv['proj'][0], [28.0, 56.0], rtol=1e-9)
+    np.testing.assert_allclose(mv['residual'][0], [12.0, -6.0], rtol=1e-9)
+    # residual · index Δ = 12·50 + (-6)·100 = 600 - 600 = 0(正交)
+    np.testing.assert_allclose(mv['dot_after'][0], 0.0, atol=1e-9)
+
+
+def test_movement_zero_index_movement_safe():
+    """index ΔV=ΔA=0 时,β 应为 0(分母保护),不报 /0。"""
+    idx = pd.date_range('2026-07-01', periods=3, freq='D')
+    stock_df = pd.DataFrame({
+        'Volume': [100.0, 110.0, 120.0],
+        'Amount': [200.0, 210.0, 220.0],
+    }, index=idx)
+    index_df = pd.DataFrame({
+        'Volume': [1000.0, 1000.0, 1000.0],   # 完全不变
+        'Amount': [2000.0, 2000.0, 2000.0],
+    }, index=idx)
+    mv = compute_movement_projection(stock_df, index_df)
+    assert mv['proj_coeff'].tolist() == [0.0, 0.0]
+    assert mv['proj'].shape == (2, 2)
+    assert (mv['proj'] == 0).all()
+
+
+def test_movement_raises_when_missing_column():
+    """缺 Volume / Amount 列时 KeyError。"""
+    idx = pd.date_range('2026-07-01', periods=2, freq='D')
+    stock_df = pd.DataFrame({'Volume': [1.0, 2.0], 'Close': [3.0, 4.0]}, index=idx)
+    index_df = pd.DataFrame({'Volume': [10.0, 20.0], 'Amount': [30.0, 40.0]}, index=idx)
+    with pytest.raises(KeyError, match="Amount"):
+        compute_movement_projection(stock_df, index_df)
+
+
+def test_build_movement_result_df_columns():
+    """build_movement_result_df 产 13 列(含 Date),行数 = common_idx[1:] 长度。"""
+    idx = pd.date_range('2026-07-01', periods=5, freq='D')
+    common_idx = idx  # 5 日
+    stock_move = np.array([[1, 2], [3, 4], [5, 6], [7, 8]], dtype=float)
+    index_move = np.array([[10, 20], [30, 40], [50, 60], [70, 80]], dtype=float)
+    proj = stock_move.copy()                                  # 假 β=1
+    residual = np.zeros_like(stock_move)
+    mv = {
+        'stock_move': stock_move,
+        'index_move': index_move,
+        'proj_coeff': np.array([1.0, 1.0, 1.0, 1.0]),
+        'proj': proj,
+        'residual': residual,
+        'proj_mag': np.linalg.norm(proj, axis=1),
+        'resi_mag': np.zeros(4),
+        'dot_after': np.zeros(4),
+    }
+    df = build_movement_result_df(common_idx[1:], mv, 'IX_TEST', 'ST_TEST')
+    assert len(df) == 4
+    expected_cols = [
+        'Date',
+        'ΔV_IX_TEST', 'ΔA_IX_TEST', 'ΔV_ST_TEST', 'ΔA_ST_TEST',
+        'Proj_Coeff', 'Proj_Delta_Vol', 'Proj_Delta_Amt',
+        'Resi_Delta_Vol', 'Resi_Delta_Amt',
+        'Proj_Magnitude', 'Resi_Magnitude', 'Dot_After_Proj',
+    ]
+    assert list(df.columns) == expected_cols
+    np.testing.assert_array_equal(df['ΔV_ST_TEST'].to_numpy(), stock_move[:, 0])
+    np.testing.assert_array_equal(df['ΔV_IX_TEST'].to_numpy(), index_move[:, 0])
 

@@ -115,3 +115,75 @@ def test_single_two_day_vec_sets_4d_prefix(tmp_path, monkeypatch):
     assert p2d_mod.TWO_DAY_VEC is True
     assert p2d_mod.FILE_PREFIX == 'proj2d_4d_'
     assert p2d_mod.LAG == 1
+
+
+# ========================== --movement flag ==========================
+
+def test_batch_process_one_with_movement_writes_extra_csv(tmp_path, monkeypatch):
+    """--movement 开启时,process_one 除常规 CSV 外,额外产 movement_*.csv(行数 = 共同交易日 - 1,13 列)。"""
+    import projection_batch as pb_mod
+
+    n = 6
+    idx = pd.date_range('2026-07-01', periods=n, freq='D')
+    df = pd.DataFrame({
+        'Volume': np.linspace(1e6, 2e6, n),
+        'Amount': np.linspace(1e10, 2e10, n),
+        'Close':  np.linspace(20.0, 25.0, n),
+    }, index=idx)
+    pipe = _FakePipeline({'000001.SH': df, '002475.SZ': df})
+    monkeypatch.setattr(pb_mod, 'P', pipe)
+    monkeypatch.chdir(tmp_path)                # 隔离 data/projection/ 写入路径
+
+    row = pb_mod.process_one(
+        '002475.SZ', '立讯精密', days=10,
+        prefer_industry=True, index_code='000001.SH',
+        lag=0, movement=True,
+    )
+    assert row['status'] == 'ok', row['status']
+    # 必有 movement_*.csv
+    mv_csv = tmp_path / 'data' / 'projection' / 'movement_000001_002475.csv'
+    assert mv_csv.exists(), f"movement CSV 未生成: {mv_csv}"
+    mv_df = pd.read_csv(mv_csv)
+    assert mv_df.shape == (n - 1, 13), f"期望 {n-1} 行 × 13 列, 实际 {mv_df.shape}"
+    assert 'ΔV_000001' in mv_df.columns
+    assert 'ΔV_002475' in mv_df.columns
+    assert 'Proj_Coeff' in mv_df.columns
+    assert 'Dot_After_Proj' in mv_df.columns
+
+
+def test_batch_process_one_without_movement_does_not_write_movement_csv(tmp_path, monkeypatch):
+    """--movement 默认关闭:不应产 movement_*.csv。"""
+    import projection_batch as pb_mod
+
+    n = 4
+    idx = pd.date_range('2026-07-01', periods=n, freq='D')
+    df = pd.DataFrame({
+        'Volume': np.linspace(1e6, 2e6, n),
+        'Amount': np.linspace(1e10, 2e10, n),
+        'Close':  np.linspace(20.0, 25.0, n),
+    }, index=idx)
+    pipe = _FakePipeline({'000001.SH': df, '002475.SZ': df})
+    monkeypatch.setattr(pb_mod, 'P', pipe)
+    monkeypatch.chdir(tmp_path)
+
+    row = pb_mod.process_one(
+        '002475.SZ', '立讯精密', days=10,
+        prefer_industry=True, index_code='000001.SH',
+        lag=0, movement=False,
+    )
+    assert row['status'] == 'ok'
+    assert not (tmp_path / 'data' / 'projection' / 'movement_000001_002475.csv').exists()
+
+
+def test_single_movement_flag_recognized(monkeypatch):
+    """projection_2d.py --movement 被 parse_args 正确接收。"""
+    monkeypatch.setattr(sys, 'argv', [
+        'projection_2d.py', '--code', '002475.SZ', '--days', '5',
+        '--index', '000001.SH', '--movement',
+    ])
+    import importlib
+    import projection_2d as p2d_mod
+    importlib.reload(p2d_mod)
+    # args.movement 为 True,MOVEMENT_PREFIX 也已定义
+    assert p2d_mod.args.movement is True
+    assert p2d_mod.MOVEMENT_PREFIX == 'projmv_'

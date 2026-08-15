@@ -17,6 +17,9 @@
 #                              示例:--index 881427.SH(半导体)/ 000001.SH(上证综指)
 #   --two-day-vec        flag  向量扩展为 4-D(今日+前一日 Vol/Amt);首日丢弃(无前一日)。
 #                              默认 2-D(仅今日 Vol/Amt)。
+#   --movement           flag  运动向量投影模式:不算"当前状态"投影,而是把个股 (ΔVol, ΔAmt)
+#                              投到大盘 (ΔVol, ΔAmt) 的运动方向上。首行丢弃(无前一日)。
+#                              与 --two-day-vec 正交,可叠加。
 #
 # 用法:
 #   1. 准备股票列表 CSV,至少一列 `code`,可选 `name`(例:
@@ -27,14 +30,16 @@
 #      默认读取 data/projection/stocks.csv
 #   2. PYTHONIOENCODING=utf-8 python backtrace/projection/projection_batch.py
 #      [可选 --input PATH / --days N / --limit N / --market-baseline / --index CODE
-#       / --two-day-vec]
+#       / --two-day-vec / --movement]
 #
 # 向量维度说明:
-#   默认(2-D):每只票每个交易日产出 19 列 CSV,向量 v = (Volume, Amount)。
-#   --two-day-vec(4-D):v = (Volume_today, Amount_today, Volume_yesterday, Amount_yesterday),
+#   默认(2-D 状态投影):每只票每个交易日产出 19 列 CSV,向量 v = (Volume, Amount)。
+#   --two-day-vec(4-D 状态):v = (Volume_today, Amount_today, Volume_yesterday, Amount_yesterday),
 #     产生 27 列 CSV(新增 Vol_prev / Amt_prev / prev_norm 两组共 8 列);首日无前一日数据被丢弃。
-#   2-D 与 4-D CSV 文件名相同,会相互覆盖 — 跑完一种模式后建议备份或改名再跑另一种。
-#   下游 find_resi_positive.py 同时支持两种模式(按 `Date`+`Resi_Price` 读)。
+#   --movement(运动向量投影,正交于上述两种):把 Δv_s 投到 Δv_i 上,
+#     产出 movement_{INDEX_TAG}_{STOCK_TAG}.csv(13 列,首行同样丢弃),文件名独立不覆盖。
+#   三种模式可自由组合(--two-day-vec + --movement 同时开,会得到 27 列状态 CSV + 13 列运动 CSV)。
+#   下游 find_resi_positive.py 仍按 `Date`+`Resi_Price` 读 19/27 列投影 CSV,与 --movement 无关。
 #
 # CLI 示例:
 #   python backtrace/projection/projection_batch.py                              # 默认 2-D,按个股所属行业基线跑
@@ -45,11 +50,15 @@
 #   python backtrace/projection/projection_batch.py --two-day-vec                # 4-D 模式:含前一日 Vol/Amt
 #   python backtrace/projection/projection_batch.py --two-day-vec --limit 20     # 4-D + 只跑 20 只(冒烟)
 #   python backtrace/projection/projection_batch.py --two-day-vec --index 000001.SH # 4-D + 大盘基线
+#   python backtrace/projection/projection_batch.py --movement                  # 运动向量投影:Δv_s → Δv_i
+#   python backtrace/projection/projection_batch.py --movement --limit 20       # 运动投影 + 只跑 20 只
+#   python backtrace/projection/projection_batch.py --two-day-vec --movement    # 状态 + 运动双产出
 #
 # 输出:
 #   - 每只股票一个 CSV:data/projection/projection_{INDEX_TAG}_{STOCK_TAG}.csv
 #     (INDEX_TAG 是行业代码 881xxx 或大盘代码 000001/399001,或 --index 显式指定的代码)
 #     2-D:19 列 / 4-D:27 列(每个交易日一行)
+#   - --movement 启用时,额外产出 data/projection/movement_{INDEX_TAG}_{STOCK_TAG}.csv(13 列,丢首行)
 #   - 批量清单:data/projection/batch_manifest.csv
 #     列: code, name, index_code, index_name, rows, date_start, date_end, csv_path, status
 #     rows 已扣除 4-D 模式丢弃的首日(实际写入 CSV 的行数)
@@ -73,6 +82,8 @@ from _projection_core import (
     compute_vectors,
     compute_projections,
     build_result_df,
+    compute_movement_projection,
+    build_movement_result_df,
 )
 
 CSV_OUT_DIR = 'data/projection'   # 每只股票 CSV + batch_manifest.csv 都落这里
@@ -104,6 +115,14 @@ def parse_args():
             '首日丢弃。默认 2-D。'
         ),
     )
+    parser.add_argument(
+        '--movement', action='store_true',
+        help=(
+            '运动向量投影模式:不投影当前成交状态,而是把个股 (ΔVol, ΔAmt) '
+            '投影到大盘 (ΔVol, ΔAmt) 的运动方向上(首行丢弃,因 .diff 无前一日)。'
+            '可与 --two-day-vec 共存,产独立 movement CSV。'
+        ),
+    )
     return parser.parse_args()
 
 
@@ -127,7 +146,8 @@ def load_stock_list(path):
     ]
 
 
-def process_one(stock_code, stock_name, days, prefer_industry, index_code, lag: int = 0):
+def process_one(stock_code, stock_name, days, prefer_industry, index_code,
+                 lag: int = 0, movement: bool = False):
     """处理一只股票。返回 manifest 行 dict(失败也返回,status 字段说明原因)。"""
     try:
         loaded = load_pair(stock_code, days, P, prefer_industry=prefer_industry,
@@ -156,6 +176,14 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code, lag: 
         csv_path = os.path.join(CSV_OUT_DIR, csv_name)
         os.makedirs(CSV_OUT_DIR, exist_ok=True)
         result_df.to_csv(csv_path, index=False, encoding='utf-8')
+
+        # movement 模式:额外算一次运动投影,产出独立 CSV(同名 _movement 后缀)
+        if movement:
+            mv = compute_movement_projection(data_stock, data_index)
+            mv_df = build_movement_result_df(common_idx[1:], mv, index_tag, stock_tag)
+            mv_csv_name = f'movement_{index_tag}_{stock_tag}.csv'
+            mv_csv_path = os.path.join(CSV_OUT_DIR, mv_csv_name)
+            mv_df.to_csv(mv_csv_path, index=False, encoding='utf-8')
 
         return {
             'code': stock_code,
@@ -202,6 +230,7 @@ def main():
     print(f"回看天数: {args.days}")
     print(f"投影基线: {baseline}")
     print(f"向量维度: {'4-D (今日+前一日 Vol/Amt, --two-day-vec)' if args.two_day_vec else '2-D (今日 Vol/Amt)'}")
+    print(f"运动投影: {'开启 (额外产出 movement_*.csv)' if args.movement else '关闭'}")
     print(f"输出目录: {CSV_OUT_DIR}\n")
 
     lag = 1 if args.two_day_vec else 0
@@ -209,7 +238,8 @@ def main():
     for i, (code, name) in enumerate(stock_list, 1):
         label = f"{code} ({name})" if name else code
         print(f"[{i}/{len(stock_list)}] {label}...", end=' ', flush=True)
-        row = process_one(code, name, args.days, prefer_industry, args.index, lag)
+        row = process_one(code, name, args.days, prefer_industry, args.index,
+                          lag, args.movement)
         manifest.append(row)
         if row['status'] == 'ok':
             print(f"✓ {row['rows']} 行 → {row['csv_path']}")

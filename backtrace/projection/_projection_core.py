@@ -295,6 +295,98 @@ def compute_projections(vec_stock_norm, vec_index_norm):
     }
 
 
+def compute_movement_projection(stock_df, index_df):
+    """运动向量投影 — 把 stock 当日 vs 前一日的 (ΔV, ΔA) 投到 index 同维运动方向上。
+
+    与 compute_projections 的区别:
+      - 那个算"当前成交状态" (Vt, At) 投影到 (Vi, Ai);
+      - 这个算"成交状态变化" (Vt - Vt-1, At - At-1) 投影到 (Vi - Vi-1, Ai - Ai-1)。
+
+    Args:
+        stock_df, index_df: 必须含 'Volume' / 'Amount' 列,且按日期对齐。
+                          首行因 .diff() 缺前一日数据,返回的所有数组都丢首日
+                          (caller 需自行用 common_idx[1:] 切片)。
+
+    Returns:
+        dict with keys:
+            stock_move:   ndarray (T-1, 2)  — 个股运动向量 (ΔV_s, ΔA_s)
+            index_move:   ndarray (T-1, 2)  — 指数运动向量 (ΔV_i, ΔA_i)
+            proj_coeff:   ndarray (T-1,)   — 映射系数 β_t = (u·v) / (v·v)
+            proj:         ndarray (T-1, 2)  — 投影向量 β_t * v
+            residual:     ndarray (T-1, 2)  — 正交残差 u - proj
+            proj_mag:     ndarray (T-1,)   — ‖proj‖
+            resi_mag:     ndarray (T-1,)   — ‖residual‖
+            dot_after:    ndarray (T-1,)   — residual · v,理想正交 = 0
+    """
+    for c in ('Volume', 'Amount'):
+        if c not in stock_df.columns:
+            raise KeyError(f"compute_movement_projection 需要 stock_df 含列 {c!r}")
+        if c not in index_df.columns:
+            raise KeyError(f"compute_movement_projection 需要 index_df 含列 {c!r}")
+
+    stock_dv = stock_df['Volume'].diff().to_numpy()
+    stock_da = stock_df['Amount'].diff().to_numpy()
+    index_dv = index_df['Volume'].diff().to_numpy()
+    index_da = index_df['Amount'].diff().to_numpy()
+
+    u = np.column_stack([stock_dv, stock_da])  # (T, 2)
+    v = np.column_stack([index_dv, index_da])  # (T, 2)
+
+    # 丢首行 (diff NaN) — 与 caller 后续切片 common_idx[1:] 对齐
+    u = u[1:]
+    v = v[1:]
+
+    v_dot_v = np.sum(v * v, axis=1)                          # (T-1,)
+    u_dot_v = np.sum(u * v, axis=1)                          # (T-1,)
+    proj_coeff = np.divide(u_dot_v, v_dot_v,
+                           out=np.zeros_like(u_dot_v),
+                           where=v_dot_v > 1e-12)             # 防 /0
+    proj = proj_coeff[:, None] * v                            # (T-1, 2)
+    residual = u - proj                                        # (T-1, 2)
+    proj_mag = np.linalg.norm(proj, axis=1)
+    resi_mag = np.linalg.norm(residual, axis=1)
+    dot_after = np.sum(residual * v, axis=1)                  # 理想正交 → 0
+
+    return {
+        'stock_move': u,
+        'index_move': v,
+        'proj_coeff': proj_coeff,
+        'proj': proj,
+        'residual': residual,
+        'proj_mag': proj_mag,
+        'resi_mag': resi_mag,
+        'dot_after': dot_after,
+    }
+
+
+def build_movement_result_df(common_idx, mv, index_tag, stock_tag):
+    """组装运动投影结果 DataFrame — 12 列。
+
+    Columns:
+        Date, ΔV_{index_tag}, ΔA_{index_tag}, ΔV_{stock_tag}, ΔA_{stock_tag},
+        Proj_Coeff, Proj_Delta_Vol, Proj_Delta_Amt,
+        Resi_Delta_Vol, Resi_Delta_Amt,
+        Proj_Magnitude, Resi_Magnitude, Dot_After_Proj
+
+    caller 负责传 common_idx[1:] (丢首行与 diff 对齐)。
+    """
+    return pd.DataFrame({
+        'Date': common_idx,
+        f'ΔV_{index_tag}': mv['index_move'][:, 0],
+        f'ΔA_{index_tag}': mv['index_move'][:, 1],
+        f'ΔV_{stock_tag}': mv['stock_move'][:, 0],
+        f'ΔA_{stock_tag}': mv['stock_move'][:, 1],
+        'Proj_Coeff': mv['proj_coeff'],
+        'Proj_Delta_Vol': mv['proj'][:, 0],
+        'Proj_Delta_Amt': mv['proj'][:, 1],
+        'Resi_Delta_Vol': mv['residual'][:, 0],
+        'Resi_Delta_Amt': mv['residual'][:, 1],
+        'Proj_Magnitude': mv['proj_mag'],
+        'Resi_Magnitude': mv['resi_mag'],
+        'Dot_After_Proj': mv['dot_after'],
+    })
+
+
 def build_result_df(common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_norm,
                     projections, residuals, dot_after, proj_coeffs, proj_mags,
                     proj_prices, resi_prices, norm_params, index_tag, stock_tag, lag: int = 0):

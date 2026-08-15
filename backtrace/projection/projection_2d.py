@@ -18,13 +18,22 @@
 #                          399001.SZ(深证成指,显式指定)
 #                        任意能解析的 TQ 代码均可;数据需在 data/sectors/ 或 data/indices/ 缓存中。
 #   --two-day-vec   flag  向量扩展为 4-D(今日+前一日 Vol/Amt);首日丢弃。默认 2-D。
+#   --movement      flag  运动向量投影模式(正交于 --two-day-vec):把个股 (ΔVol, ΔAmt) 投到
+#                        大盘 (ΔVol, ΔAmt) 的运动方向上,首行同样丢弃(因 .diff 无前一日)。
+#                        产出前缀 `projmv_*.html` 的 4 个 HTML + 1 个 movement_*.csv,
+#                        与 2-D / 4-D 的 `proj2d_*.html` / `proj2d_4d_*.html` 不冲突。
 #
 # 向量维度说明:
-#   默认(2-D):向量 v = (Volume, Amount),每个交易日产出 19 列 CSV;
+#   默认(2-D 状态):向量 v = (Volume, Amount),每个交易日产出 19 列 CSV;
 #     HTML 文件前缀 `proj2d_*.html`(例:proj2d_002475_index.html)
-#   --two-day-vec(4-D):v = (Volume_today, Amount_today, Volume_yesterday, Amount_yesterday),
+#   --two-day-vec(4-D 状态):v = (Volume_today, Amount_today, Volume_yesterday, Amount_yesterday),
 #     产生 27 列 CSV(新增 prev_raw / prev_norm 两组共 8 列);首日无前一日数据被丢弃;
 #     HTML 文件前缀切到 `proj2d_4d_*.html`(例:proj2d_4d_002475_index.html)避免覆盖 2-D 结果。
+#   --movement(运动向量投影):不算"当前成交状态"投影,而是把 Δv_s 投到 Δv_i 方向上,
+#     产出 13 列 movement CSV(ΔV/ΔA/Proj_Coeff/Proj_Delta/Resi_Delta/Magnitude/Dot_After);
+#     HTML 落到 `projmv_movement_scatter.html` / `movement_projection_verify.html` /
+#              `movement_coeff.html` / `movement_orthogonality.html`(共 4 个)。
+#   状态投影与运动投影是两种独立特征,可同时启用(--two-day-vec + --movement)。
 #
 # CLI:
 #   python backtrace/projection/projection_2d.py                                       # 默认 002475.SZ / 立讯精密 / 240 日 / 大盘基线 / 2-D
@@ -34,6 +43,9 @@
 #   python backtrace/projection/projection_2d.py --code 002475.SZ --index 000001.SH    # 立讯精密 → 上证综指(显式)
 #   python backtrace/projection/projection_2d.py --code 002475.SZ --two-day-vec        # 4-D:含前一日 Vol/Amt,HTML 落到 proj2d_4d_*.html
 #   python backtrace/projection/projection_2d.py --code 600519.SH --two-day-vec --days 120 # 4-D + 120 日回看
+#   python backtrace/projection/projection_2d.py --code 002475.SZ --movement           # 运动向量投影(产 projmv_*.html + movement_*.csv)
+#   python backtrace/projection/projection_2d.py --code 600519.SH --movement --days 60 # 运动投影 + 60 日回看
+#   python backtrace/projection/projection_2d.py --code 002475.SZ --two-day-vec --movement  # 状态 4-D + 运动投影双产出
 import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -53,6 +65,8 @@ from _projection_core import (
     compute_vectors,
     compute_projections,
     build_result_df,
+    compute_movement_projection,
+    build_movement_result_df,
 )
 
 # ========================= CLI 参数 =========================
@@ -75,6 +89,14 @@ def parse_args():
         '--two-day-vec', action='store_true',
         help='将向量扩展为 4-D (今日 + 前一日 Vol/Amt);首日丢弃。默认 2-D。',
     )
+    p.add_argument(
+        '--movement', action='store_true',
+        help=(
+            '运动向量投影模式:不投影当前成交状态,而是把个股 (ΔVol, ΔAmt) '
+            '投影到大盘 (ΔVol, ΔAmt) 的运动方向上。首行丢弃(因 .diff 无前一日)。'
+            '产出 movement HTML + CSV,与 --two-day-vec 可叠加。'
+        ),
+    )
     return p.parse_args()
 
 args = parse_args()
@@ -88,6 +110,7 @@ INDEX_OVERRIDE = args.index
 # ========================= 输出布局 =========================
 OUT_DIR = 'backtrace/outputs' # HTML 报告输出目录(CLAUDE.md 约定)
 FILE_PREFIX = 'proj2d_4d_' if TWO_DAY_VEC else 'proj2d_'  # HTML 文件统一前缀,4-D 模式切前缀
+MOVEMENT_PREFIX = 'projmv_'  # movement HTML / CSV 统一前缀,与 state 投影分开
 CSV_OUT = 'data/projection'   # 分析结果 CSV 输出子目录(与 INDEX/STOCK 标签组合文件名)
 # ======================================================
 
@@ -140,6 +163,17 @@ proj_coefficients = proj['proj_coeffs']
 proj_magnitudes = proj['proj_mags']
 proj_prices = proj['proj_prices']
 resi_prices = proj['resi_prices']
+
+# 运动向量投影(可选,与状态投影并存)
+movement_data = None
+if args.movement:
+    mv = compute_movement_projection(data_stock, data_index)
+    movement_data = build_movement_result_df(common_idx[1:], mv, INDEX_TAG, STOCK_TAG)
+    # 同时落 CSV(供非 HTML 路径消费)
+    mv_csv = os.path.join(CSV_OUT, f'movement_{INDEX_TAG}_{STOCK_TAG}.csv')
+    os.makedirs(CSV_OUT, exist_ok=True)
+    movement_data.to_csv(mv_csv, index=False, encoding='utf-8')
+    print(f"运动投影: 共 {len(movement_data)} 日 (首行丢弃),CSV → {mv_csv}")
 
 # ============== 图形显示 ==============
 
@@ -364,6 +398,133 @@ fig4g.update_layout(
     template='plotly_dark', height=350
 )
 fig4g.write_html(out('resi_prices.html'))
+
+# 图 M: 运动向量投影(仅 --movement 启用时绘制)
+if args.movement:
+    mv_idx = list(common_idx[1:])           # common_idx 丢首行,与 diff 对齐
+    mv_stock = movement_data[f'ΔV_{STOCK_TAG}'].to_numpy()
+    mv_amt = movement_data[f'ΔA_{STOCK_TAG}'].to_numpy()
+    mv_iv = movement_data[f'ΔV_{INDEX_TAG}'].to_numpy()
+    mv_ia = movement_data[f'ΔA_{INDEX_TAG}'].to_numpy()
+    mv_proj_v = movement_data['Proj_Delta_Vol'].to_numpy()
+    mv_proj_a = movement_data['Proj_Delta_Amt'].to_numpy()
+    mv_res_v = movement_data['Resi_Delta_Vol'].to_numpy()
+    mv_res_a = movement_data['Resi_Delta_Amt'].to_numpy()
+    mv_coeff = movement_data['Proj_Coeff'].to_numpy()
+    mv_dot_after = movement_data['Dot_After_Proj'].to_numpy()
+
+    def mv_out(name):
+        return os.path.join(OUT_DIR, MOVEMENT_PREFIX + name).replace('\\', '/')
+
+    # M1: 个股/大盘 运动向量散点 (ΔV, ΔA)
+    figm1 = go.Figure()
+    figm1.add_trace(go.Scatter(
+        x=mv_iv, y=mv_ia, mode='markers', name=f'Δ{INDEX_LABEL}',
+        marker=dict(color='blue', size=6, opacity=0.7)
+    ))
+    figm1.add_trace(go.Scatter(
+        x=mv_stock, y=mv_amt, mode='markers', name=f'Δ{STOCK_LABEL}',
+        marker=dict(color='red', size=6, opacity=0.7)
+    ))
+    figm1.update_layout(
+        title='运动向量散点 (ΔAmount / ΔVolume,原始量纲)',
+        xaxis_title='ΔVolume',
+        yaxis_title='ΔAmount',
+        template='plotly_dark', height=600, width=800,
+    )
+    figm1.write_html(mv_out('movement_scatter.html'))
+
+    # M2: 投影分解验证 (2×2 子图,每个交易日: v (index) / u (stock) / proj / residual)
+    mv_sample_indices = sorted(set(
+        np.linspace(0, len(mv_idx) - 1, min(4, len(mv_idx)), dtype=int).tolist()
+    ))
+    figm2 = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=[f'{str(mv_idx[i])[:10]} 运动投影' for i in mv_sample_indices],
+        horizontal_spacing=0.15, vertical_spacing=0.15,
+    )
+    for idx, mi in enumerate(mv_sample_indices):
+        row = idx // 2 + 1
+        col = idx % 2 + 1
+        v_vec = np.array([mv_iv[mi], mv_ia[mi]])
+        u_vec = np.array([mv_stock[mi], mv_amt[mi]])
+        proj_vec = np.array([mv_proj_v[mi], mv_proj_a[mi]])
+        res_vec = u_vec - proj_vec
+        # v (index 运动)
+        figm2.add_trace(go.Scatter(
+            x=[0, v_vec[0]], y=[0, v_vec[1]],
+            mode='lines+markers', name=f'i ({INDEX_TAG})' if idx == 0 else None,
+            line=dict(color='blue', width=3), marker=dict(size=8),
+        ), row=row, col=col)
+        # u (stock 运动)
+        figm2.add_trace(go.Scatter(
+            x=[0, u_vec[0]], y=[0, u_vec[1]],
+            mode='lines+markers', name=f's ({STOCK_TAG})' if idx == 0 else None,
+            line=dict(color='red', width=3), marker=dict(size=8),
+        ), row=row, col=col)
+        # 投影
+        figm2.add_trace(go.Scatter(
+            x=[0, proj_vec[0]], y=[0, proj_vec[1]],
+            mode='lines+markers', name='proj(s→i)' if idx == 0 else None,
+            line=dict(color='green', width=2, dash='dash'), marker=dict(size=6),
+        ), row=row, col=col)
+        # 残差
+        figm2.add_trace(go.Scatter(
+            x=[proj_vec[0], u_vec[0]], y=[proj_vec[1], u_vec[1]],
+            mode='lines', name='residual' if idx == 0 else None,
+            line=dict(color='orange', width=2),
+        ), row=row, col=col)
+        # 正交性注释
+        figm2.add_annotation(
+            x=u_vec[0] * 0.7, y=u_vec[1] * 0.7,
+            text=f'β={mv_coeff[mi]:.3f}<br>res·i={mv_dot_after[mi]:.2e}',
+            showarrow=False, font=dict(size=8), row=row, col=col,
+        )
+    figm2.update_layout(
+        title=f'{STOCK_LABEL} → {INDEX_LABEL} 运动投影分解',
+        template='plotly_dark', height=700, width=900, showlegend=True,
+    )
+    figm2.write_html(mv_out('movement_projection_verify.html'))
+
+    # M3: 投影系数 β 时序图
+    figm3 = go.Figure()
+    figm3.add_trace(go.Scatter(
+        x=mv_idx, y=mv_coeff, mode='lines', name='β (运动映射系数)',
+        line=dict(color='green'),
+    ))
+    figm3.add_trace(go.Scatter(
+        x=mv_idx, y=[0] * len(mv_idx), mode='lines', name='β=0',
+        line=dict(color='gray', dash='dash'),
+    ))
+    figm3.update_layout(
+        title=f'运动投影系数 β 时序 ({STOCK_TAG} → {INDEX_TAG})',
+        xaxis_title='日期', yaxis_title='β = (Δu·Δv) / (Δv·Δv)',
+        template='plotly_dark', height=350,
+    )
+    figm3.write_html(mv_out('movement_coeff.html'))
+
+    # M4: 正交性时序图 (residual · v 应为 0)
+    figm4 = go.Figure()
+    figm4.add_trace(go.Scatter(
+        x=mv_idx, y=mv_dot_after, mode='lines', name='residual · Δv',
+        line=dict(color='orange'),
+    ))
+    figm4.add_trace(go.Scatter(
+        x=mv_idx, y=[0] * len(mv_idx), mode='lines', name='y=0 (理想正交)',
+        line=dict(color='gray', dash='dash'),
+    ))
+    figm4.update_layout(
+        title='运动投影正交性验证: (Δu - proj) · Δv 应为 0',
+        xaxis_title='日期', yaxis_title='点积值',
+        template='plotly_dark', height=350,
+    )
+    figm4.write_html(mv_out('movement_orthogonality.html'))
+
+    print("\n运动向量投影 HTML 已生成:")
+    print(f"  M1. {mv_out('movement_scatter.html')}            - ΔV/ΔA 运动向量散点")
+    print(f"  M2. {mv_out('movement_projection_verify.html')} - 运动投影分解验证")
+    print(f"  M3. {mv_out('movement_coeff.html')}              - β 系数时序")
+    print(f"  M4. {mv_out('movement_orthogonality.html')}      - 运动正交性验证")
 
 print("\n图形已生成:")
 print(f"  1. {out('vector_scatter.html')}      - Volume-Amount向量散点图")
