@@ -582,6 +582,22 @@ python backtrace/projection/parameter_fit.py --rolling-fit --rolling-windows 30,
 而是「不同长度窗口下 k̂/ĉ 是否稳定」。短窗口反映近期参数,长窗口反映稳态参数。
 如果 T < 窗口大小,该窗口会自动 clamp 到数据起点(等同于 fit_all)。
 
+#### `--rolling-fit --plot-rolling` HTML 可视化
+
+`--plot-rolling` 在 `--rolling-fit` 之上叠加 plotly HTML,产 2 类图:
+
+`backtrace/outputs/kc_rolling_<index_tag>_<stock_tag>.html`(per-stock)
+
+每只票 1 个,2×2 子图: k̂ 漂移 / ĉ 漂移 / F² 残差 / n_valid 观测数。X 轴 = 窗口大小。
+**k̂ / ĉ 曲线跨窗口「稳定」则该股动力学结构稳态;反之短期噪声主导**。
+
+`backtrace/outputs/kc_rolling_aggregate.html`(跨股票 1 个)
+
+2 子图: k̂ / ĉ 中位数 ± p25/p75 区间随窗口变化。**看全市场 (k̂, ĉ) 的窗口敏感度**,
+短窗口方差爆炸 = 短窗口不可靠,长窗口方差收敛 = 长期参数稳态。
+
+依赖: `plotly`(已装)。
+
 ### [`backtrace/projection/prediction_ode.py`](../backtrace/projection/prediction_ode.py)
 
 **用拟合的 (k̂, ĉ) 预测下日 Δu_S**(2026-08-16 新增)。把动力学模型当 1 步预测器用:
