@@ -31,6 +31,12 @@
 #          k_<w1>, c_<w1>, f2_<w1>, n_<w1>, status_<w1>, ...
 #       横轴 = 各窗口的 (k̂, ĉ, F²) 直读,一眼看「窗口越长 k̂/ĉ 越漂到哪」
 #
+# 输出(--rolling-fit --plot-rolling HTML 可视化,2026-08-16 新增):
+#   backtrace/outputs/kc_rolling_<idx>_<stk>.html — 每只票 1 个,4 子图
+#       (k̂ / ĉ / F² / n_valid 随窗口变化)
+#   backtrace/outputs/kc_rolling_aggregate.html — 跨股票 1 个,2 子图
+#       (k̂ / ĉ 中位数 ± p25/p75 区间)
+#
 # 用法:
 #   PYTHONIOENCODING=utf-8 python backtrace/projection/parameter_fit.py
 #   PYTHONIOENCODING=utf-8 python backtrace/projection/parameter_fit.py --limit 10  # 冒烟
@@ -41,6 +47,10 @@
 #   PYTHONIOENCODING=utf-8 python backtrace/projection/parameter_fit.py --rolling-fit --limit 10
 #   PYTHONIOENCODING=utf-8 python backtrace/projection/parameter_fit.py --rolling-fit \
 #       --rolling-windows 30,60,120,240 --limit 20
+#
+#   # 滚动拟合 + HTML 可视化(2026-08-16 新增):每只票 4 子图 + 跨股票聚合
+#   PYTHONIOENCODING=utf-8 python backtrace/projection/parameter_fit.py --rolling-fit \
+#       --plot-rolling --limit 10
 #
 # 设计选择 — 为什么 OLS 而不是网格搜索:
 #   1. 模型对 k/c 严格线性(2-D 投影后,无高阶项),OLS 是 BLUE(最优线性无偏估计)
@@ -74,6 +84,8 @@ BACKTRACE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BACKTRACE_DIR not in sys.path:
     sys.path.insert(0, BACKTRACE_DIR)
 from common import tsfresh_pipeline as P  # noqa: F401  (保持导入对称,后续可扩展)
+
+OUT_HTML_DIR = 'backtrace/outputs'   # rolling-fit HTML 输出目录
 
 CSV_OUT_DIR = 'data/projection'
 KC_OUT_NAME = 'kc_estimates.csv'
@@ -114,6 +126,15 @@ def parse_args():
     p.add_argument(
         '--rolling-windows', default='60,120,240',
         help='滚动窗口大小,逗号分隔(默认 60,120,240)。如 "30,60,120,240"。',
+    )
+    p.add_argument(
+        '--plot-rolling', action='store_true',
+        help=(
+            '在 --rolling-fit 之上叠加 HTML 可视化:'
+            '每只票一个 HTML,展示 (k̂, ĉ, F², n_valid) 在不同窗口下的漂移;'
+            '另产一个聚合 HTML,跨股票汇总中位数分布。'
+            '依赖 plotly。输出到 backtrace/outputs/。'
+        ),
     )
     return p.parse_args()
 
@@ -377,6 +398,152 @@ def _parse_windows(spec: str) -> list[int]:
     return out
 
 
+def plot_rolling_per_stock(srow: dict, windows: list[int],
+                          code: str, name: str | None,
+                          index_tag: str, stock_tag: str) -> str:
+    """单只票滚动拟合 HTML:4 子图(k̂ / ĉ / F² / n_valid 随窗口变化)。"""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    ws = np.array(windows)
+    ks = np.array([float(srow[f'k_{w}']) for w in windows])
+    cs = np.array([float(srow[f'c_{w}']) for w in windows])
+    f2 = np.array([float(srow[f'f2_{w}']) for w in windows])
+    ns = np.array([int(srow[f'n_{w}']) for w in windows])
+    sts = [srow[f'status_{w}'] for w in windows]
+    title = f'{code} ({name}) → {index_tag} 滚动 OLS(k̂/ĉ 时序漂移)'
+    fig = make_subplots(
+        rows=2, cols=2, shared_xaxes=True,
+        subplot_titles=(
+            'k̂ 恢复力系数',
+            'ĉ 阻尼系数',
+            '‖F_self‖² 平均(原始量纲)',
+            '有效观测天数 n',
+        ),
+        vertical_spacing=0.14, horizontal_spacing=0.10,
+    )
+    fig.add_trace(go.Scatter(
+        x=ws, y=ks, mode='lines+markers', name='k̂',
+        line=dict(color='cyan', width=2), marker=dict(size=10),
+        text=sts, hovertemplate='w=%{x}<br>k̂=%{y:+.4f}<br>status: %{text}<extra></extra>',
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=[ws[0], ws[-1]], y=[0, 0], mode='lines', name='k̂=0',
+        line=dict(color='gray', dash='dash'), showlegend=False,
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=ws, y=cs, mode='lines+markers', name='ĉ',
+        line=dict(color='orange', width=2), marker=dict(size=10),
+        text=sts, hovertemplate='w=%{x}<br>ĉ=%{y:+.4f}<br>status: %{text}<extra></extra>',
+    ), row=1, col=2)
+    fig.add_trace(go.Scatter(
+        x=[ws[0], ws[-1]], y=[0, 0], mode='lines', name='ĉ=0',
+        line=dict(color='gray', dash='dash'), showlegend=False,
+    ), row=1, col=2)
+    fig.add_trace(go.Scatter(
+        x=ws, y=f2, mode='lines+markers', name='‖F_self‖²',
+        line=dict(color='magenta', width=2), marker=dict(size=10),
+        hovertemplate='w=%{x}<br>F²=%{y:.2e}<extra></extra>',
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=ws, y=ns, mode='lines+markers', name='n_valid_days',
+        line=dict(color='lime', width=2), marker=dict(size=10),
+        hovertemplate='w=%{x}<br>n=%{y}<extra></extra>',
+    ), row=2, col=2)
+    fig.update_xaxes(title_text='窗口大小(交易日)', row=2, col=1)
+    fig.update_xaxes(title_text='窗口大小(交易日)', row=2, col=2)
+    fig.update_yaxes(title_text='k̂', row=1, col=1)
+    fig.update_yaxes(title_text='ĉ', row=1, col=2)
+    fig.update_yaxes(title_text='F²(原始量纲)', type='log', row=2, col=1)
+    fig.update_yaxes(title_text='天数', row=2, col=2)
+    fig.update_layout(
+        template='plotly_dark', height=700, width=1100,
+        title_text=title,
+        legend=dict(orientation='h', yanchor='bottom', y=-0.18, xanchor='right', x=1),
+    )
+    out = os.path.join(OUT_HTML_DIR, f'kc_rolling_{index_tag}_{stock_tag}.html')
+    fig.write_html(out)
+    return out
+
+
+def plot_rolling_aggregate(summary_df: pd.DataFrame, windows: list[int]) -> str:
+    """跨股票滚动拟合 HTML:每窗口 k̂/ĉ 中位数 ± p25/p75 区间。"""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    ws = np.array(windows)
+    k_med, k_p25, k_p75 = [], [], []
+    c_med, c_p25, c_p75 = [], [], []
+    for w in windows:
+        k_arr = pd.to_numeric(summary_df[f'k_{w}'], errors='coerce').to_numpy()
+        c_arr = pd.to_numeric(summary_df[f'c_{w}'], errors='coerce').to_numpy()
+        k_arr = k_arr[np.isfinite(k_arr)]
+        c_arr = c_arr[np.isfinite(c_arr)]
+        if len(k_arr) == 0:
+            k_med.append(np.nan); k_p25.append(np.nan); k_p75.append(np.nan)
+        else:
+            k_med.append(np.median(k_arr))
+            k_p25.append(np.percentile(k_arr, 25))
+            k_p75.append(np.percentile(k_arr, 75))
+        if len(c_arr) == 0:
+            c_med.append(np.nan); c_p25.append(np.nan); c_p75.append(np.nan)
+        else:
+            c_med.append(np.median(c_arr))
+            c_p25.append(np.percentile(c_arr, 25))
+            c_p75.append(np.percentile(c_arr, 75))
+    k_med, k_p25, k_p75 = map(np.array, [k_med, k_p25, k_p75])
+    c_med, c_p25, c_p75 = map(np.array, [c_med, c_p25, c_p75])
+    fig = make_subplots(
+        rows=1, cols=2, shared_xaxes=True,
+        subplot_titles=('k̂ 跨股票中位数 ± p25/p75', 'ĉ 跨股票中位数 ± p25/p75'),
+        horizontal_spacing=0.10,
+    )
+    # k̂ panel — band + median line
+    fig.add_trace(go.Scatter(
+        x=list(ws) + list(ws[::-1]),
+        y=list(k_p75) + list(k_p25[::-1]),
+        fill='toself', fillcolor='rgba(0,255,255,0.15)',
+        line=dict(color='rgba(0,0,0,0)'),
+        name='p25-p75', showlegend=True,
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=ws, y=k_med, mode='lines+markers', name='k̂ med',
+        line=dict(color='cyan', width=3), marker=dict(size=10),
+    ), row=1, col=1)
+    # ĉ panel
+    fig.add_trace(go.Scatter(
+        x=list(ws) + list(ws[::-1]),
+        y=list(c_p75) + list(c_p25[::-1]),
+        fill='toself', fillcolor='rgba(255,165,0,0.15)',
+        line=dict(color='rgba(0,0,0,0)'),
+        name='p25-p75', showlegend=False,
+    ), row=1, col=2)
+    fig.add_trace(go.Scatter(
+        x=ws, y=c_med, mode='lines+markers', name='ĉ med',
+        line=dict(color='orange', width=3), marker=dict(size=10),
+    ), row=1, col=2)
+    fig.add_trace(go.Scatter(
+        x=[ws[0], ws[-1]], y=[0, 0], mode='lines',
+        line=dict(color='gray', dash='dash'), name='y=0',
+        showlegend=False,
+    ), row=1, col=1)
+    fig.add_trace(go.Scatter(
+        x=[ws[0], ws[-1]], y=[0, 0], mode='lines',
+        line=dict(color='gray', dash='dash'), name='y=0',
+        showlegend=False,
+    ), row=1, col=2)
+    fig.update_xaxes(title_text='窗口大小(交易日)', row=1, col=1)
+    fig.update_xaxes(title_text='窗口大小(交易日)', row=1, col=2)
+    fig.update_yaxes(title_text='k̂', row=1, col=1)
+    fig.update_yaxes(title_text='ĉ', row=1, col=2)
+    fig.update_layout(
+        template='plotly_dark', height=500, width=1100,
+        title_text=f'滚动拟合跨股票汇总({len(summary_df)} 只 × {len(windows)} 窗口)',
+        legend=dict(orientation='h', yanchor='bottom', y=-0.25, xanchor='right', x=1),
+    )
+    out = os.path.join(OUT_HTML_DIR, 'kc_rolling_aggregate.html')
+    fig.write_html(out)
+    return out
+
+
 def main():
     args = parse_args()
     os.makedirs(CSV_OUT_DIR, exist_ok=True)
@@ -402,7 +569,9 @@ def main():
     print()
 
     if args.rolling_fit:
-        main_rolling(targets, windows, clip_extreme=args.clip_extreme)
+        main_rolling(targets, windows,
+                     clip_extreme=args.clip_extreme,
+                     plot_rolling=args.plot_rolling)
     else:
         main_fit_all(targets,
                      min_valid_days=args.min_valid_days,
@@ -468,12 +637,15 @@ def main_fit_all(targets, min_valid_days: int, clip_extreme: float):
               f'max={np.max(f_vals):.2e}')
 
 
-def main_rolling(targets, windows: list[int], clip_extreme: float):
+def main_rolling(targets, windows: list[int], clip_extreme: float,
+                plot_rolling: bool = False):
     """滚动拟合分支:对每只票产 kc_rolling_<idx>_<stk>.csv + kc_rolling_summary.csv。
 
     per-stock CSV:窗口大小 × {k̂, ĉ, F², n_valid, status} 多个 fit 点(end-aligned 末 N 行)。
     summary CSV:每只票一行,横轴 = 各窗口的 (k̂, ĉ, F²) 直读,便于一眼看「窗口越长 k̂/ĉ 越
     漂到哪」。
+
+    plot_rolling: True 时额外产 HTML 可视化(per-stock + 跨股票聚合)。
     """
     # 准备 summary 的列名:动态按 windows 展开
     base_cols = ['code', 'name', 'index_code', 'index_tag', 'stock_tag', 'windows']
@@ -548,6 +720,30 @@ def main_rolling(targets, windows: list[int], clip_extreme: float):
         print(f'  w={w}: k̂ med={np.median(k_arr):+.4f} '
               f'(p25={np.percentile(k_arr,25):+.4f}, p75={np.percentile(k_arr,75):+.4f}, '
               f'n={len(k_arr)}) | ĉ med={np.median(c_arr):+.4f}')
+
+    # --plot-rolling:产 per-stock + 跨股票 HTML
+    if plot_rolling:
+        try:
+            import plotly.graph_objects as go
+            from plotly.subplots import make_subplots
+        except ImportError as e:
+            raise SystemExit(
+                f'--plot-rolling 需要 plotly,但导入失败: {e}\n'
+                f'  pip install plotly'
+            )
+        os.makedirs(OUT_HTML_DIR, exist_ok=True)
+        print(f'\n=== --plot-rolling HTML 可视化 ===')
+        # per-stock:每只票 1 个 HTML,4 子图(k̂ / ĉ / F² / n_valid)
+        for i, ((code, name, mv_csv, index_tag, stock_tag, index_code), srow) in enumerate(
+            zip(targets, summary_rows), 1
+        ):
+            html_path = plot_rolling_per_stock(
+                srow, windows, code, name, index_tag, stock_tag,
+            )
+            print(f'[{i}/{len(summary_rows)}] {code} → {html_path}')
+        # 跨股票聚合:1 个 HTML,各窗口 k̂/ĉ 的中位数 ± p25/p75 区间
+        agg_path = plot_rolling_aggregate(summary_df, windows)
+        print(f'\n  跨股票聚合: {agg_path}')
 
 
 if __name__ == '__main__':
