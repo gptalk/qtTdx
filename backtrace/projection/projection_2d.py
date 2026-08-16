@@ -148,6 +148,20 @@ def parse_args():
             '正 c 表示系统倾向于把个股与大盘的速度差消耗掉。'
         ),
     )
+    p.add_argument(
+        '--k-from-fit', action='store_true',
+        help=(
+            '从 data/projection/kc_estimates.csv 自动加载当前 code 的 k̂,'
+            '覆盖 --k-restore。前提:先用 parameter_fit.py 估过。'
+        ),
+    )
+    p.add_argument(
+        '--c-from-fit', action='store_true',
+        help=(
+            '从 data/projection/kc_estimates.csv 自动加载当前 code 的 ĉ,'
+            '覆盖 --c-damp。前提:先用 parameter_fit.py 估过。'
+        ),
+    )
     return p.parse_args()
 
 args = parse_args()
@@ -167,6 +181,29 @@ INDEX_OVERRIDE = args.index
 if args.dynamics and not args.movement:
     args.movement = True
     print('[--dynamics] 自动开启 --movement')
+
+# --k-from-fit / --c-from-fit 联动:从 kc_estimates.csv 加载拟合值
+# 必须在 load_pair 后才能拿到 INDEX_TAG / STOCK_TAG(因为要按 tag 查找)
+def _load_kc_for(index_tag: str, stock_tag: str) -> dict | None:
+    """从 data/projection/kc_estimates.csv 按 (index_tag, stock_tag) 查 (k̂, ĉ)。"""
+    import csv as _csv
+    path = 'data/projection/kc_estimates.csv'
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding='utf-8') as f:
+        reader = _csv.DictReader(f)
+        for row in reader:
+            if row.get('index_tag') == index_tag and row.get('stock_tag') == stock_tag:
+                try:
+                    return {
+                        'k_hat': float(row['k_hat']),
+                        'c_hat': float(row['c_hat']),
+                        'status': row.get('status', ''),
+                    }
+                except (KeyError, ValueError):
+                    return None
+    return None
+
 # λ_q 默认走 median(‖ΔM‖) 自适应;传 -1 触发默认
 if args.lambda_q < 0:
     LAMBDA_Q = None                       # 传给 compute_dynamics 让它内部估
@@ -208,6 +245,20 @@ INDEX_TAG = loaded['index_tag']
 STOCK_TAG = loaded['stock_tag']
 INDEX_LABEL = f'{INDEX_CODE} ({INDEX_NAME})'
 STOCK_LABEL = f'{STOCK_CODE} ({STOCK_NAME})'
+
+# --k-from-fit / --c-from-fit:覆盖 --k-restore / --c-damp
+if args.k_from_fit or args.c_from_fit:
+    kc = _load_kc_for(INDEX_TAG, STOCK_TAG)
+    if kc is None:
+        print(f'[--k-from-fit/--c-from-fit] ⚠ kc_estimates.csv 中没有 ({INDEX_TAG}, {STOCK_TAG}) 的记录')
+        print('  请先跑:python backtrace/projection/parameter_fit.py')
+    else:
+        if args.k_from_fit:
+            args.k_restore = kc['k_hat']
+            print(f'[--k-from-fit] k_restore ← k̂={kc["k_hat"]:+.4f} (status: {kc["status"]})')
+        if args.c_from_fit:
+            args.c_damp = kc['c_hat']
+            print(f'[--c-from-fit] c_damp ← ĉ={kc["c_hat"]:+.4f} (status: {kc["status"]})')
 
 baseline_kind = (
     f'显式指定基线 {INDEX_CODE}' if INDEX_OVERRIDE

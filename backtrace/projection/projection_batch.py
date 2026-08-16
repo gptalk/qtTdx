@@ -135,6 +135,32 @@ from _projection_core import (
 CSV_OUT_DIR = 'data/projection'   # 每只股票 CSV + batch_manifest.csv 都落这里
 
 
+def load_kc_map(status_filter: str = 'ok'):
+    """从 data/projection/kc_estimates.csv 读 {(index_tag, stock_tag): (k̂, ĉ)}。
+
+    status_filter: 只取 status 以该前缀开头的行(默认 'ok');空字符串 = 全部。
+    找不到 / 文件不存在 → 返回 {}。
+    """
+    path = os.path.join(CSV_OUT_DIR, 'kc_estimates.csv')
+    if not os.path.exists(path):
+        return {}
+    df = pd.read_csv(path, dtype={
+        'code': str, 'index_code': str, 'index_tag': str, 'stock_tag': str,
+    })
+    if status_filter:
+        df = df[df['status'].str.startswith(status_filter, na=False)]
+    out = {}
+    for _, row in df.iterrows():
+        try:
+            out[(row['index_tag'], row['stock_tag'])] = (
+                float(row['k_hat']),
+                float(row['c_hat']),
+            )
+        except (KeyError, ValueError):
+            continue
+    return out
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='批量 projection 2-D 投影分析(只产 CSV)')
     parser.add_argument(
@@ -210,6 +236,21 @@ def parse_args():
             '正 c 表示系统倾向于把个股与大盘的速度差消耗掉。'
         ),
     )
+    parser.add_argument(
+        '--k-from-fit', action='store_true',
+        help=(
+            '从 data/projection/kc_estimates.csv 自动加载每只票的 k̂,'
+            '覆盖 --k-restore。前提:先用 parameter_fit.py 估过,且 (index_tag, stock_tag) 对得上。'
+            '找不到的票用 --k-restore 默认值(0)。'
+        ),
+    )
+    parser.add_argument(
+        '--c-from-fit', action='store_true',
+        help=(
+            '从 data/projection/kc_estimates.csv 自动加载每只票的 ĉ,'
+            '覆盖 --c-damp。找不到的票用 --c-damp 默认值(0)。'
+        ),
+    )
     return parser.parse_args()
 
 
@@ -237,7 +278,8 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
                  lag: int = 0, movement: bool = False,
                  dynamics: bool = False, lambda_q=None,
                  classify_thresholds=(0.10, 0.50, np.deg2rad(30), np.deg2rad(90)),
-                 k_restore: float = 0.0, c_damp: float = 0.0):
+                 k_restore: float = 0.0, c_damp: float = 0.0,
+                 kc_overrides: dict | None = None):
     """处理一只股票。返回 manifest 行 dict(失败也返回,status 字段说明原因)。
 
     Args:
@@ -312,8 +354,15 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
                 dyn_df.to_csv(dyn_csv_path, index=False, encoding='utf-8')
 
                 # 力分解(总是跑,即便 k=c=0 也产 forces CSV 便于看 F_self 残差)
+                # --k-from-fit / --c-from-fit 时按 (index_tag, stock_tag) 查表覆盖默认值
+                eff_k = k_restore
+                eff_c = c_damp
+                if kc_overrides is not None:
+                    kc = kc_overrides.get((index_tag, stock_tag))
+                    if kc is not None:
+                        eff_k, eff_c = kc
                 frc = compute_forces(dyn, mv_for_dyn,
-                                     k_restore=k_restore, c_damp=c_damp)
+                                     k_restore=eff_k, c_damp=eff_c)
                 frc_df = build_forces_df(
                     common_idx[1:], frc, index_tag, stock_tag,
                 )
@@ -391,6 +440,17 @@ def main():
         np.deg2rad(THETA_FOLLOWING_DEG), np.deg2rad(THETA_AGAINST_DEG),
     )
 
+    # --k-from-fit / --c-from-fit:加载拟合表
+    kc_overrides = None
+    if args.k_from_fit or args.c_from_fit:
+        kc_overrides = load_kc_map(status_filter='ok')
+        if not kc_overrides:
+            print('[--k-from-fit/--c-from-fit] ⚠ kc_estimates.csv 中没有 ok 记录,'
+                  '将全部用 --k-restore / --c-damp 默认值')
+            print('  请先跑:python backtrace/projection/parameter_fit.py')
+        else:
+            print(f'[--k-from-fit/--c-from-fit] 已加载 {len(kc_overrides)} 条拟合值')
+
     stock_list = load_stock_list(args.input)
     if args.limit > 0:
         stock_list = stock_list[:args.limit]
@@ -435,6 +495,7 @@ def main():
             dynamics=args.dynamics, lambda_q=lambda_q,
             classify_thresholds=classify_thresholds,
             k_restore=args.k_restore, c_damp=args.c_damp,
+            kc_overrides=kc_overrides,
         )
         manifest.append(row)
         # 状态打印:动力学模式下额外列两个 CSV 路径
