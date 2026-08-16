@@ -198,15 +198,12 @@ def main():
     for s in target_states:
         print(f'  {s}: {len(groups[s])} 只(占比 ≥ {args.min_prop:.0%})')
 
-    # 拉收盘价构建 close_df(取所有相关股票的并集)
+    # 拉收盘价(用于 basket 回测 + IC 的 forward return)— 无论 vbt 是否可用都跑
     all_codes = sorted({c for codes in groups.values() for c in codes})
+    close_dict = {}
     if not all_codes:
         print('没有任何股票分组,跳过回测 + IC')
-    elif vbt is None:
-        print('vbt 不可用,跳过 basket 回测')
     else:
-        # 拉 close(用 P.load_ohlcva)+ 对齐共同日期
-        close_dict = {}
         for c in all_codes:
             try:
                 df = P.load_ohlcva(c, lookback_years=args.days / 240)
@@ -220,6 +217,13 @@ def main():
                 close_dict[c] = df[close_col]
             except Exception as e:
                 print(f'  {c} 拉 close 失败: {e}')
+
+    # basket 回测(vbt 不可用时跳过,close_dict 仍可用于 IC)
+    if not all_codes:
+        pass
+    elif vbt is None:
+        print('vbt 不可用,跳过 basket 回测')
+    else:
         if not close_dict:
             print('没有拉取到任何 close,跳过 basket 回测')
         else:
