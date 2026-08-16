@@ -91,6 +91,11 @@ backtrace/
 │   ├── parameter_fit.py     ← 闭式 OLS 估计 k/c(全样本 + --rolling-fit 多窗口)
 │   ├── prediction_ode.py    ← 用 (k̂, ĉ) 1 步预测下日 Δu_S(诊断用)
 │   └── state_kc_analysis.py ← 状态分布 × (k̂, ĉ) 关联分析
+├── dynamics/                ← 离散动力系统入口(2026-08 新建)
+│   ├── _dynamics_core.py    ← 复用 projection 数学 + 1 步预测 + N 步模拟
+│   ├── dynamics_system.py   ← 单股端到端(load → describe → simulate → HTML/CSV)
+│   ├── dynamics_batch.py    ← 批量(读 stocks.csv → 全跑 → manifest)
+│   └── README.md            ← 目录说明(API、参数、已知坑)
 ├── gp_factor_mining/        ← GP 因子挖掘子项目(独立 README)
 ├── data_fetch/              ← 日线批量拉取(写 data/)
 │   └── fetch_daily.py
@@ -154,6 +159,7 @@ backtrace/
 | **双层 α 选股** | [backtrace/alpha/](backtrace/alpha/) | 行业 → 个股双层筛选 |
 | **K 线形态** | [backtrace/talib/](backtrace/talib/) | TALib 形态回测 / 验证 |
 | **投影 + 动力学** | [backtrace/projection/](backtrace/projection/) | 2-D 投影 + 离散动力学层(`--dynamics` / `--k-restore` / `--c-damp` / `--k-from-fit` / `--c-from-fit`)+ OLS 参数估计(`parameter_fit.py`)+ 1 步预测(`prediction_ode.py`)+ 状态关联(`state_kc_analysis.py`) |
+| **动力系统入口** | [backtrace/dynamics/](backtrace/dynamics/) | 复用 projection 描述层 + 力模型,新增 1 步预测(`predict_next_state`)+ N 步模拟(`simulate_trajectory`, Oracle 模式:已知未来大盘 → 个股轨迹)。CLI `dynamics_system.py` / `dynamics_batch.py` |
 | **GP 因子挖掘** | [backtrace/gp_factor_mining/](backtrace/gp_factor_mining/) | 遗传规划 + 因子库 |
 
 ## 已知陷阱(踩过无数次的)
