@@ -280,16 +280,49 @@ fig1b.update_layout(
 )
 fig1b.write_html(out('stock_diff_3d.html'))
 
-# 图2: 投影验证 - 选取几个代表性日期(在可用交易日内均匀取样,避免硬编码越界)
-sample_indices = sorted(set(np.linspace(0, len(common_idx) - 1, 4, dtype=int).tolist()))
+# 图2: 投影验证 - 均匀采样 4 个历史日期 + 最近 4 个交易日
+# 2026-08-16 改动:在原「均匀采样 4 个」基础上加入「最近 4 天」,让用户既能看到
+# 历史代表性日期的几何分解,又能一眼看到最新 4 笔成交对应的真实形状。
+# 最近样本的子图标题加「(最新)」后缀以示区分。
+uniform_indices = sorted(set(np.linspace(0, len(common_idx) - 1, 4, dtype=int).tolist()))
+n_recent = min(4, len(common_idx))
+recent_indices = list(range(len(common_idx) - n_recent, len(common_idx)))
+# 合并 + 去重(若均匀采样已命中最近 4 天则不重复),保留「最近」标记
+sample_pairs = []
+for i in uniform_indices:
+    sample_pairs.append((i, False))   # (index, is_recent)
+for i in recent_indices:
+    if i in {x[0] for x in sample_pairs}:
+        # 已有 — 升级为「最新」标记
+        sample_pairs = [(idx, True) if idx == i else (idx, recent) for idx, recent in sample_pairs]
+    else:
+        sample_pairs.append((i, True))
+sample_pairs.sort(key=lambda x: x[0])
+sample_indices = [p[0] for p in sample_pairs]
+recent_flags = [p[1] for p in sample_pairs]
+n_samples = len(sample_indices)
+
+# 子图栅格:按样本数选布局
+if n_samples <= 2:
+    grid_rows, grid_cols = 1, n_samples
+elif n_samples <= 4:
+    grid_rows, grid_cols = 2, 2
+elif n_samples <= 6:
+    grid_rows, grid_cols = 2, 3
+else:  # 7-8
+    grid_rows, grid_cols = 2, 4
+row_col = [(i // grid_cols + 1, i % grid_cols + 1) for i in range(n_samples)]
 
 fig2 = make_subplots(
-    rows=2, cols=2,
-    subplot_titles=[f'{str(common_idx[i])[:10]} 投影验证' for i in sample_indices],
+    rows=grid_rows, cols=grid_cols,
+    subplot_titles=[
+        f'{str(common_idx[i])[:10]} 投影验证{" (最新)" if r else ""}'
+        for i, r in zip(sample_indices, recent_flags)
+    ],
     horizontal_spacing=0.15, vertical_spacing=0.15
 )
 
-for idx, (si, row, col) in enumerate(zip(sample_indices, [1,1,2,2], [1,2,1,2])):
+for idx, (si, (row, col)) in enumerate(zip(sample_indices, row_col)):
     # 用原始向量,与 projections / residuals 的量纲一致(否则归一化 u/v ≈1
     # 叠加原始 proj/residual ≈1e8,u/v 会塌缩到原点)
     u = vec_stock[si]
