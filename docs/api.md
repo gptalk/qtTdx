@@ -442,6 +442,8 @@ if __name__ == '__main__':
 | [`compute_dynamics(mv, lambda_q)`](../backtrace/projection/_projection_core.py) | **动力学层** 9 指标(基于 `mv` dict) | `mv` = `compute_movement_projection` 输出;`lambda_q=None` 走 median 自适应 | dict 含 13 keys(q_t/theta/R/v_*/E_*/a_*/lambda_q_used) | 详见 [superpowers/specs/2026-08-16-market-stock-dynamics-design.md](superpowers/specs/2026-08-16-market-stock-dynamics-design.md) |
 | [`classify_states(R, theta, E_self, thresholds)`](../backtrace/projection/_projection_core.py) | **状态分类** 7 标签 + none | `thresholds=(R_low, R_high, theta_following_rad, theta_against_rad)` | list[str],长度 T-1 | 优先级:against > resonance > accelerating > returning > independent > weak_div > follow > none |
 | [`build_dynamics_df(common_idx, dyn, states, index_tag, stock_tag)`](../backtrace/projection/_projection_core.py) | 组装 14 列动力学 CSV | `common_idx[1:]` | DataFrame | `Dyn_` 前缀,加速度列右补 NaN(末行 NaN) |
+| [`compute_forces(dyn, mv, k_restore=0.0, c_damp=0.0)`](../backtrace/projection/_projection_core.py) | **力分解** a_S = β·a_M - k·d - c·u + F_self(用户 prompt §14-17) | `dyn`+`mv`;默认 k=c=0(纯残差基线) | dict 含 8 keys(F_market/F_restore/F_damp/F_self/d_mag/u_mag + k/c_used) | F_* 输出标量模长;末行 NaN(加速度末行 NaN 衍生) |
+| [`build_forces_df(common_idx, frc, index_tag, stock_tag)`](../backtrace/projection/_projection_core.py) | 组装 8 列力分解 CSV | `common_idx[1:]` | DataFrame | `Frc_` 前缀;含 d_mag/u_mag/√(F_M²+F_S²) 三辅助列 |
 | `STATE_LABELS` / `STATE_COLORS` / `STATE_LABELS_CN` | 7 状态标签 / 配色 / 中文映射 | — | list / dict / dict | projection_2d.py 的 HTML band 与中文 print 共用 |
 
 ### [`backtrace/projection/projection_2d.py`](../backtrace/projection/projection_2d.py)
@@ -455,11 +457,14 @@ if __name__ == '__main__':
 | `--dynamics` | False | 启用动力学层;自动开启 `--movement` |
 | `--lambda-q` | `-1` | 锚定强度系数 λ_q;传 `-1` 走 median(‖ΔM‖) 自适应;传 `0` 等价无阻尼(q_t=1) |
 | `--classify-thresholds` | `0.10,0.50,30,90` | `R_low,R_high,theta_following_deg,theta_against_deg` |
+| `--k-restore` | `0.0` | 恢复力系数 k。F_restore = -k·d;0 = 无均值回复力 |
+| `--c-damp` | `0.0` | 阻尼系数 c。F_damp = -c·u;0 = 无阻尼 |
 
 动力学产物:
 
-- HTML: `backtrace/outputs/dynmv_trajectory.html`(4 子图:速度 / 能量 / R+θ / 状态分类)
+- HTML: `backtrace/outputs/dynmv_trajectory.html`(5 子图:速度 / 能量 / R+θ / 状态分类 / 力分解)
 - CSV: `data/projection/dynamics_<INDEX_TAG>_<STOCK_TAG>.csv`(14 列,见 `build_dynamics_df`)
+- CSV: `data/projection/forces_<INDEX_TAG>_<STOCK_TAG>.csv`(8 列,见 `build_forces_df`;`--dynamics` 启用时自动产出)
 
 ## 已知陷阱(踩过无数次的)
 

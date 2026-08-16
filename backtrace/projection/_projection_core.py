@@ -873,3 +873,117 @@ def build_dynamics_df(common_idx, dyn, states, index_tag, stock_tag):
         f'Dyn_A_Mag_{index_tag}': dyn['a_M_mag'],              # 首末 NaN
         f'Dyn_State_{stock_tag}': states,
     })
+
+
+# === 力模型层(2026-08-16 动力学 §14-17 实现)====================================
+# 沿用用户原始 prompt §14-22 的离散动力学方程:
+#   a_i = β·a_M  −  k·d  −  c·u  +  F_self
+# 默认 k = c = 0(无阻尼基线),F_self 由残差定义,等于个股不能被市场 / 恢复 / 阻尼
+# 三项解释的那部分加速度。
+#
+# 输入:compute_dynamics() 返回的 dyn(用 v_S_mag / v_M_mag / a_S_mag / a_M_mag /
+#       实际 2-D 向量从 compute_movement_projection() 的 mv[' stock_move '] /
+#       mv[' index_move '] / mv[' proj_coeff '] 取)
+# 输出:4 个力的标量模长(2-D 向量已内部计算后取 ‖·‖),便于画 stacked / line。
+
+def compute_forces(dyn, mv, k_restore=0.0, c_damp=0.0):
+    """把个股加速度分解成 4 个力:F_market / F_restore / F_damp / F_self。
+
+    Args:
+        dyn: compute_dynamics() 的返回值。本函数用 keys:
+              'v_S_mag' (T-1,), 'v_M_mag' (T-1,),
+              'a_S_mag' (T-1, 末行 NaN), 'a_M_mag' (T-1, 末行 NaN)。
+        mv:  compute_movement_projection() 的返回值。本函数用 keys:
+              'stock_move' (T-1, 2)、'index_move' (T-1, 2)、
+              'proj_coeff' (T-1,) — β。
+        k_restore: float,恢复系数 k。默认 0.0 = 无均值回复力。
+        c_damp:    float,阻尼系数 c。默认 0.0 = 无阻尼。
+
+    Returns:
+        dict with keys (均为 T-1 长):
+            F_market:   ndarray (T-1,) 末行 NaN(= β·a_M 沿 a_M 方向的标量投影)
+            F_restore:  ndarray (T-1,) ‖−k·d‖(标量幅值)
+            F_damp:     ndarray (T-1,) ‖−c·u‖(标量幅值)
+            F_self:     ndarray (T-1,) 末行 NaN(由方程残差定义:残差模长)
+            d_mag:      ndarray (T-1,) ‖d‖ 位置偏离
+            u_mag:      ndarray (T-1,) ‖u‖ 速度偏离
+
+        物理含义:
+            ‖a_S‖ ≈ √(‖F_market‖² + ‖F_self‖²  + cross terms)
+            设 k = c = 0 时,F_self ≡ a_S - F_market(残差就是它)。
+
+    注:严格按方程 a_S = β·a_M - k·d - c·u + F_self,这里输出的是每个力的
+       2-D 向量模长。cross-term 信息在模长运算中丢失(‖a + b‖² ≠ ‖a‖² + ‖b‖²),
+       但 4 个 ‖·‖ 的相对大小仍可比,适合画 stacked-area 看力分配比例。
+    """
+    delta_u = mv['stock_move']              # (T-1, 2) v_S 向量
+    delta_v = mv['index_move']              # (T-1, 2) v_M 向量
+    beta = mv['proj_coeff']                 # (T-1,)   标量映射系数
+    T_minus_1 = delta_u.shape[0]
+
+    # ---- 重建 2-D 加速度(末行 NaN,前 T-2 行用前向 np.diff) ----
+    a_u_vec = np.full_like(delta_u, np.nan)     # (T-1, 2)
+    a_v_vec = np.full_like(delta_v, np.nan)     # (T-1, 2)
+    if T_minus_1 >= 2:
+        a_u_vec[:-1] = np.diff(delta_u, axis=0)
+        a_v_vec[:-1] = np.diff(delta_v, axis=0)
+
+    # ---- 速度偏离 u = v_S - β·v_M(2-D 向量) ----
+    u_vec = delta_u - beta[:, None] * delta_v
+
+    # ---- 位置偏离 d = ∫u dt = Σ_{j<t} u[j],2-D 累积 ----
+    d_vec = np.zeros_like(delta_u)
+    if T_minus_1 >= 2:
+        # cumsum[i] = sum_{j<i} u[j],所以 d[1:] = cumsum(u[:-1]),d[0] = 0
+        d_vec[1:] = np.cumsum(u_vec[:-1], axis=0)
+
+    # ---- 4 个力的 2-D 向量 ----
+    F_market_vec = beta[:, None] * a_v_vec                  # β·a_M
+    F_restore_vec = -k_restore * d_vec                      # -k·d
+    F_damp_vec = -c_damp * u_vec                            # -c·u
+    F_self_vec = a_u_vec - F_market_vec - F_restore_vec - F_damp_vec
+
+    # ---- 取模长 ----
+    F_market = np.linalg.norm(F_market_vec, axis=1)         # 末行 NaN
+    F_restore = np.linalg.norm(F_restore_vec, axis=1)
+    F_damp = np.linalg.norm(F_damp_vec, axis=1)
+    F_self = np.linalg.norm(F_self_vec, axis=1)             # 末行 NaN
+    d_mag = np.linalg.norm(d_vec, axis=1)
+    u_mag = np.linalg.norm(u_vec, axis=1)
+
+    return {
+        'F_market': F_market,
+        'F_restore': F_restore,
+        'F_damp': F_damp,
+        'F_self': F_self,
+        'd_mag': d_mag,
+        'u_mag': u_mag,
+        'k_restore': k_restore,
+        'c_damp': c_damp,
+    }
+
+
+def build_forces_df(common_idx, frc, index_tag, stock_tag):
+    """组装 8 列力分解结果 DataFrame。
+
+    Args:
+        common_idx: 调用方传 common_idx[1:],长度 T-1。
+        frc:        compute_forces() 返回的 dict。
+        index_tag / stock_tag: 列名后缀。
+
+    Returns:
+        pd.DataFrame,长度 T-1,8 列:Date + 4 力模长 + d + u。
+        F_market / F_self 末行 NaN(因加速度末行 NaN)。
+    """
+    return pd.DataFrame({
+        'Date': common_idx,
+        f'Frc_Market_{index_tag}': frc['F_market'],     # β·‖a_M‖,末行 NaN
+        f'Frc_Restore_{stock_tag}': frc['F_restore'],   # ‖k·d‖
+        f'Frc_Damp_{stock_tag}': frc['F_damp'],         # ‖c·u‖
+        f'Frc_Self_{stock_tag}': frc['F_self'],         # 残差,末行 NaN
+        f'Frc_Deviation_{stock_tag}': frc['d_mag'],     # 位置偏离 ‖d‖
+        f'Frc_VelDev_{stock_tag}': frc['u_mag'],        # 速度偏离 ‖u‖
+        f'Frc_Sum_{stock_tag}': (
+            np.sqrt(frc['F_market']**2 + frc['F_self']**2)  # √(‖F_M‖² + ‖F_self‖²)
+        ),                                               # 与 ‖a_S‖ 接近(2-D 不严格守恒)
+    })

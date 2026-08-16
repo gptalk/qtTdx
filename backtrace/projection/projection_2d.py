@@ -71,6 +71,8 @@ from _projection_core import (
     compute_dynamics,
     classify_states,
     build_dynamics_df,
+    compute_forces,
+    build_forces_df,
     STATE_COLORS,
     STATE_LABELS_CN,
 )
@@ -130,6 +132,20 @@ def parse_args():
         help=(
             '状态分类阈值,逗号分隔 4 个浮点:R_low,R_high,theta_following_deg,'
             'theta_against_deg。默认 0.10,0.50,30,90。'
+        ),
+    )
+    p.add_argument(
+        '--k-restore', type=float, default=0.0,
+        help=(
+            '恢复力系数 k(浮点)。F_restore = -k·d,默认 0 = 无均值回复力。'
+            '调试时可设 0.1~1.0 看个股偏离被多大强度拉回。'
+        ),
+    )
+    p.add_argument(
+        '--c-damp', type=float, default=0.0,
+        help=(
+            '阻尼系数 c(浮点)。F_damp = -c·u,默认 0 = 无阻尼。'
+            '正 c 表示系统倾向于把个股与大盘的速度差消耗掉。'
         ),
     )
     return p.parse_args()
@@ -814,16 +830,32 @@ if args.dynamics:
     theta_deg = np.degrees(theta_rad)
     states = dynamics_states                         # list[str]
 
+    # 力分解:每次 --dynamics 都跑(默认 k=c=0 = 纯 β·a_M + F_self 基线)
+    frc = compute_forces(dyn, mv_for_dyn,
+                         k_restore=args.k_restore, c_damp=args.c_damp)
+    forces_data = build_forces_df(
+        common_idx[1:], frc, INDEX_TAG, STOCK_TAG,
+    )
+    frc_csv = os.path.join(CSV_OUT, f'forces_{INDEX_TAG}_{STOCK_TAG}.csv')
+    os.makedirs(CSV_OUT, exist_ok=True)
+    forces_data.to_csv(frc_csv, index=False, encoding='utf-8')
+    print(
+        f"  力分解: k={frc['k_restore']:.4f}, c={frc['c_damp']:.4f} → CSV {frc_csv}"
+    )
+    if frc['k_restore'] == 0 and frc['c_damp'] == 0:
+        print("    (k=c=0 → F_restore=F_damp=0,F_self = a_S - F_market 残差)")
+
     figdyn = make_subplots(
-        rows=4, cols=1, shared_xaxes=True,
+        rows=5, cols=1, shared_xaxes=True,
         subplot_titles=(
             f'速度 ‖v_M‖ vs ‖v_S‖ ({STOCK_TAG} → {INDEX_TAG})',
             f'动能 E_market + E_self ({STOCK_TAG} → {INDEX_TAG})',
             f'耦合度 R_i / 偏离角 θ_i ({STOCK_TAG} → {INDEX_TAG})',
             f'状态分类 ({STOCK_TAG} → {INDEX_TAG}, λ_q={dyn["lambda_q_used"]:.2e})',
+            f'力分解 ‖F_M‖/‖F_R‖/‖F_D‖/‖F_S‖ (k={args.k_restore}, c={args.c_damp})',
         ),
-        vertical_spacing=0.06,
-        row_heights=[0.28, 0.26, 0.26, 0.20],
+        vertical_spacing=0.05,
+        row_heights=[0.22, 0.20, 0.20, 0.18, 0.20],
     )
     # Row 1: 速度对比
     figdyn.add_trace(go.Scatter(
@@ -886,22 +918,45 @@ if args.dynamics:
         title_text='状态', showticklabels=False, range=[-1, 1], row=4, col=1,
     )
 
+    # Row 5: 力分解(4 个力的标量模长)
+    F_M = forces_data[f'Frc_Market_{INDEX_TAG}'].to_numpy()
+    F_R = forces_data[f'Frc_Restore_{STOCK_TAG}'].to_numpy()
+    F_D = forces_data[f'Frc_Damp_{STOCK_TAG}'].to_numpy()
+    F_S = forces_data[f'Frc_Self_{STOCK_TAG}'].to_numpy()
+    figdyn.add_trace(go.Scatter(
+        x=dyn_idx, y=F_M, mode='lines', name='‖F_market‖ β·a_M',
+        line=dict(color='cyan'),
+    ), row=5, col=1)
+    figdyn.add_trace(go.Scatter(
+        x=dyn_idx, y=F_R, mode='lines', name='‖F_restore‖ k·d',
+        line=dict(color='lime', dash='dot'),
+    ), row=5, col=1)
+    figdyn.add_trace(go.Scatter(
+        x=dyn_idx, y=F_D, mode='lines', name='‖F_damp‖ c·u',
+        line=dict(color='magenta', dash='dot'),
+    ), row=5, col=1)
+    figdyn.add_trace(go.Scatter(
+        x=dyn_idx, y=F_S, mode='lines', name='‖F_self‖ 残差',
+        line=dict(color='orange'),
+    ), row=5, col=1)
+    figdyn.update_yaxes(title_text='力 (‖·‖,原始量纲)', row=5, col=1)
+
     # 副轴(Row 3 右轴 θ 度数)
     figdyn.update_layout(
         template='plotly_dark',
-        height=1100,
+        height=1400,
         title_text=f'动力学摆动轨迹 ({STOCK_LABEL} → {INDEX_LABEL})',
         yaxis4=dict(
             title='θ (度)', overlaying='y3', side='right',
             range=[0, 180], showgrid=False,
         ),
-        legend=dict(orientation='h', yanchor='bottom', y=-0.12, xanchor='right', x=1),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.10, xanchor='right', x=1),
     )
 
     DYN_OUT_HTML = os.path.join(OUT_DIR, 'dynmv_trajectory.html').replace('\\', '/')
     figdyn.write_html(DYN_OUT_HTML)
     print(f"\n动力学摆动轨迹 HTML: {DYN_OUT_HTML}")
-    print("  4 子图:速度 / 能量 / R+θ / 状态分类")
+    print("  5 子图:速度 / 能量 / R+θ / 状态分类 / 力分解")
 
 print("\n图形已生成:")
 print(f"  1. {out('vector_scatter.html')}      - Volume-Amount向量散点图")
