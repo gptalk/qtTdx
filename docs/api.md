@@ -417,6 +417,50 @@ if __name__ == '__main__':
 
 ---
 
+## `backtrace/projection/` — 2-D 投影(单股 + 批量 + 动力学层)
+
+3 个脚本 + 1 个共享核心模块;`projection_2d.py` 单股 HTML+CSV,`projection_batch.py` 批量 CSV,`_projection_core.py` 纯数学。**动力学层(`--dynamics`,2026-08-16 新增)** 在运动投影之上叠加离散系统指标。
+
+### [`backtrace/projection/_projection_core.py`](../backtrace/projection/_projection_core.py)
+
+共享数学;无 plotly / 无 HTML / 无文件写。所有 `projection_*` 脚本都从这里 import。
+
+| 函数 | 一句话 | 参数 | 返回 | 备注 |
+|---|---|---|---|---|
+| [`MARKET_TO_INDEX`](../backtrace/projection/_projection_core.py) | dict | `{'SZ':('399001.SZ','深证成指'),'SH':('000001.SH','上证综指')}` | — | 后缀→大盘 |
+| [`resolve_index(stock_code)`](../backtrace/projection/_projection_core.py) | 个股后缀→大盘指数 | `stock_code`:`'002475.SZ'` | `(code, name)` | 未知后缀抛 ValueError |
+| [`INDUSTRY_MAP`](../backtrace/projection/_projection_core.py) | dict | 由 `data/sw2/members.csv` 启动时构建的 code→(sector_code, sector_name) | — | 个股→申万二级行业 |
+| [`resolve_industry(stock_code)`](../backtrace/projection/_projection_core.py) | 个股→申万二级行业 | 同 `resolve_index` | `(code, name)` | 新股/非 A 股抛 ValueError |
+| [`project_u_onto_v(u, v)`](../backtrace/projection/_projection_core.py) | 2-D 向量投影 | `u, v`:ndarray shape (2,) | ndarray | `v·v=0` 返回零向量 |
+| [`_safe_ratio(num, den, default=NaN)`](../backtrace/projection/_projection_core.py) | 安全除法 | num / den | float | 0/NaN/Inf → `default` |
+| [`load_pair(stock_code, days, pipeline, prefer_industry=False, index_code=None, lag=0)`](../backtrace/projection/_projection_core.py) | 本地 `data/` 缓存拉 (stock_df, index_df) 共同交易日 | `lag=1` 时附 Vol_prev / Amt_prev | dict | 基线优先级:`index_code` > `prefer_industry=True` 申万二级 > 大盘 |
+| [`compute_vectors(stock_df, index_df, index_tag, stock_tag, lag=0)`](../backtrace/projection/_projection_core.py) | Min-Max 归一化 Vol/Amt(及可选 prev) | `lag=0`:2-D;`lag=1`:4-D | `(vec_index, vec_stock, norms_ix, norms_st, norm_params_str)` | 仅 lag ∈ {0, 1} |
+| [`compute_projections(vec_stock, vec_index)`](../backtrace/projection/_projection_core.py) | 朴素 2-D 投影 9 个指标 | ndarray (T, k) | dict | 不输出 `state_resi_price`(2-D 退化,选股无效,2026-08-16 删) |
+| [`compute_movement_projection(stock_df, index_df)`](../backtrace/projection/_projection_core.py) | 运动向量投影(ΔV, ΔA)→ β / proj / resi | 首行因 diff 丢 | dict 含 16 keys(stock_move/index_move/proj/residual/proj_mag/resi_mag/dot_after/proj_coeff/proj_prices/resi_prices/4 magnitudes 等) | 末行与 caller `common_idx[1:]` 对齐 |
+| [`build_movement_result_df(common_idx, mv, index_tag, stock_tag)`](../backtrace/projection/_projection_core.py) | 组装 18 列运动投影 CSV | `common_idx[1:]` | DataFrame | `Move_` 前缀,与 state 区分 |
+| [`build_movement_intermediate_df(common_idx, mv, stock_df, index_df, index_tag, stock_tag)`](../backtrace/projection/_projection_core.py) | 组装 25 列「逐日复核」CSV(原始 Vol·Ama + Δ + β 分子分母 + 3 个 price) | 同上 | DataFrame | 落 `data/projection/intermediate/`,人工核对公式用 |
+| [`compute_dynamics(mv, lambda_q)`](../backtrace/projection/_projection_core.py) | **动力学层** 9 指标(基于 `mv` dict) | `mv` = `compute_movement_projection` 输出;`lambda_q=None` 走 median 自适应 | dict 含 13 keys(q_t/theta/R/v_*/E_*/a_*/lambda_q_used) | 详见 [superpowers/specs/2026-08-16-market-stock-dynamics-design.md](superpowers/specs/2026-08-16-market-stock-dynamics-design.md) |
+| [`classify_states(R, theta, E_self, thresholds)`](../backtrace/projection/_projection_core.py) | **状态分类** 7 标签 + none | `thresholds=(R_low, R_high, theta_following_rad, theta_against_rad)` | list[str],长度 T-1 | 优先级:against > resonance > accelerating > returning > independent > weak_div > follow > none |
+| [`build_dynamics_df(common_idx, dyn, states, index_tag, stock_tag)`](../backtrace/projection/_projection_core.py) | 组装 14 列动力学 CSV | `common_idx[1:]` | DataFrame | `Dyn_` 前缀,加速度列右补 NaN(末行 NaN) |
+| `STATE_LABELS` / `STATE_COLORS` / `STATE_LABELS_CN` | 7 状态标签 / 配色 / 中文映射 | — | list / dict / dict | projection_2d.py 的 HTML band 与中文 print 共用 |
+
+### [`backtrace/projection/projection_2d.py`](../backtrace/projection/projection_2d.py)
+
+单股可视化;`--dynamics` 在 `--movement` 之上叠加动力学 4 子图 HTML + 14 列 CSV。
+
+新增 CLI(2026-08-16):
+
+| Flag | 默认 | 说明 |
+|---|---|---|
+| `--dynamics` | False | 启用动力学层;自动开启 `--movement` |
+| `--lambda-q` | `-1` | 锚定强度系数 λ_q;传 `-1` 走 median(‖ΔM‖) 自适应;传 `0` 等价无阻尼(q_t=1) |
+| `--classify-thresholds` | `0.10,0.50,30,90` | `R_low,R_high,theta_following_deg,theta_against_deg` |
+
+动力学产物:
+
+- HTML: `backtrace/outputs/dynmv_trajectory.html`(4 子图:速度 / 能量 / R+θ / 状态分类)
+- CSV: `data/projection/dynamics_<INDEX_TAG>_<STOCK_TAG>.csv`(14 列,见 `build_dynamics_df`)
+
 ## 已知陷阱(踩过无数次的)
 
 1. **Windows GBK 终端**:中文 print 报错 → 用 `PYTHONIOENCODING=utf-8` 或 print 全 ASCII

@@ -615,3 +615,261 @@ def build_result_df(common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_
         'State_Dot_After': dot_after,
         'Norm_Params': [norm_params] * len(common_idx),
     })
+
+
+# === 动力学层(2026-08-16 新增)=================================================
+# 叠在 compute_movement_projection 之上,产出 9 个指标 + 7 状态分类。
+# 公式与设计见 docs/superpowers/specs/2026-08-16-market-stock-dynamics-design.md。
+#
+# 关键约定:
+#   - 时间步 Δt = 1 个交易日 → 速度 v ≡ Δu / 1 = Δu(直接复用 mv['stock_move'] 等)
+#   - 加速度是速度的二阶差分 → 长度比 mv 再短 1 行(末行 NaN)
+#   - 锚定强度 q_t = ‖ΔM‖ / (‖ΔM‖ + λ_q),λ_q 默认 median(‖ΔM‖) 自适应窗口
+#   - 不引入质量 m → 耦合度 R = ‖v_resi‖² / ‖v_S‖² 与 m 无关
+#   - 不输出 price-based 残差(2-D 退化,见 compute_projections 注释)
+
+# 7 个状态标签 + 配色,供 classify_states 与 HTML 共用
+STATE_LABELS = ['follow', 'weak_div', 'accelerating', 'independent',
+                'against', 'returning', 'resonance', 'none']
+STATE_COLORS = {
+    'follow': '#2ecc71',        # 绿
+    'weak_div': '#f1c40f',      # 黄
+    'accelerating': '#e74c3c',  # 红
+    'independent': '#9b59b6',   # 紫
+    'against': '#8b4513',       # 棕
+    'returning': '#1abc9c',     # 青
+    'resonance': '#ff69b4',     # 粉
+    'none': '#7f8c8d',          # 灰
+}
+STATE_LABELS_CN = {
+    'follow': '跟随',
+    'weak_div': '弱偏离',
+    'accelerating': '加速偏离',
+    'independent': '独立',
+    'against': '逆势',
+    'returning': '回归',
+    'resonance': '共振',
+    'none': '无',
+}
+
+
+def compute_dynamics(mv: dict, lambda_q):
+    """基于运动投影输出,计算 9 个动力学指标。
+
+    Args:
+        mv: compute_movement_projection() 的返回值。必用键:
+              'stock_move' (T-1, 2) / 'index_move' (T-1, 2) /
+              'proj' (T-1, 2) / 'residual' (T-1, 2) /
+              'proj_mag' / 'resi_mag' / 'index_move_mag' / 'stock_move_mag' /
+              'proj_coeff' / 'dot_after'(可选,目前未用)
+        lambda_q: 锚定强度系数。None / NaN → 自适应 = median(‖ΔM‖) of window
+                  (退化情况下 fallback 到 1e-12 避免除零)。
+
+    Returns:
+        dict with keys:
+            q_t:           ndarray (T-1,) ∈ [0, 1)
+            theta:         ndarray (T-1,) 弧度;退化(‖Δu‖·‖ΔM‖=0)→ NaN
+            R:             ndarray (T-1,) ∈ [0, 1];退化(‖v_S‖=0)→ 0
+            v_S_mag:       ndarray (T-1,)
+            v_M_mag:       ndarray (T-1,)
+            v_proj_mag:    ndarray (T-1,)
+            v_resi_mag:    ndarray (T-1,)
+            E_market:      ndarray (T-1,)
+            E_self:        ndarray (T-1,)
+            E_total:       ndarray (T-1,)
+            a_S_mag:       ndarray (T-1,) 首末 NaN,中间 T-2 有效
+            a_M_mag:       ndarray (T-1,) 同上
+            lambda_q_used: float,实际使用的 λ_q(便于 caller 报告)
+    """
+    delta_u = mv['stock_move']            # (T-1, 2) 个股 Δu,Δt=1 → 速度 v_S
+    delta_v = mv['index_move']            # (T-1, 2) 大盘 Δv → v_M
+    proj = mv['proj']                     # (T-1, 2) β·Δv,无 q 阻尼
+    T_minus_1 = delta_u.shape[0]
+
+    # ---- λ_q 自适应 ----
+    delta_v_mag = np.linalg.norm(delta_v, axis=1)
+    if lambda_q is None or not np.isfinite(lambda_q):
+        lambda_q_used = float(np.median(delta_v_mag)) if delta_v_mag.size else 0.0
+        if not np.isfinite(lambda_q_used) or lambda_q_used <= 0:
+            lambda_q_used = 1e-12
+    else:
+        lambda_q_used = float(lambda_q)
+        if lambda_q_used <= 0:
+            lambda_q_used = 1e-12
+
+    # ---- 锚定强度 q_t ∈ [0, 1) ----
+    q_t = delta_v_mag / (delta_v_mag + lambda_q_used)
+
+    # ---- 偏离角 θ ∈ [0, π] ----
+    delta_u_mag = np.linalg.norm(delta_u, axis=1)
+    denom = delta_u_mag * delta_v_mag
+    cos_theta = np.divide(
+        np.einsum('ij,ij->i', delta_u, delta_v),
+        denom,
+        out=np.full(T_minus_1, np.nan, dtype=float),
+        where=(denom > 1e-12) & np.isfinite(denom),
+    )
+    cos_theta_clipped = np.clip(cos_theta, -1.0, 1.0)
+    theta = np.arccos(cos_theta_clipped)
+
+    # ---- 速度分解 ----
+    v_S = delta_u
+    v_M = delta_v
+    v_proj = q_t[:, None] * proj                   # 沿大盘方向 + q 阻尼
+    v_resi = v_S - v_proj                          # 正交分量(带阻尼后)
+
+    v_S_mag = np.linalg.norm(v_S, axis=1)
+    v_M_mag = delta_v_mag
+    v_proj_mag = np.linalg.norm(v_proj, axis=1)
+    v_resi_mag = np.linalg.norm(v_resi, axis=1)
+
+    # ---- 耦合度 R = ‖v_resi‖² / ‖v_S‖² ∈ [0, 1] ----
+    sq_resi = v_resi_mag ** 2
+    sq_S = v_S_mag ** 2
+    R = np.divide(
+        sq_resi, sq_S,
+        out=np.zeros_like(sq_resi),
+        where=(sq_S > 1e-12) & np.isfinite(sq_S),
+    )
+
+    # ---- 动能 = ½·‖v‖² ----
+    E_market = 0.5 * v_proj_mag ** 2
+    E_self = 0.5 * v_resi_mag ** 2
+    E_total = 0.5 * v_S_mag ** 2                 # = E_market + E_self (正交保证)
+
+    # ---- 加速度(末行 NaN,右补 NaN,与速度时序对齐) ----
+    # 约定:a_S[i] = v_S[i+1] - v_S[i](前向差),代表「第 i 天发生的速度变化」。
+    # 末行 i = L-1 没有 v_S[L] 观测 → NaN。有效 T-2 值在 indices 0..L-2。
+    def _accel_right_pad_nan(arr):
+        """np.diff 后右补 NaN,保持长度 L。
+        输入 arr 长度 L → 输出长度 L,前 L-1 个为有效差分,末行 NaN。"""
+        if len(arr) < 2:
+            return np.full_like(arr, np.nan, dtype=float)
+        diff = np.diff(arr)
+        out = np.empty(len(arr), dtype=float)
+        out[:-1] = diff
+        out[-1] = np.nan
+        return out
+
+    a_S_mag = _accel_right_pad_nan(v_S_mag)
+    a_M_mag = _accel_right_pad_nan(v_M_mag)
+
+    return {
+        'q_t': q_t,
+        'theta': theta,
+        'R': R,
+        'v_S_mag': v_S_mag,
+        'v_M_mag': v_M_mag,
+        'v_proj_mag': v_proj_mag,
+        'v_resi_mag': v_resi_mag,
+        'E_market': E_market,
+        'E_self': E_self,
+        'E_total': E_total,
+        'a_S_mag': a_S_mag,
+        'a_M_mag': a_M_mag,
+        'lambda_q_used': lambda_q_used,
+    }
+
+
+def classify_states(R, theta, E_self, thresholds):
+    """按 §4 优先级规则逐日打标签。
+
+    Args:
+        R:        ndarray (T-1,) 耦合度
+        theta:    ndarray (T-1,) 偏离角(弧度)
+        E_self:   ndarray (T-1,) 特异动能(用于斜率)
+        thresholds: 4 元组 (R_low, R_high, theta_following_rad, theta_against_rad)
+
+    Returns:
+        list[str],长度 T-1,值 ∈ STATE_LABELS。
+
+    优先级:against > resonance > accelerating > returning >
+            independent > weak_div > follow > none。
+    前 2 天(i=0,1)跳过 accelerating / returning(斜率不够窗口)。
+    """
+    R_low, R_high, theta_following_rad, theta_against_rad = thresholds
+    n = len(R)
+    states = ['none'] * n
+
+    # 3 日斜率(对 R 与 E_self 各做线性回归)
+    R_slope = np.full(n, np.nan, dtype=float)
+    E_slope = np.full(n, np.nan, dtype=float)
+    if n >= 3:
+        x_axis = np.arange(3, dtype=float)
+        for i in range(2, n):
+            if np.any(~np.isfinite(R[i - 2:i + 1])) or np.any(~np.isfinite(E_self[i - 2:i + 1])):
+                continue
+            R_slope[i] = np.polyfit(x_axis, R[i - 2:i + 1], 1)[0]
+            E_slope[i] = np.polyfit(x_axis, E_self[i - 2:i + 1], 1)[0]
+
+    def _f(x):
+        return bool(np.isfinite(x))
+
+    for i in range(n):
+        r_i, th_i = R[i], theta[i]
+        if not _f(r_i) or not _f(th_i):
+            states[i] = 'none'
+            continue
+        # 1) 逆势
+        if th_i >= theta_against_rad:
+            states[i] = 'against'
+            continue
+        # 2) 共振
+        if r_i >= R_high and th_i < theta_following_rad:
+            states[i] = 'resonance'
+            continue
+        # 3) 加速偏离(需 i>=2)
+        if i >= 2 and _f(R_slope[i]) and _f(E_slope[i]):
+            if R_slope[i] > 0 and E_slope[i] > 0:
+                states[i] = 'accelerating'
+                continue
+            if R_slope[i] < 0 and E_slope[i] < 0:
+                states[i] = 'returning'
+                continue
+        # 5) 独立
+        if r_i >= R_high and th_i < theta_against_rad:
+            states[i] = 'independent'
+            continue
+        # 6) 弱偏离
+        if R_low <= r_i < R_high and th_i < theta_against_rad:
+            states[i] = 'weak_div'
+            continue
+        # 7) 跟随
+        if r_i < R_low and th_i < theta_following_rad:
+            states[i] = 'follow'
+            continue
+        # 兜底
+        states[i] = 'none'
+
+    return states
+
+
+def build_dynamics_df(common_idx, dyn, states, index_tag, stock_tag):
+    """组装 14 列动力学结果 DataFrame。
+
+    Args:
+        common_idx: 调用方传 common_idx[1:],长度 T-1(与运动投影对齐)
+        dyn: compute_dynamics() 返回的 dict
+        states: classify_states() 返回的 list[str]
+        index_tag / stock_tag: 用于列名(<INDEX_TAG> / <STOCK_TAG> 后缀)
+
+    Returns:
+        pd.DataFrame,长度 T-1,14 列。
+        加速度列首末 NaN,与速度时序对齐。
+    """
+    return pd.DataFrame({
+        'Date': common_idx,
+        f'Dyn_q_{index_tag}': dyn['q_t'],
+        f'Dyn_Theta_{stock_tag}': dyn['theta'],                # 弧度
+        f'Dyn_Coupling_{stock_tag}': dyn['R'],
+        'Dyn_E_Market': dyn['E_market'],
+        'Dyn_E_Self': dyn['E_self'],
+        'Dyn_E_Total': dyn['E_total'],
+        f'Dyn_V_Mag_{stock_tag}': dyn['v_S_mag'],
+        f'Dyn_V_Mag_{index_tag}': dyn['v_M_mag'],
+        'Dyn_V_Proj_Mag': dyn['v_proj_mag'],
+        'Dyn_V_Resi_Mag': dyn['v_resi_mag'],
+        f'Dyn_A_Mag_{stock_tag}': dyn['a_S_mag'],              # 首末 NaN
+        f'Dyn_A_Mag_{index_tag}': dyn['a_M_mag'],              # 首末 NaN
+        f'Dyn_State_{stock_tag}': states,
+    })

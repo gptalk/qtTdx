@@ -68,6 +68,11 @@ from _projection_core import (
     compute_movement_projection,
     build_movement_result_df,
     build_movement_intermediate_df,
+    compute_dynamics,
+    classify_states,
+    build_dynamics_df,
+    STATE_COLORS,
+    STATE_LABELS_CN,
 )
 
 # ========================= CLI 参数 =========================
@@ -104,6 +109,29 @@ def parse_args():
             '产出 movement HTML + CSV,与 --two-day-vec 可叠加。'
         ),
     )
+    p.add_argument(
+        '--dynamics', action='store_true',
+        help=(
+            '在 --movement 之上叠加「离散动力学」层:锚定强度 q_t、偏离角 θ、'
+            '耦合度 R、动能 E_market/E_self、状态分类 7 标签。'
+            '自动开启 --movement(无需重复传);产出 dynmv_trajectory.html + '
+            'dynamics_<idx>_<stk>.csv。'
+        ),
+    )
+    p.add_argument(
+        '--lambda-q', type=float, default=-1.0,
+        help=(
+            '锚定强度系数 λ_q(浮点)。q_t = ‖ΔM‖ / (‖ΔM‖ + λ_q)。'
+            '传 -1 走默认 = median(‖ΔM‖) 自适应窗口。'
+        ),
+    )
+    p.add_argument(
+        '--classify-thresholds', default='0.10,0.50,30,90',
+        help=(
+            '状态分类阈值,逗号分隔 4 个浮点:R_low,R_high,theta_following_deg,'
+            'theta_against_deg。默认 0.10,0.50,30,90。'
+        ),
+    )
     return p.parse_args()
 
 args = parse_args()
@@ -119,6 +147,32 @@ else:
     STOCK_NAME = stocks_info.lookup_name(STOCK_CODE) or {'002475.SZ': '立讯精密'}.get(STOCK_CODE, '')
 days = args.days
 INDEX_OVERRIDE = args.index
+# 动力学开关会自动开启运动投影(动力学层依赖 mv dict)
+if args.dynamics and not args.movement:
+    args.movement = True
+    print('[--dynamics] 自动开启 --movement')
+# λ_q 默认走 median(‖ΔM‖) 自适应;传 -1 触发默认
+if args.lambda_q < 0:
+    LAMBDA_Q = None                       # 传给 compute_dynamics 让它内部估
+else:
+    LAMBDA_Q = args.lambda_q
+# 解析分类阈值;失败立即报错(避免后面静默错位)
+try:
+    R_LOW, R_HIGH, THETA_FOLLOWING_DEG, THETA_AGAINST_DEG = (
+        float(x) for x in args.classify_thresholds.split(',')
+    )
+except Exception as e:
+    raise SystemExit(
+        f'--classify-thresholds 解析失败: {args.classify_thresholds!r}\n'
+        f'需要 4 个逗号分隔浮点,例:0.10,0.50,30,90\n{e}'
+    )
+if not (0 < R_LOW < R_HIGH < 1):
+    raise SystemExit(f'R_low={R_LOW} / R_high={R_HIGH} 必须满足 0 < R_low < R_high < 1')
+if not (0 < THETA_FOLLOWING_DEG < THETA_AGAINST_DEG < 180):
+    raise SystemExit(
+        f'theta_following={THETA_FOLLOWING_DEG}° / theta_against={THETA_AGAINST_DEG}° '
+        f'必须满足 0 < following < against < 180'
+    )
 
 # ========================= 输出布局 =========================
 OUT_DIR = 'backtrace/outputs' # HTML 报告输出目录(CLAUDE.md 约定)
@@ -205,6 +259,44 @@ if args.movement:
     mv_inter_csv = os.path.join(mv_inter_dir, f'movement_intermediate_{INDEX_TAG}_{STOCK_TAG}.csv')
     movement_intermediate.to_csv(mv_inter_csv, index=False, encoding='utf-8')
     print(f"运动投影(逐日复核): 22 列中间值 → {mv_inter_csv}")
+
+# ============== 动力学层(可选,叠加在 --movement 之上) ==============
+dynamics_data = None
+dynamics_states = None
+dyn = None
+if args.dynamics:
+    assert movement_data is not None, '--dynamics 必依赖 --movement,应已自动开启'
+    # 复跑一次拿 mv dict(投影运动已跑过但没绑到外层变量)
+    mv_for_dyn = compute_movement_projection(data_stock, data_index)
+    dyn = compute_dynamics(mv_for_dyn, LAMBDA_Q)
+
+    theta_following_rad = np.deg2rad(THETA_FOLLOWING_DEG)
+    theta_against_rad = np.deg2rad(THETA_AGAINST_DEG)
+    dynamics_states = classify_states(
+        dyn['R'], dyn['theta'], dyn['E_self'],
+        (R_LOW, R_HIGH, theta_following_rad, theta_against_rad),
+    )
+
+    # CSV — 与 movement 共享同一时间轴(common_idx[1:],T-1 行)
+    dynamics_data = build_dynamics_df(
+        common_idx[1:], dyn, dynamics_states, INDEX_TAG, STOCK_TAG,
+    )
+    dyn_csv = os.path.join(CSV_OUT, f'dynamics_{INDEX_TAG}_{STOCK_TAG}.csv')
+    os.makedirs(CSV_OUT, exist_ok=True)
+    dynamics_data.to_csv(dyn_csv, index=False, encoding='utf-8')
+    if LAMBDA_Q is None:
+        lambda_q_note = f'{dyn["lambda_q_used"]:.4e} (median 自适应)'
+    else:
+        lambda_q_note = f'{dyn["lambda_q_used"]:.4e} (用户指定)'
+    print(f"\n动力学层(14 列): λ_q={lambda_q_note}")
+    print(f"  CSV → {dyn_csv}")
+    # 状态分布(用中文标签)
+    from collections import Counter
+    state_counts = Counter(dynamics_states)
+    dist_str = ', '.join(
+        f'{STATE_LABELS_CN[s]}={c}' for s, c in state_counts.most_common()
+    )
+    print(f"  状态分布: {dist_str}")
 
 # ============== 图形显示 ==============
 
@@ -708,6 +800,109 @@ if args.movement:
     print(f"      data/projection/intermediate/movement_intermediate_{INDEX_TAG}_{STOCK_TAG}.csv")
     print(f"        25 列:Date/原始 Vol·Ama/Δ/β 分子分母/幅度量/proj·resi/点积/三个 price")
 
+# ============== 动力学层 HTML(仅 --dynamics 启用) ==============
+if args.dynamics:
+    assert dyn is not None and dynamics_data is not None
+    # 取 4-panel 时序用的数组(dynamics_data 列已带 tag 后缀,直接读)
+    dyn_idx = list(common_idx[1:])                  # T-1 长
+    v_S_mag = dynamics_data[f'Dyn_V_Mag_{STOCK_TAG}'].to_numpy()
+    v_M_mag = dynamics_data[f'Dyn_V_Mag_{INDEX_TAG}'].to_numpy()
+    E_market = dynamics_data['Dyn_E_Market'].to_numpy()
+    E_self = dynamics_data['Dyn_E_Self'].to_numpy()
+    R_series = dynamics_data[f'Dyn_Coupling_{STOCK_TAG}'].to_numpy()
+    theta_rad = dynamics_data[f'Dyn_Theta_{STOCK_TAG}'].to_numpy()
+    theta_deg = np.degrees(theta_rad)
+    states = dynamics_states                         # list[str]
+
+    figdyn = make_subplots(
+        rows=4, cols=1, shared_xaxes=True,
+        subplot_titles=(
+            f'速度 ‖v_M‖ vs ‖v_S‖ ({STOCK_TAG} → {INDEX_TAG})',
+            f'动能 E_market + E_self ({STOCK_TAG} → {INDEX_TAG})',
+            f'耦合度 R_i / 偏离角 θ_i ({STOCK_TAG} → {INDEX_TAG})',
+            f'状态分类 ({STOCK_TAG} → {INDEX_TAG}, λ_q={dyn["lambda_q_used"]:.2e})',
+        ),
+        vertical_spacing=0.06,
+        row_heights=[0.28, 0.26, 0.26, 0.20],
+    )
+    # Row 1: 速度对比
+    figdyn.add_trace(go.Scatter(
+        x=dyn_idx, y=v_M_mag, mode='lines', name='|v_M| 大盘',
+        line=dict(color='cyan'),
+    ), row=1, col=1)
+    figdyn.add_trace(go.Scatter(
+        x=dyn_idx, y=v_S_mag, mode='lines', name='|v_S| 个股',
+        line=dict(color='orange'),
+    ), row=1, col=1)
+    figdyn.update_yaxes(title_text='|v| (Δ·1)', row=1, col=1)
+
+    # Row 2: 能量堆叠
+    figdyn.add_trace(go.Scatter(
+        x=dyn_idx, y=E_market, mode='lines', name='E_market',
+        line=dict(color='cyan'), stackgroup='energy',
+    ), row=2, col=1)
+    figdyn.add_trace(go.Scatter(
+        x=dyn_idx, y=E_self, mode='lines', name='E_self',
+        line=dict(color='magenta'), stackgroup='energy',
+    ), row=2, col=1)
+    figdyn.update_yaxes(title_text='½·‖v‖²', row=2, col=1)
+
+    # Row 3: R(左) + θ(右)双 Y 轴
+    figdyn.add_trace(go.Scatter(
+        x=dyn_idx, y=R_series, mode='lines', name='R_i 耦合度',
+        line=dict(color='green'),
+    ), row=3, col=1)
+    figdyn.add_trace(go.Scatter(
+        x=dyn_idx, y=theta_deg, mode='lines', name='θ_i 偏离角(度)',
+        line=dict(color='orange'), yaxis='y4',
+    ), row=3, col=1)
+    figdyn.update_yaxes(title_text='R [0,1]', range=[0, 1], row=3, col=1)
+
+    # Row 4: 状态分类带(每类一条 invisible trace 当图例 + 一条全 marker 带)
+    state_palette = list(STATE_COLORS.items())
+    # legend-only invisible traces
+    for s_label, color in state_palette:
+        figdyn.add_trace(go.Scatter(
+            x=[None], y=[None], mode='markers',
+            marker=dict(size=10, color=color, symbol='square'),
+            name=f'{STATE_LABELS_CN[s_label]}',
+            showlegend=True,
+        ), row=4, col=1)
+    # 实际 band — 按状态给每个日打色块
+    figdyn.add_trace(go.Scatter(
+        x=dyn_idx, y=[0] * len(dyn_idx),
+        mode='markers',
+        marker=dict(
+            size=22,
+            color=[STATE_COLORS.get(s, '#7f8c8d') for s in states],
+            symbol='square',
+            line=dict(width=0),
+        ),
+        text=[STATE_LABELS_CN[s] for s in states],
+        hovertemplate='%{x}<br>状态: %{text}<extra></extra>',
+        showlegend=False,
+    ), row=4, col=1)
+    figdyn.update_yaxes(
+        title_text='状态', showticklabels=False, range=[-1, 1], row=4, col=1,
+    )
+
+    # 副轴(Row 3 右轴 θ 度数)
+    figdyn.update_layout(
+        template='plotly_dark',
+        height=1100,
+        title_text=f'动力学摆动轨迹 ({STOCK_LABEL} → {INDEX_LABEL})',
+        yaxis4=dict(
+            title='θ (度)', overlaying='y3', side='right',
+            range=[0, 180], showgrid=False,
+        ),
+        legend=dict(orientation='h', yanchor='bottom', y=-0.12, xanchor='right', x=1),
+    )
+
+    DYN_OUT_HTML = os.path.join(OUT_DIR, 'dynmv_trajectory.html').replace('\\', '/')
+    figdyn.write_html(DYN_OUT_HTML)
+    print(f"\n动力学摆动轨迹 HTML: {DYN_OUT_HTML}")
+    print("  4 子图:速度 / 能量 / R+θ / 状态分类")
+
 print("\n图形已生成:")
 print(f"  1. {out('vector_scatter.html')}      - Volume-Amount向量散点图")
 print(f"  1b. {out('stock_diff_3d.html')}      - 个股日间差额 3-D 折线 (ΔVolume/ΔAmount/日序)")
@@ -715,6 +910,8 @@ print(f"  2. {out('projection_verify.html')}  - 投影分解验证图")
 print(f"  3. {out('orthogonality_check.html')} - 正交性时序检验图")
 print(f"  4. {out('proj_coefficient.html')}    - 投影系数时序图")
 print(f"  5. {out('proj_prices.html')}        - state_proj_prices 时序图(state 投影方向斜率)")
+if args.dynamics:
+    print(f"  D. {DYN_OUT_HTML} - 动力学摆动轨迹(4 子图:速度/能量/R+θ/状态)")
 
 # 保存CSV(组装 21/29 列 DataFrame)
 result_df = build_result_df(
