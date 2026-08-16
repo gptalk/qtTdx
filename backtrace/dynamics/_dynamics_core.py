@@ -80,20 +80,153 @@ def predict_next_state(
     return a_pred, v_pred, delta_S_pred
 
 
+# === F_self 预测器(用户 prompt §14-19 中"残差外推"的扩展) ===================
+def make_rolling_mean_f_self_predictor(
+    F_self_history: np.ndarray,        # (T_hist, 2) 已知残差历史(可含 NaN)
+    window: int = 10,                  # 滚动窗口长度(天)
+) -> 'callable':
+    """构造"滚动均值 F_self 预测器"。
+
+    模拟过程中 F_self_pred 不随 sim step 变化 — 用末日之前 [end-W, end) 的均值
+    作为整段模拟的常数残差。比 dynamics_batch.py 默认的"末日瞬时值复制 N 次"更稳:
+    末日瞬时值含噪声,滚动均值能平滑掉单日抖动。
+
+    Args:
+        F_self_history: (T_hist, 2) — 已知残差(模拟起点之前)
+        window: 滚动窗口(天)。默认 10。设 0 = 全历史均值;设大 = 长期均值
+
+    Returns:
+        predictor: callable(t: int, hist: dict | None) -> ndarray (2,)
+            - t: 模拟步号(0..N-1),本预测器忽略 t(常数预测)
+            - hist: 预留接口,本预测器忽略
+    """
+    # 计算"末日滚动均值",作为常数预测
+    end = len(F_self_history)
+    if window <= 0 or end == 0:
+        # 全历史均值
+        valid = np.isfinite(F_self_history).all(axis=1) if end > 0 else np.array([])
+    else:
+        start = max(0, end - window)
+        seg = F_self_history[start:end]
+        valid = np.isfinite(seg).all(axis=1) if len(seg) > 0 else np.array([])
+
+    if len(valid) == 0 or not valid.any():
+        F_self_const = np.zeros(2)
+    elif window <= 0 or end == 0:
+        F_self_const = np.nanmean(F_self_history[valid], axis=0)
+    else:
+        seg = F_self_history[max(0, end - window):end]
+        F_self_const = np.nanmean(seg[valid], axis=0)
+
+    def predictor(t, hist=None):
+        return F_self_const.copy()
+    predictor.__doc__ = (
+        f'Rolling-mean F_self predictor (window={window}, '
+        f'F_self_const=({F_self_const[0]:+.3e}, {F_self_const[1]:+.3e}))'
+    )
+    return predictor
+
+
+def make_constant_f_self_predictor(F_self_const: np.ndarray) -> 'callable':
+    """构造"常数 F_self 预测器" — 给一个固定值,模拟过程中不变。
+
+    等价于 dynamics_batch.py 默认的"末日瞬时值复制 N 次"行为。
+    """
+    arr = np.asarray(F_self_const, dtype=float)
+
+    def predictor(t, hist=None):
+        return arr.copy()
+    predictor.__doc__ = f'Constant F_self predictor ({arr[0]:+.3e}, {arr[1]:+.3e})'
+    return predictor
+
+
+# === Forecast 模式:预生成 v_M_seq / beta_seq / q_t_seq(用户 Task 4) ===========
+def forecast_v_M_random_walk(
+    v_M_init: np.ndarray,         # (2,) 起点 v_M(取末日真实 v_M)
+    n_steps: int,
+    sigma_per_step: np.ndarray | float,   # 标量或 (2,) 每步噪声 std
+    random_state: int | np.random.Generator = 42,
+) -> np.ndarray:
+    """随机游走生成 v_M_seq = (n_steps, 2)。
+
+    v_M(t=0) = v_M_init
+    v_M(t)   = v_M(t-1) + noise,noise ~ N(0, sigma²)
+
+    用于 simulate_trajectory 的 forecast 模式:模拟起点之后没有真实大盘,
+    用历史观测到的 sigma 来外推未来 N 步。σ 推荐 = 历史 diff 的 std。
+
+    Args:
+        v_M_init:        (2,) 起点(末日观测 v_M)
+        n_steps:         模拟步数 N
+        sigma_per_step:  每步 std;标量 → 各维度同;tuple/ndarray (2,) → 各维度独立
+        random_state:    int 或 Generator;默认 42(可复现)
+    """
+    rng = np.random.default_rng(random_state)
+    if np.isscalar(sigma_per_step):
+        noise = rng.normal(0, float(sigma_per_step), size=(n_steps, 2))
+    else:
+        # 对角噪声(各维度独立)
+        sig = np.asarray(sigma_per_step, dtype=float)
+        if sig.shape != (2,):
+            raise ValueError(f"sigma_per_step 应为标量或 (2,),收到 {sig.shape}")
+        noise = rng.normal(0, 1.0, size=(n_steps, 2)) * sig
+    v_M_seq = np.zeros((n_steps, 2), dtype=float)
+    v_M_seq[0] = v_M_init
+    for t in range(1, n_steps):
+        v_M_seq[t] = v_M_seq[t - 1] + noise[t - 1]
+    return v_M_seq
+
+
+def forecast_v_M_last_value(v_M_last: np.ndarray, n_steps: int) -> np.ndarray:
+    """末值恒定:v_M(t) = v_M_last for t = 0..N-1。
+
+    最朴素的 forecast 假设:未来大盘速度 = 末日观测。适合大盘震荡行情。
+    """
+    return np.tile(np.asarray(v_M_last, dtype=float), (n_steps, 1))
+
+
+def forecast_beta_last_value(beta_last: float, n_steps: int) -> np.ndarray:
+    """β(t) = beta_last 恒定。适合 β 短期平稳的股票(行业基线稳定)。"""
+    return np.full(n_steps, float(beta_last), dtype=float)
+
+
+def forecast_beta_rolling_mean(beta_history: np.ndarray, n_steps: int,
+                                window: int = 10) -> np.ndarray:
+    """β(t) = mean(beta_history[-W:]) 恒定。比末值更平滑,降低单日 β 噪声。"""
+    if window <= 0 or len(beta_history) == 0:
+        b_mean = float(np.nanmean(beta_history)) if len(beta_history) > 0 else 1.0
+    else:
+        seg = beta_history[-window:]
+        b_mean = float(np.nanmean(seg))
+    return np.full(n_steps, b_mean, dtype=float)
+
+
+def forecast_q_t_constant(q_t_last: float, n_steps: int) -> np.ndarray:
+    """q_t 恒定。用于 forecast 模式 — 没有未来 ‖ΔM‖,沿用末日观测。"""
+    return np.full(n_steps, float(q_t_last), dtype=float)
+
+
 # === N 步前向模拟(用户 prompt §19 + §14-18) =================================
 def simulate_trajectory(
     v_S_init: np.ndarray,           # (2,) 起点速度(取末日真实 v_S)
     v_M_seq: np.ndarray,            # (N, 2) 未来 N 天大盘速度
     beta_seq: np.ndarray,           # (N,)   未来 N 天 β
-    F_self_seq: np.ndarray,         # (N, 2) 残差序列(t=0..N-1)
     d_init: np.ndarray,             # (2,)   起点位置偏离
     u_init: np.ndarray,             # (2,)   起点速度偏离
     k: float = 0.0,
     c: float = 0.0,
     q_t_seq: np.ndarray | None = None,   # (N,) 锚定强度;None 时默认 1
     classify_thresholds: tuple = (0.10, 0.50, np.deg2rad(30), np.deg2rad(90)),
+    F_self_seq: np.ndarray | None = None,         # (N, 2) 残差序列;若 predictor=None 则必传
+    F_self_predictor: 'callable | None' = None,   # 残差预测器: t -> (2,);优先级高于 F_self_seq
 ) -> dict:
-    """N 步前向模拟(Oracle 模式:未来大盘/β 已知,残差可外推)。
+    """N 步前向模拟。
+
+    模式 1 — Oracle(已知未来大盘/β/残差):
+        传 F_self_seq = (N, 2),走"末日观测残差恒定外推"。适合调试 / 描述层验证。
+    模式 2 — Forecast(残差用预测器):
+        传 F_self_predictor = callable(t) -> (2,)。推荐 make_rolling_mean_f_self_predictor
+        或 make_constant_f_self_predictor。
 
     链(对应用户 prompt §19):
         for t in range(N):
@@ -108,11 +241,12 @@ def simulate_trajectory(
         v_S_init: (2,) 起点速度(末日真实 v_S)
         v_M_seq:  (N, 2) 未来 N 天大盘速度
         beta_seq: (N,)   未来 N 天 β
-        F_self_seq: (N, 2) 残差;长度 N 即 0..N-1(步 t 用 F_self_seq[t])
         d_init / u_init: (2,) 起点状态
         k / c: 力模型系数
         q_t_seq: (N,) 锚定强度,None 时默认全 1(无阻尼);与 description 层 λ_q 同语义
         classify_thresholds: 4 元组,与 classify_states 同
+        F_self_seq: (N, 2) 残差序列。predictor=None 时必传;predictor≠None 时被忽略。
+        F_self_predictor: callable(t, hist=None) -> (2,) 残差预测器。优先级最高。
 
     Returns:
         dict with keys(均为长度 N+1,index 0=起点):
@@ -125,11 +259,14 @@ def simulate_trajectory(
             v_M_seq_used:          ndarray (N, 2) 回放(便于 caller 画图)
             beta_seq_used:         ndarray (N,)
             F_market / F_restore / F_damp / F_self: ndarray (N+1,) 各力模长(末行 NaN for F_market/Self)
+            F_self_predictor_used: callable | None — 回放 caller 传进来的预测器
     """
     N = v_M_seq.shape[0]
     if beta_seq.shape[0] != N:
         raise ValueError(f"beta_seq 长度 {beta_seq.shape[0]} != v_M_seq {N}")
-    if F_self_seq.shape != (N, 2):
+    if F_self_predictor is None and F_self_seq is None:
+        raise ValueError("F_self_predictor 和 F_self_seq 必须传一个")
+    if F_self_seq is not None and F_self_seq.shape != (N, 2):
         raise ValueError(f"F_self_seq 形状 {F_self_seq.shape} != ({N}, 2)")
     if q_t_seq is None:
         q_t_seq = np.ones(N)
@@ -153,10 +290,15 @@ def simulate_trajectory(
     # 末步观察的外推 — 上一步 a_M 用 v_M_seq[0] - 0(假设 0 之前的市场速度)
     # 这里我们只对 t=0 设近似力:
     if N >= 1:
+        # t=0 的 F_self:用 predictor(t=0) 或 F_self_seq[0]
+        if F_self_predictor is not None:
+            F_self_0 = np.asarray(F_self_predictor(0, None), dtype=float)
+        else:
+            F_self_0 = F_self_seq[0]
         F_market[0] = abs(q_t_seq[0] * beta_seq[0] * 0.0)  # 无前一步 → 0
         F_restore[0] = abs(k * d_init[0]) if hasattr(k * d_init, '__len__') else abs(k * np.linalg.norm(d_init))
         F_damp[0] = abs(c * np.linalg.norm(u_init))
-        F_self[0] = abs(np.linalg.norm(F_self_seq[0]))
+        F_self[0] = float(np.linalg.norm(F_self_0))
 
     # 大盘加速度 a_M(t) = v_M_seq[t+1] - v_M_seq[t],长度 N-1;末步 a_M(N-1) = NaN
     a_M_seq = np.full((N, 2), np.nan)
@@ -170,24 +312,29 @@ def simulate_trajectory(
         v_t = v_seq[t]
         # a_M(t) 末步 NaN — 此时模型也只产出 NaN 加速,后续 v_{N} 标 NaN
         a_M_t = a_M_seq[t]
+        # 残差:F_self_predictor 优先;否则 F_self_seq[t]
+        if F_self_predictor is not None:
+            F_self_t = np.asarray(F_self_predictor(t, None), dtype=float)
+        else:
+            F_self_t = F_self_seq[t]
         if not np.isfinite(a_M_t).all():
             # 末步:无 a_M 输入 → 市场驱动力 = 0
-            a_pred = -k * d_t - c * u_t + F_self_seq[t]
+            a_pred = -k * d_t - c * u_t + F_self_t
             F_market_t = 0.0
         else:
             # q_t 阻尼 a_M(与 description 层 compute_dynamics 一致)
             a_pred = (
                 q_t_seq[t] * beta_seq[t] * a_M_t
                 - k * d_t - c * u_t
-                + F_self_seq[t]
+                + F_self_t
             )
             F_market_t = float(np.linalg.norm(q_t_seq[t] * beta_seq[t] * a_M_t))
         a_seq[t] = a_pred
-        # 力分解(取模长)— F_self = F_self_seq[t] 给定(模型外生)
+        # 力分解(取模长)— F_self 来自 F_self_t(预给序列 or 预测器)
         F_market[t] = F_market_t
         F_restore[t] = float(np.linalg.norm(k * d_t))
         F_damp[t] = float(np.linalg.norm(c * u_t))
-        F_self[t] = float(np.linalg.norm(F_self_seq[t]))
+        F_self[t] = float(np.linalg.norm(F_self_t))
 
         # 步 t → t+1
         v_seq[t + 1] = v_t + a_pred
@@ -258,6 +405,7 @@ def simulate_trajectory(
         'F_self': F_self,
         'k_restore': k,
         'c_damp': c,
+        'F_self_predictor_used': F_self_predictor,
     }
 
 
@@ -326,4 +474,13 @@ __all__ = [
     'predict_next_state',
     'simulate_trajectory',
     'build_simulation_df',
+    # F_self 预测器
+    'make_rolling_mean_f_self_predictor',
+    'make_constant_f_self_predictor',
+    # Forecast 模式
+    'forecast_v_M_random_walk',
+    'forecast_v_M_last_value',
+    'forecast_beta_last_value',
+    'forecast_beta_rolling_mean',
+    'forecast_q_t_constant',
 ]

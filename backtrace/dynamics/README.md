@@ -9,9 +9,13 @@
 
 ```
 dynamics/
-├── _dynamics_core.py       数学 re-export + 2 个新增 API (predict_next_state / simulate_trajectory)
+├── _dynamics_core.py       数学 re-export + 5 个新增 API
+│                           (predict_next_state / simulate_trajectory / build_simulation_df
+│                            + F_self 预测器 ×2 + forecast helper ×5)
 ├── dynamics_system.py      单股端到端 CLI (load → describe → simulate → HTML/CSV)
 ├── dynamics_batch.py       批量 CLI (读 stocks.csv → 全跑 → manifest)
+├── dynamics_1step_oos.py   OOS 1 步预测(纯动力学基线,F_self 滚动均值)
+├── dynamics_state_backtest.py  状态分组 + vbt basket 回测 + IC 评估
 └── README.md               本文件
 ```
 
@@ -25,6 +29,10 @@ dynamics/
 | **力模型** | `projection._projection_core.compute_forces` | F_market / F_restore / F_damp / F_self |
 | **预测(新)** | `dynamics._dynamics_core.predict_next_state` | 1 步: a_pred = β·a_M - k·d - c·u + F_self |
 | **模拟(新)** | `dynamics._dynamics_core.simulate_trajectory` | N 步前向积分 v_{t+1} = v_t + a_t |
+| **F_self 预测器(新)** | `make_rolling_mean_f_self_predictor` / `make_constant_f_self_predictor` | 把残差外推从"末日瞬时值"升级到"滚动均值" |
+| **Forecast 模式(新)** | `forecast_v_M_random_walk` / `forecast_v_M_last_value` / `forecast_beta_*` / `forecast_q_t_constant` | 无未来大盘观测时,合成 v_M_seq / beta_seq / q_t_seq |
+| **OOS 1 步预测 CLI(新)** | `dynamics_1step_oos.py` | 用 `predict_next_state` 跑 1 步 OOS,产预测 CSV + summary |
+| **状态分组 + vbt 回测 CLI(新)** | `dynamics_state_backtest.py` | 按 dominant_state 分组 + basket 回测 + IC |
 | **HTML/CSV 落盘** | `dynamics_system.py` / `dynamics_batch.py` | 数据组装 + 文件落地 |
 
 ## 3. CLI 用法
@@ -73,6 +81,50 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_batch.py --k-from-fit 
   `code, name, index_code, index_name, rows, horizon, k_restore, c_damp,
    desc_csv_path, frc_csv_path, sim_csv_path,
    sim_mean_R, sim_max_E_self, sim_state_dist, status`
+
+### 3.3 OOS 1 步预测
+
+```bash
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_1step_oos.py --limit 50
+# 默认滚动均值 W=10,跑前 50 只
+
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_1step_oos.py \
+    --input data/my_stocks.csv --f-self-window 20
+# W=20 滚动均值
+
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_1step_oos.py --k 0.5 --c 0.1
+# 加弱恢复 + 弱阻尼(给模型一点拟合自由度)
+```
+
+**输出**:
+- 每只票:`data/dynamics/prediction_<idx>_<stk>.csv` (11 列,日级预测 vs 实际)
+- 汇总:`data/dynamics/prediction_summary.csv` (跨股票命中率 + RMSE)
+
+**重要陷阱**:默认 F_self 用 `a_S_now` 在 k=c=0 下会退化成恒等式(命中率虚高 100%),
+本脚本已用 `--f-self-window` 滚动均值兜底;设 `--f-self-window 0` 会触发警告。
+
+### 3.4 状态分组 + vbt basket 回测 + IC
+
+```bash
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_state_backtest.py --limit 50 --use-vbt
+# 跑前 50 只,每只算 state 分布 → dominant_state 分组 → basket 回测 + IC
+
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_state_backtest.py \
+    --input data/my_stocks.csv --target-states resonance,against,independent,follow
+# 自定义目标状态
+
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_state_backtest.py --min-prop 0.10
+# 只纳入 state 占比 ≥ 10% 的股票
+```
+
+**输出**:
+- `data/dynamics/state_distribution.csv` — 每只票 7 状态占比 + dominant_state
+- `data/dynamics/backtest_per_state.csv` — 每组 basket 总收益 / Sharpe / MaxDD
+- `data/dynamics/state_ic.csv` — 每状态 IC(Spearman,p-value)
+
+**已知现象**:在大盘震荡期(2024–2026 这段数据),state_prop 与 240 日 forward return 的
+跨截面 IC ≈ 0(state 分布对该窗口 forward return 几乎无预测力)。这说明模型更适合做**短期
+N 步轨迹**(动力学层),而不是长期截面预测(α 选股层)。
 
 ## 4. Python API
 
@@ -127,6 +179,29 @@ sim = simulate_trajectory(
     k=0.0, c=0.0,
 )
 sim_df = build_simulation_df(sim, dates=None, index_tag='399001', stock_tag='002475')
+
+# 4. N 步模拟(Forecast 模式:无未来大盘,用预测器生成)
+from dynamics import (
+    forecast_v_M_random_walk, forecast_beta_rolling_mean,
+    forecast_q_t_constant, make_rolling_mean_f_self_predictor,
+)
+# v_M 用随机游走(噪声 std 估自历史 diff)
+v_M_last = mv['index_move'][-1]
+diff_std = float(np.nanstd(np.diff(mv['index_move'], axis=0), axis=0).mean())
+v_M_seq = forecast_v_M_random_walk(v_M_last, N, sigma_per_step=diff_std, random_state=42)
+# β 用末日滚动均值
+beta_seq = forecast_beta_rolling_mean(mv['proj_coeff'], N, window=10)
+# q_t 用末日观测(没有未来 ‖ΔM‖,沿用)
+q_t_seq = forecast_q_t_constant(float(dyn['q_t'][-1]), N)
+# F_self 用滚动均值预测器(避免末日瞬时值过拟合)
+F_self_pred = make_rolling_mean_f_self_predictor(F_self_full, window=10)
+sim = simulate_trajectory(
+    v_S_init=v_S_init, v_M_seq=v_M_seq, beta_seq=beta_seq,
+    F_self_predictor=F_self_pred,
+    d_init=d_full[-1], u_init=u_full[-1],
+    k=0.0, c=0.0, q_t_seq=q_t_seq,
+)
+# 注意:sim['F_self_predictor_used'] 会回放这个 predictor
 ```
 
 ## 5. 关键参数建议

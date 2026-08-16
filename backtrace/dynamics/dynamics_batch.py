@@ -51,7 +51,10 @@ from projection._projection_core import (
     classify_states, build_dynamics_df,
     compute_forces, build_forces_df,
 )
-from dynamics import build_simulation_df, simulate_trajectory
+from dynamics import (
+    build_simulation_df, simulate_trajectory,
+    make_rolling_mean_f_self_predictor, make_constant_f_self_predictor,
+)
 
 CSV_OUT_DIR = 'data/dynamics'
 CSV_FALLBACK_INPUT = 'data/projection/stocks.csv'
@@ -96,6 +99,11 @@ def parse_args():
     p.add_argument('--c-damp', type=float, default=0.0, help='阻尼系数 c。默认 0.0')
     p.add_argument('--k-from-fit', action='store_true', help='从 kc_estimates.csv 加载 k̂')
     p.add_argument('--c-from-fit', action='store_true', help='从 kc_estimates.csv 加载 ĉ')
+    p.add_argument('--f-self-mode', default='rolling',
+                   choices=['rolling', 'constant', 'oracle'],
+                   help='F_self 预测模式:rolling=末日滚动均值(default)/constant=末日瞬时值/oracle=复用 F_self_seq 历史序列')
+    p.add_argument('--f-self-window', type=int, default=10,
+                   help='F_self 滚动均值窗口(天),仅 rolling 模式有效。默认 10')
     return p.parse_args()
 
 
@@ -118,7 +126,8 @@ def load_stock_list(path):
 
 def process_one(stock_code, stock_name, days, prefer_industry, index_code,
                 horizon, lambda_q, classify_thresholds,
-                k_restore, c_damp, kc_overrides=None):
+                k_restore, c_damp, kc_overrides=None,
+                f_self_mode='rolling', f_self_window=10):
     """处理一只股票。返回 manifest 行 dict(失败也返回,status 字段说明原因)。"""
     try:
         # 1. 加载
@@ -190,12 +199,35 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
             a_S_recent - beta_seq[-1] * a_M_recent
             + eff_k * d_init + eff_c * u_init
         )
-        F_self_seq = np.tile(F_self_last, (horizon, 1))
+        # F_self 历史(末日之前,长度 T-1)— 用于 rolling 预测器
+        # F_self_full[τ] = a_S(τ) - β(τ)·a_M(τ) + k·d(τ) + c·u(τ),只在有效段填
+        F_self_full = np.full_like(mv['stock_move'], np.nan)
+        valid = np.isfinite(a_u_vec).all(axis=1) & np.isfinite(a_v_vec).all(axis=1)
+        F_self_full[valid] = (
+            a_u_vec[valid] - mv['proj_coeff'][valid, None] * a_v_vec[valid]
+            + eff_k * d_full[valid] + eff_c * u_full[valid]
+        )
+
+        # F_self 预测器选择
+        if f_self_mode == 'rolling':
+            F_self_predictor = make_rolling_mean_f_self_predictor(
+                F_self_full, window=f_self_window,
+            )
+            F_self_seq_for_manifest = None
+        elif f_self_mode == 'constant':
+            F_self_predictor = make_constant_f_self_predictor(F_self_last)
+            F_self_seq_for_manifest = None
+        else:  # oracle — 末日观测残差恒定外推(旧默认行为)
+            F_self_predictor = None
+            F_self_seq_for_manifest = np.tile(F_self_last, (horizon, 1))
+
         q_t_seq = dyn['q_t'][-horizon:]
 
         sim = simulate_trajectory(
             v_S_init=v_S_init, v_M_seq=v_M_seq, beta_seq=beta_seq,
-            F_self_seq=F_self_seq, d_init=d_init, u_init=u_init,
+            F_self_seq=F_self_seq_for_manifest,
+            F_self_predictor=F_self_predictor,
+            d_init=d_init, u_init=u_init,
             k=eff_k, c=eff_c, q_t_seq=q_t_seq,
             classify_thresholds=(r_low, r_high, theta_following_rad, theta_against_rad),
         )
@@ -278,11 +310,17 @@ def main():
         baseline = '大盘指数(深证成指/上证综指)'
 
     lq_str = 'median 自适应' if lambda_q is None else f'{lambda_q:.4e}'
+    f_self_str = {
+        'rolling': f'末日滚动均值 W={args.f_self_window}',
+        'constant': '末日瞬时值(常数)',
+        'oracle': '末日观测残差恒定外推',
+    }[args.f_self_mode]
     print(f'输入: {args.input} ({len(stock_list)} 只)')
     print(f'回看天数: {args.days} | 模拟步数: N={args.horizon}')
     print(f'基线: {baseline}')
     print(f'分类阈值: R<{R_LOW}/{R_HIGH}, θ<{THETA_FOLLOWING_DEG}°/>{THETA_AGAINST_DEG}°')
     print(f'λ_q={lq_str} | k={args.k_restore} c={args.c_damp}')
+    print(f'F_self 模式: {f_self_str}')
     print(f'输出: {CSV_OUT_DIR}/\n')
 
     manifest = []
@@ -293,6 +331,7 @@ def main():
             code, name, args.days, prefer_industry, args.index,
             args.horizon, lambda_q, classify_thresholds,
             args.k_restore, args.c_damp, kc_overrides,
+            args.f_self_mode, args.f_self_window,
         )
         manifest.append(row)
         if row['status'] == 'ok':

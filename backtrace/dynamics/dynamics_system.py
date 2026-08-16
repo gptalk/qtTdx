@@ -48,6 +48,7 @@ from projection._projection_core import (
 )
 from dynamics import (
     build_simulation_df, simulate_trajectory,
+    make_rolling_mean_f_self_predictor, make_constant_f_self_predictor,
 )
 
 
@@ -75,6 +76,10 @@ def parse_args():
     )
     p.add_argument('--k-from-fit', action='store_true', help='从 kc_estimates.csv 加载 k̂')
     p.add_argument('--c-from-fit', action='store_true', help='从 kc_estimates.csv 加载 ĉ')
+    p.add_argument('--f-self-mode', default='rolling', choices=['rolling', 'constant', 'oracle'],
+                   help='F_self 预测:rolling=末日滚动均值(default)/constant=末日瞬时值/oracle=末日观测外推')
+    p.add_argument('--f-self-window', type=int, default=10,
+                   help='F_self 滚动均值窗口(天),仅 rolling 模式有效。默认 10')
     return p.parse_args()
 
 
@@ -206,7 +211,27 @@ def main():
         + args.k_restore * d_init
         + args.c_damp * u_init
     )
-    F_self_seq = np.tile(F_self_last, (args.horizon, 1))     # (N, 2) 残差外推(后续可改 autoregressive)
+    # F_self 历史(用于 rolling 预测器)— F_self(τ) = a_S(τ) - β(τ)·a_M(τ) + k·d(τ) + c·u(τ)
+    F_self_full = np.full_like(mv['stock_move'], np.nan)
+    valid = np.isfinite(a_u_vec).all(axis=1) & np.isfinite(a_v_vec).all(axis=1)
+    F_self_full[valid] = (
+        a_u_vec[valid] - mv['proj_coeff'][valid, None] * a_v_vec[valid]
+        + args.k_restore * d_full[valid] + args.c_damp * u_full[valid]
+    )
+    # F_self 预测器选择
+    if args.f_self_mode == 'rolling':
+        F_self_predictor = make_rolling_mean_f_self_predictor(
+            F_self_full, window=args.f_self_window,
+        )
+        F_self_seq = None
+    elif args.f_self_mode == 'constant':
+        F_self_predictor = make_constant_f_self_predictor(F_self_last)
+        F_self_seq = None
+    else:  # oracle — 末日观测残差恒定外推(旧默认)
+        F_self_predictor = None
+        F_self_seq = np.tile(F_self_last, (args.horizon, 1))
+    print(f'[sim] F_self 模式: {args.f_self_mode}'
+          + (f' W={args.f_self_window}' if args.f_self_mode == 'rolling' else ''))
     # q_t 序列:末日往回数
     q_t_seq = dyn['q_t'][-args.horizon:]
 
@@ -220,6 +245,7 @@ def main():
         v_M_seq=v_M_seq,
         beta_seq=beta_seq,
         F_self_seq=F_self_seq,
+        F_self_predictor=F_self_predictor,
         d_init=d_init, u_init=u_init,
         k=args.k_restore, c=args.c_damp,
         q_t_seq=q_t_seq,
