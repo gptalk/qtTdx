@@ -520,7 +520,7 @@ python backtrace/projection/projection_batch.py --dynamics --classify-thresholds
 `a_S = β·a_M − k·d − c·u + F_self` 对 k/c 严格线性,2N×2 线性系统单次 `lstsq` 即可。
 
 输入: `data/projection/movement_*.csv`(由 `--movement` / `--dynamics` batch 跑产出)
-输出: `data/projection/kc_estimates.csv`(10 列)
+输出(默认全样本): `data/projection/kc_estimates.csv`(10 列)
 
 | 列 | 含义 |
 |---|---|
@@ -545,10 +545,150 @@ python backtrace/projection/parameter_fit.py --limit 10 --min-valid-days 5
 
 # 截幅阈值(默认 |k|,|c| ≤ 10,超过则标 extreme)
 python backtrace/projection/parameter_fit.py --clip-extreme 5.0
+
+# 滚动拟合(2026-08-16 新增):每个窗口单独 OLS,看 k̂/ĉ 在不同长度窗口下的漂移
+python backtrace/projection/parameter_fit.py --rolling-fit --limit 10
+python backtrace/projection/parameter_fit.py --rolling-fit --rolling-windows 30,60,120,240
 ```
 
 后续用法:`kc_estimates.csv` 直接喂回 `projection_batch.py --k-restore <k_hat> --c-damp <c_hat>`
 或外层脚本按 k̂/ĉ 分布批量设参(均值 / 中位数 / 分位)。
+
+#### `--rolling-fit` 输出 Schema
+
+每只票 + 每个 end-aligned 窗口一行 OLS 解(end-aligned = 末 N 行,不是滚动滑窗)。
+窗口大小由 `--rolling-windows` 控制,默认 `60,120,240`。
+
+`data/projection/kc_rolling_<index_tag>_<stock_tag>.csv`(per-stock,8 列)
+
+| 列 | 含义 |
+|---|---|
+| `window` | 窗口大小(交易日数) |
+| `window_start` / `window_end` | 该窗口的起止日期(末 N 行) |
+| `k_hat` / `c_hat` | 该窗口上的 OLS 解 |
+| `f_self_loss` | 该窗口上的 ‖F_self‖² 均值 |
+| `n_valid_days` | 该窗口内有效观测数 |
+| `status` | 同 kc_estimates.csv |
+
+`data/projection/kc_rolling_summary.csv`(per-stock 汇总,横轴 = 各窗口)
+
+| 列 | 含义 |
+|---|---|
+| `code` / `name` / `index_code` / `index_tag` / `stock_tag` | 票与基线标识 |
+| `windows` | 实际跑的窗口大小列表(逗号分隔) |
+| `k_<w>` / `c_<w>` / `f2_<w>` / `n_<w>` / `status_<w>` | 每个窗口的解(列名动态按 --rolling-windows 展开) |
+
+设计意图:**end-aligned** 而非 rolling 滑窗 — 我们的目的不是「每天一个 (k̂, ĉ)」时序,
+而是「不同长度窗口下 k̂/ĉ 是否稳定」。短窗口反映近期参数,长窗口反映稳态参数。
+如果 T < 窗口大小,该窗口会自动 clamp 到数据起点(等同于 fit_all)。
+
+### [`backtrace/projection/prediction_ode.py`](../backtrace/projection/prediction_ode.py)
+
+**用拟合的 (k̂, ĉ) 预测下日 Δu_S**(2026-08-16 新增)。把动力学模型当 1 步预测器用:
+
+```
+a_pred(t) = β(t) · a_M(t)  −  k̂ · d(t)  −  ĉ · u(t)
+delta_u_pred(t+1) = delta_u(t) + a_pred(t)
+```
+
+然后跟实际下日的 Δu 比较方向(余弦夹角 < 90°)和幅度(RMSE)。
+
+输出:
+
+`data/projection/prediction_<index_tag>_<stock_tag>.csv`(per-stock,11 列)
+
+| 列 | 含义 |
+|---|---|
+| `date` | 预测日(对应 t+1) |
+| `delta_u_pred_x` / `delta_u_pred_y` | 预测的 (ΔV, ΔA) |
+| `delta_u_actual_x` / `delta_u_actual_y` | 实际的 (ΔV, ΔA) |
+| `pred_mag` / `actual_mag` | 幅度(原始量纲) |
+| `cos_angle` | 余弦相似度;>0 表示夹角 < 90°(方向一致) |
+| `dir_match` | 1=方向一致, 0=方向相反 |
+| `mag_relative_err` | `|pred − actual| / |actual|` |
+
+`data/projection/prediction_summary.csv`(per-stock 汇总,8 列)
+
+| 列 | 含义 |
+|---|---|
+| `code` / `name` / `index_code` / `k_hat` / `c_hat` | 票与拟合值 |
+| `n_days_predicted` | 参与评估的天数(去掉首尾 NaN) |
+| `hit_rate` | 方向一致占比 (cos > 0 的比例) |
+| `rmse_mag` | 预测幅度 RMSE(原始量纲,与 Vol/Amt 同空间) |
+| `mae_rel_err` | 平均相对误差 |
+
+CLI:
+
+```bash
+# 默认扫描 kc_estimates.csv 全部预测
+python backtrace/projection/prediction_ode.py
+
+# 自定义股票列表
+python backtrace/projection/prediction_ode.py --input data/projection/stocks.csv --limit 10
+```
+
+经验:hit_rate 普遍在 43-65%(基线 50%),意味着 F_self(残差)对预测有不可忽略贡献。
+模型不是给日内择时用的,是给「动力学参数稳定性」诊断用的。
+
+### [`backtrace/projection/state_kc_analysis.py`](../backtrace/projection/state_kc_analysis.py)
+
+**状态分类 × (k̂, ĉ) 关联分析**(2026-08-16 新增)。假设:不同动力学状态(跟随 / 弱偏离 /
+加速偏离 / 独立 / 逆势 / 回归 / 共振)的个股,其 (k̂, ĉ) 应该呈现可区分的分布特征。
+
+实现: 读 `kc_estimates.csv` + `dynamics_*.csv`,计算每只票的状态分布,
+按状态分组看 k̂/ĉ 在该状态出现日的分布。
+
+输出:
+
+`data/projection/per_stock_state_dist.csv`(per-stock 状态占比,8 列)
+
+| 列 | 含义 |
+|---|---|
+| `code` / `name` / `index_code` / `index_tag` / `stock_tag` | 票与基线标识 |
+| `k_hat` / `c_hat` | 该票拟合的 (k̂, ĉ) |
+| `n_days` | 该票 dynamics CSV 的总天数 |
+| `pct_follow` / `pct_weak_div` / `pct_accelerating` / `pct_independent` / `pct_against` / `pct_returning` / `pct_resonance` / `pct_none` | 8 个状态占比 |
+
+`data/projection/per_state_kc_stats.csv`(per-state 分布,7 列)
+
+| 列 | 含义 |
+|---|---|
+| `state` / `state_cn` | 状态 label + 中文 |
+| `count` | 该状态出现的总观测日数(跨所有票) |
+| `k_hat_median` / `k_hat_mean` | 该状态下 k̂ 的中位数 / 均值 |
+| `c_hat_median` / `c_hat_mean` | 该状态下 ĉ 的中位数 / 均值 |
+
+CLI:
+
+```bash
+python backtrace/projection/state_kc_analysis.py                # 全量
+python backtrace/projection/state_kc_analysis.py --limit 10     # 冒烟
+python backtrace/projection/state_kc_analysis.py --drop-none    # 排除 "none" 状态日(数据缺失)
+python backtrace/projection/state_kc_analysis.py --status-filter ok  # 只看 ok 的拟合票
+```
+
+### 投影/动力学的「拟合 → 应用」闭环
+
+```bash
+# 1. 跑动力学层 CSV(movement + dynamics + forces 三组)
+python backtrace/projection/projection_batch.py --movement --dynamics --limit 50
+
+# 2. 全样本 OLS 拟合 (k̂, ĉ)
+python backtrace/projection/parameter_fit.py --limit 50
+
+# 3. 滚动拟合,看 (k̂, ĉ) 时序漂移
+python backtrace/projection/parameter_fit.py --rolling-fit --rolling-windows 60,120,240 --limit 50
+
+# 4. 把拟合值回灌进 forces_*.csv(力模型 + 拟合系数)
+python backtrace/projection/projection_batch.py --movement --dynamics \
+    --k-from-fit --c-from-fit --limit 50
+
+# 5. 用拟合的 (k̂, ĉ) 预测下日 Δu
+python backtrace/projection/prediction_ode.py --limit 50
+
+# 6. 看 (k̂, ĉ) 与状态分类的关联
+python backtrace/projection/state_kc_analysis.py --limit 50
+```
 
 ## 已知陷阱(踩过无数次的)
 
