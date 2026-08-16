@@ -466,6 +466,54 @@ if __name__ == '__main__':
 - CSV: `data/projection/dynamics_<INDEX_TAG>_<STOCK_TAG>.csv`(14 列,见 `build_dynamics_df`)
 - CSV: `data/projection/forces_<INDEX_TAG>_<STOCK_TAG>.csv`(8 列,见 `build_forces_df`;`--dynamics` 启用时自动产出)
 
+### [`backtrace/projection/projection_batch.py`](../backtrace/projection/projection_batch.py)
+
+批量跑(只产 CSV,不画 HTML)。`--dynamics` 在 `--movement` 之上叠加,每只票额外产
+`dynamics_*.csv` + `forces_*.csv`(2026-08-16 新增)。
+
+新增 CLI(2026-08-16,与 `projection_2d.py` 一致):
+
+| Flag | 默认 | 说明 |
+|---|---|---|
+| `--dynamics` | False | 启用动力学层;自动开启 `--movement` |
+| `--lambda-q` | `-1` | 锚定强度系数 λ_q;传 `-1` 走 median(‖ΔM‖) 自适应 |
+| `--classify-thresholds` | `0.10,0.50,30,90` | `R_low,R_high,theta_following_deg,theta_against_deg` |
+| `--k-restore` | `0.0` | 恢复力系数 k |
+| `--c-damp` | `0.0` | 阻尼系数 c |
+
+动力学层失败**不阻塞**主路径(失败时 status=`ok (dynamics failed: <ExcType>: <msg>)`),
+`projection_*.csv` 与 `movement_*.csv` 仍正常写入。
+
+Manifest schema(`data/projection/batch_manifest.csv`,10 列):
+
+| 列 | 含义 |
+|---|---|
+| `code` / `name` | 个股代码 / 名称 |
+| `index_code` / `index_name` | 实际基线(申万二级 / 大盘 / `--index` 显式) |
+| `rows` | 写入 CSV 的行数(扣除 4-D 模式首日) |
+| `date_start` / `date_end` | 第一行 / 最后一行日期 |
+| `csv_path` | state CSV 路径(必有) |
+| `dyn_csv_path` | dynamics CSV 路径(`--dynamics` 启用时填,否则空) |
+| `frc_csv_path` | forces CSV 路径(同上) |
+| `status` | `ok` / `ok (dynamics failed: ...)` / `failed: ...` |
+
+CLI 示例:
+
+```bash
+# 默认:state CSV × N
+python backtrace/projection/projection_batch.py --limit 50
+
+# 运动 + 动力学(产 3 组 CSV × N)
+python backtrace/projection/projection_batch.py --movement --dynamics --limit 100
+
+# 全市场基线 + 自定义 λ_q + 弱回复/阻尼
+python backtrace/projection/projection_batch.py --market-baseline --dynamics \
+    --lambda-q 1e6 --k-restore 0.1 --c-damp 0.05 --days 120
+
+# 自定义分类阈值
+python backtrace/projection/projection_batch.py --dynamics --classify-thresholds 0.15,0.60,20,100
+```
+
 ## 已知陷阱(踩过无数次的)
 
 1. **Windows GBK 终端**:中文 print 报错 → 用 `PYTHONIOENCODING=utf-8` 或 print 全 ASCII

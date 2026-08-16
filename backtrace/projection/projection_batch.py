@@ -20,6 +20,17 @@
 #   --movement           flag  运动向量投影模式:不算"当前状态"投影,而是把个股 (ΔVol, ΔAmt)
 #                              投到大盘 (ΔVol, ΔAmt) 的运动方向上。首行丢弃(无前一日)。
 #                              与 --two-day-vec 正交,可叠加。
+#   --dynamics           flag  在 --movement 之上叠加「离散动力学层」(2026-08-16 新增):
+#                              锚定强度 q_t、偏离角 θ、耦合度 R、动能 E_market/E_self、
+#                              7 状态分类。自动开启 --movement(无需重复传)。
+#                              额外产出 dynamics_*.csv(14 列)+ forces_*.csv(8 列)。
+#   --lambda-q           float 锚定强度系数 λ_q。-1 走 median(‖ΔM‖) 自适应(默认);
+#                              0 等价无阻尼 q_t=1;正值越大阻尼越强 q_t → 0。
+#   --classify-thresholds str  状态分类阈值,逗号分隔 4 个浮点
+#                              (R_low,R_high,theta_following_deg,theta_against_deg)。
+#                              默认 0.10,0.50,30,90。
+#   --k-restore          float 恢复力系数 k。F_restore = -k·d,默认 0 = 无均值回复力。
+#   --c-damp             float 阻尼系数 c。F_damp = -c·u,默认 0 = 无阻尼。
 #
 # 用法:
 #   1. 准备股票列表 CSV,至少一列 `code`,可选 `name`(例:
@@ -30,7 +41,8 @@
 #      默认读取 data/projection/stocks.csv
 #   2. PYTHONIOENCODING=utf-8 python backtrace/projection/projection_batch.py
 #      [可选 --input PATH / --days N / --limit N / --market-baseline / --index CODE
-#       / --two-day-vec / --movement]
+#       / --two-day-vec / --movement / --dynamics / --lambda-q F / --classify-thresholds S
+#       / --k-restore F / --c-damp F]
 #
 # 向量维度说明:
 #   默认(2-D 状态投影):每只票每个交易日产出 21 列 CSV,向量 v = (Volume, Amount)。
@@ -38,9 +50,18 @@
 #     产生 29 列 CSV(新增 Vol_prev / Amt_prev / prev_norm 两组共 8 列);首日无前一日数据被丢弃。
 #   --movement(运动向量投影,正交于上述两种):把 Δv_s 投到 Δv_i 上,
 #     产出 movement_{INDEX_TAG}_{STOCK_TAG}.csv(18 列,首行同样丢弃),文件名独立不覆盖。
-#   三种模式可自由组合(--two-day-vec + --movement 同时开,会得到 29 列状态 CSV + 18 列运动 CSV)。
+#   --dynamics(离散动力学层,叠加在 --movement 之上):
+#     额外产出 dynamics_*.csv(14 列,Dyn_ 前缀)+ forces_*.csv(8 列,Frc_ 前缀)。
+#     时间轴与 movement CSV 对齐(common_idx[1:],T-1 行)。
+#     4 档输出 vs 3 档列数对照:
+#       默认(2-D state)                → 21 列 State_*
+#       --two-day-vec(4-D state)       → 29 列 State_*
+#       --movement(2-D + 运动)         → 21 列 State_* + 18 列 Move_*
+#       --two-day-vec --movement       → 29 列 State_* + 18 列 Move_*
+#       --movement --dynamics          → + 14 列 Dyn_* + 8 列 Frc_*
 #   (注:2026-08-15 列名从 `Proj_*`/`Resi_*` 加 State_/Move_ 前缀,21/29 → 29 列,13 → 18 列;
-#    2026-08-16 删除 `State_Resi_Price`(2-D 退化,选股无效),列数 22/30 → 21/29)
+#    2026-08-16 删除 `State_Resi_Price`(2-D 退化,选股无效),列数 22/30 → 21/29;
+#    2026-08-16 新增动力学层 14+8 列)
 #
 # CLI 示例:
 #   python backtrace/projection/projection_batch.py                              # 默认 2-D,按个股所属行业基线跑
@@ -55,14 +76,31 @@
 #   python backtrace/projection/projection_batch.py --movement --limit 20       # 运动投影 + 只跑 20 只
 #   python backtrace/projection/projection_batch.py --two-day-vec --movement    # 状态 + 运动双产出
 #
+#   # 动力学层示例(2026-08-16 新增)
+#   python backtrace/projection/projection_batch.py --movement --dynamics --limit 10 \
+#       # 运动 + 动力学(自动开启 --movement);产 movement/dynamics/forces 三组 CSV
+#   python backtrace/projection/projection_batch.py --dynamics --lambda-q 1e6    # 自定义 λ_q(强阻尼)
+#   python backtrace/projection/projection_batch.py --dynamics --classify-thresholds 0.15,0.60,20,100  # 改阈值
+#   python backtrace/projection/projection_batch.py --dynamics --k-restore 0.1 --c-damp 0.05  # 加弱回复 + 弱阻尼
+#   python backtrace/projection/projection_batch.py --dynamics --k-restore 0 --c-damp 0       # 残差基线(F_self = a_S - F_market)
+#   python backtrace/projection/projection_batch.py --market-baseline --dynamics --days 120 --limit 30
+#       # 全市场基线 + 动力学 + 120 日 + 前 30 只冒烟
+#
 # 输出:
 #   - 每只股票一个 CSV:data/projection/projection_{INDEX_TAG}_{STOCK_TAG}.csv
 #     (INDEX_TAG 是行业代码 881xxx 或大盘代码 000001/399001,或 --index 显式指定的代码)
 #     2-D:21 列 / 4-D:29 列(每个交易日一行,State_* 前缀)
 #   - --movement 启用时,额外产出 data/projection/movement_{INDEX_TAG}_{STOCK_TAG}.csv(18 列,丢首行,Move_* 前缀)
+#   - --dynamics 启用时(自动含 --movement),额外产出:
+#       data/projection/dynamics_{INDEX_TAG}_{STOCK_TAG}.csv  (14 列,Dyn_ 前缀)
+#       data/projection/forces_{INDEX_TAG}_{STOCK_TAG}.csv    (8 列,Frc_ 前缀)
 #   - 批量清单:data/projection/batch_manifest.csv
-#     列: code, name, index_code, index_name, rows, date_start, date_end, csv_path, status
+#     列: code, name, index_code, index_name, rows, date_start, date_end,
+#          csv_path, dyn_csv_path, frc_csv_path, status
 #     rows 已扣除 4-D 模式丢弃的首日(实际写入 CSV 的行数)
+#     dyn_csv_path / frc_csv_path 在 --dynamics 启用时填,否则空字符串
+#     status='ok' 表示全部成功;失败时为 'failed: <ExcType>: <msg>';动力学层单独失败
+#     不阻塞主路径,会被记成 'ok (dynamics failed: ...)'(movement 仍写入)
 #
 # 注:本脚本不产 HTML。可视化请用 projection_2d.py 单股跑或自行读 CSV 画。
 # 数学/数据载入/CSV 组装统一在 _projection_core.py。
@@ -71,6 +109,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 
 import os
 import argparse
+import numpy as np
 import pandas as pd
 
 # 同 single-stock:把 backtrace/ 加进 path 找 common.tsfresh_pipeline
@@ -85,6 +124,12 @@ from _projection_core import (
     build_result_df,
     compute_movement_projection,
     build_movement_result_df,
+    # 动力学层(2026-08-16 新增)
+    compute_dynamics,
+    classify_states,
+    build_dynamics_df,
+    compute_forces,
+    build_forces_df,
 )
 
 CSV_OUT_DIR = 'data/projection'   # 每只股票 CSV + batch_manifest.csv 都落这里
@@ -124,6 +169,47 @@ def parse_args():
             '可与 --two-day-vec 共存,产独立 movement CSV。'
         ),
     )
+    # 动力学层(2026-08-16):在 --movement 之上叠加离散动力学指标 + 状态分类 + 力分解
+    parser.add_argument(
+        '--dynamics', action='store_true',
+        help=(
+            '在 --movement 之上叠加「离散动力学层」(2026-08-16 新增):'
+            '锚定强度 q_t、偏离角 θ、耦合度 R、动能 E_market/E_self、'
+            '7 状态分类标签。自动开启 --movement(无需重复传);'
+            '额外产出 dynamics_*.csv(14 列)+ forces_*.csv(8 列)。'
+            '单股 HTML 可视化请用 projection_2d.py --dynamics。'
+        ),
+    )
+    parser.add_argument(
+        '--lambda-q', type=float, default=-1.0,
+        help=(
+            '锚定强度系数 λ_q(浮点)。q_t = ‖ΔM‖ / (‖ΔM‖ + λ_q)。'
+            '传 -1 走默认 = median(‖ΔM‖) 自适应窗口;'
+            '传 0 等价无阻尼 q_t=1;正值越大阻尼越强 q_t→0。'
+        ),
+    )
+    parser.add_argument(
+        '--classify-thresholds', default='0.10,0.50,30,90',
+        help=(
+            '状态分类阈值,逗号分隔 4 个浮点:R_low,R_high,theta_following_deg,'
+            'theta_against_deg。默认 0.10,0.50,30,90。'
+            '约束:0 < R_low < R_high < 1;0 < theta_following < theta_against < 180。'
+        ),
+    )
+    parser.add_argument(
+        '--k-restore', type=float, default=0.0,
+        help=(
+            '恢复力系数 k(浮点)。F_restore = -k·d,默认 0 = 无均值回复力。'
+            '调试时可设 0.1~1.0 看个股偏离被多大强度拉回。'
+        ),
+    )
+    parser.add_argument(
+        '--c-damp', type=float, default=0.0,
+        help=(
+            '阻尼系数 c(浮点)。F_damp = -c·u,默认 0 = 无阻尼。'
+            '正 c 表示系统倾向于把个股与大盘的速度差消耗掉。'
+        ),
+    )
     return parser.parse_args()
 
 
@@ -148,8 +234,23 @@ def load_stock_list(path):
 
 
 def process_one(stock_code, stock_name, days, prefer_industry, index_code,
-                 lag: int = 0, movement: bool = False):
-    """处理一只股票。返回 manifest 行 dict(失败也返回,status 字段说明原因)。"""
+                 lag: int = 0, movement: bool = False,
+                 dynamics: bool = False, lambda_q=None,
+                 classify_thresholds=(0.10, 0.50, np.deg2rad(30), np.deg2rad(90)),
+                 k_restore: float = 0.0, c_damp: float = 0.0):
+    """处理一只股票。返回 manifest 行 dict(失败也返回,status 字段说明原因)。
+
+    Args:
+        ...(原有 state/movement 参数)...
+        dynamics: bool。True 时启用离散动力学层(自动含 movement,已在 main() 内联动)。
+        lambda_q: 锚定强度系数。None → median(‖ΔM‖) 自适应;float → 用户指定。
+        classify_thresholds: 4 元组 (R_low, R_high, theta_following_rad, theta_against_rad)
+                              度值已由 main() 转弧度传进来。
+        k_restore / c_damp: 力模型系数。默认 0 = 纯残差基线。
+
+    返回的 manifest 行多了 dyn_csv_path / frc_csv_path 两个字段(动力学启用时填;
+    否则空字符串)。动力学层单独失败不阻塞主路径,status 会记成 'ok (dynamics failed: ...)'。
+    """
     try:
         loaded = load_pair(stock_code, days, P, prefer_industry=prefer_industry,
                            index_code=index_code, lag=lag)
@@ -187,6 +288,45 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
             mv_csv_path = os.path.join(CSV_OUT_DIR, mv_csv_name)
             mv_df.to_csv(mv_csv_path, index=False, encoding='utf-8')
 
+        # 动力学层(2026-08-16):在 --movement 之上叠加离散动力学 + 力分解。
+        # 失败不阻塞主路径(movement/state CSV 已落地),记到 status 后缀。
+        dyn_csv_path = ''
+        frc_csv_path = ''
+        dyn_status_suffix = ''
+        if dynamics:
+            try:
+                # 重新算 mv(运动投影在 if movement 块算了一次但没绑外层变量)。
+                # 双算代价 ≈ 单只票 < 10ms,对 batch 5500 只可忽略;后续可考虑缓存。
+                mv_for_dyn = compute_movement_projection(data_stock, data_index)
+                dyn = compute_dynamics(mv_for_dyn, lambda_q=lambda_q)
+                r_low, r_high, theta_following_rad, theta_against_rad = classify_thresholds
+                states = classify_states(
+                    dyn['R'], dyn['theta'], dyn['E_self'],
+                    (r_low, r_high, theta_following_rad, theta_against_rad),
+                )
+                dyn_df = build_dynamics_df(
+                    common_idx[1:], dyn, states, index_tag, stock_tag,
+                )
+                dyn_csv_name = f'dynamics_{index_tag}_{stock_tag}.csv'
+                dyn_csv_path = os.path.join(CSV_OUT_DIR, dyn_csv_name)
+                dyn_df.to_csv(dyn_csv_path, index=False, encoding='utf-8')
+
+                # 力分解(总是跑,即便 k=c=0 也产 forces CSV 便于看 F_self 残差)
+                frc = compute_forces(dyn, mv_for_dyn,
+                                     k_restore=k_restore, c_damp=c_damp)
+                frc_df = build_forces_df(
+                    common_idx[1:], frc, index_tag, stock_tag,
+                )
+                frc_csv_name = f'forces_{index_tag}_{stock_tag}.csv'
+                frc_csv_path = os.path.join(CSV_OUT_DIR, frc_csv_name)
+                frc_df.to_csv(frc_csv_path, index=False, encoding='utf-8')
+            except Exception as e:
+                dyn_status_suffix = f'dynamics failed: {type(e).__name__}: {e}'
+
+        status = 'ok'
+        if dyn_status_suffix:
+            status = f'ok ({dyn_status_suffix})'
+
         return {
             'code': stock_code,
             'name': stock_name or '',
@@ -196,7 +336,9 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
             'date_start': str(common_idx[0])[:10],
             'date_end': str(common_idx[-1])[:10],
             'csv_path': csv_path,
-            'status': 'ok',
+            'dyn_csv_path': dyn_csv_path,
+            'frc_csv_path': frc_csv_path,
+            'status': status,
         }
     except Exception as e:
         return {
@@ -208,6 +350,8 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
             'date_start': '',
             'date_end': '',
             'csv_path': '',
+            'dyn_csv_path': '',
+            'frc_csv_path': '',
             'status': f'failed: {type(e).__name__}: {e}',
         }
 
@@ -215,6 +359,37 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
 def main():
     args = parse_args()
     os.makedirs(CSV_OUT_DIR, exist_ok=True)
+
+    # --dynamics 自动开启 --movement(动力学层依赖 mv dict)
+    if args.dynamics and not args.movement:
+        args.movement = True
+        print('[--dynamics] 自动开启 --movement')
+    # λ_q:-1 走默认 median 自适应,其余按用户值传
+    if args.lambda_q < 0:
+        lambda_q = None
+    else:
+        lambda_q = args.lambda_q
+    # 解析状态分类阈值;失败立即报错(避免后面静默错位)
+    try:
+        R_LOW, R_HIGH, THETA_FOLLOWING_DEG, THETA_AGAINST_DEG = (
+            float(x) for x in args.classify_thresholds.split(',')
+        )
+    except Exception as e:
+        raise SystemExit(
+            f'--classify-thresholds 解析失败: {args.classify_thresholds!r}\n'
+            f'需要 4 个逗号分隔浮点,例:0.10,0.50,30,90\n{e}'
+        )
+    if not (0 < R_LOW < R_HIGH < 1):
+        raise SystemExit(f'R_low={R_LOW} / R_high={R_HIGH} 必须满足 0 < R_low < R_high < 1')
+    if not (0 < THETA_FOLLOWING_DEG < THETA_AGAINST_DEG < 180):
+        raise SystemExit(
+            f'theta_following={THETA_FOLLOWING_DEG}° / theta_against={THETA_AGAINST_DEG}° '
+            f'必须满足 0 < following < against < 180'
+        )
+    classify_thresholds = (
+        R_LOW, R_HIGH,
+        np.deg2rad(THETA_FOLLOWING_DEG), np.deg2rad(THETA_AGAINST_DEG),
+    )
 
     stock_list = load_stock_list(args.input)
     if args.limit > 0:
@@ -228,11 +403,25 @@ def main():
     else:
         baseline = '大盘指数(深证成指/上证综指)'
 
+    if args.dynamics:
+        if lambda_q is None:
+            lq_str = 'median 自适应'
+        else:
+            lq_str = f'{lambda_q:.4e}'
+        dynamics_str = (
+            f'开启 (λ_q={lq_str}, '
+            f'阈值=R<{R_LOW}/{R_HIGH} + θ<{THETA_FOLLOWING_DEG}°/>{THETA_AGAINST_DEG}°, '
+            f'k={args.k_restore}, c={args.c_damp};产 dynamics_*.csv + forces_*.csv)'
+        )
+    else:
+        dynamics_str = '关闭'
+
     print(f"输入: {args.input} ({len(stock_list)} 只)")
     print(f"回看天数: {args.days}")
     print(f"投影基线: {baseline}")
     print(f"向量维度: {'4-D (今日+前一日 Vol/Amt, --two-day-vec)' if args.two_day_vec else '2-D (今日 Vol/Amt)'}")
     print(f"运动投影: {'开启 (额外产出 movement_*.csv)' if args.movement else '关闭'}")
+    print(f"动力学层: {dynamics_str}")
     print(f"输出目录: {CSV_OUT_DIR}\n")
 
     lag = 1 if args.two_day_vec else 0
@@ -240,25 +429,41 @@ def main():
     for i, (code, name) in enumerate(stock_list, 1):
         label = f"{code} ({name})" if name else code
         print(f"[{i}/{len(stock_list)}] {label}...", end=' ', flush=True)
-        row = process_one(code, name, args.days, prefer_industry, args.index,
-                          lag, args.movement)
+        row = process_one(
+            code, name, args.days, prefer_industry, args.index,
+            lag, args.movement,
+            dynamics=args.dynamics, lambda_q=lambda_q,
+            classify_thresholds=classify_thresholds,
+            k_restore=args.k_restore, c_damp=args.c_damp,
+        )
         manifest.append(row)
-        if row['status'] == 'ok':
-            print(f"✓ {row['rows']} 行 → {row['csv_path']}")
+        # 状态打印:动力学模式下额外列两个 CSV 路径
+        if row['status'] == 'ok' or row['status'].startswith('ok ('):
+            extra = ''
+            if args.dynamics and row['dyn_csv_path']:
+                extra = f" + dyn={os.path.basename(row['dyn_csv_path'])} frc={os.path.basename(row['frc_csv_path'])}"
+            print(f"✓ {row['rows']} 行 → {row['csv_path']}{extra}")
+            if row['status'].startswith('ok ('):
+                print(f"    ! {row['status']}")
         else:
             print(f"✗ {row['status']}")
 
     manifest_df = pd.DataFrame(manifest, columns=[
         'code', 'name', 'index_code', 'index_name', 'rows',
-        'date_start', 'date_end', 'csv_path', 'status',
+        'date_start', 'date_end', 'csv_path',
+        'dyn_csv_path', 'frc_csv_path',
+        'status',
     ])
     manifest_path = os.path.join(CSV_OUT_DIR, 'batch_manifest.csv')
     manifest_df.to_csv(manifest_path, index=False, encoding='utf-8')
 
     ok = sum(1 for r in manifest if r['status'] == 'ok')
-    fail = len(manifest) - ok
+    ok_with_warn = sum(1 for r in manifest if r['status'].startswith('ok ('))
+    fail = len(manifest) - ok - ok_with_warn
     print(f"\n=== 汇总 ===")
-    print(f"  成功: {ok}/{len(manifest)}")
+    print(f"  全部成功: {ok}/{len(manifest)}")
+    if ok_with_warn:
+        print(f"  成功(动力学层失败): {ok_with_warn}/{len(manifest)}")
     if fail:
         print(f"  失败: {fail}/{len(manifest)}")
     print(f"  清单: {manifest_path}")
