@@ -84,6 +84,11 @@ backtrace/
 │   ├── stock_picker.py
 │   ├── kline_chart.py
 │   └── projection_2d.py
+├── projection/              ← 大盘↔个股 2-D 投影 + 离散动力学层(2026-08)
+│   ├── _projection_core.py  ← 共享数学(单源真相)
+│   ├── projection_2d.py     ← 单股可视化(7 HTML + 4 CSV)
+│   ├── projection_batch.py  ← 批量(只产 CSV,manifest 11 列)
+│   └── parameter_fit.py     ← 闭式 OLS 估计 k/c(单只票)
 ├── gp_factor_mining/        ← GP 因子挖掘子项目(独立 README)
 ├── data_fetch/              ← 日线批量拉取(写 data/)
 │   └── fetch_daily.py
@@ -146,6 +151,7 @@ backtrace/
 | **vbt 系列** | [backtrace/vbt/](backtrace/vbt/) | 真实下单回测 |
 | **双层 α 选股** | [backtrace/alpha/](backtrace/alpha/) | 行业 → 个股双层筛选 |
 | **K 线形态** | [backtrace/talib/](backtrace/talib/) | TALib 形态回测 / 验证 |
+| **投影 + 动力学** | [backtrace/projection/](backtrace/projection/) | 2-D 投影 + 离散动力学层(`--dynamics` / `--k-restore` / `--c-damp`)+ OLS 参数估计 |
 | **GP 因子挖掘** | [backtrace/gp_factor_mining/](backtrace/gp_factor_mining/) | 遗传规划 + 因子库 |
 
 ## 已知陷阱(踩过无数次的)

@@ -514,6 +514,42 @@ python backtrace/projection/projection_batch.py --market-baseline --dynamics \
 python backtrace/projection/projection_batch.py --dynamics --classify-thresholds 0.15,0.60,20,100
 ```
 
+### [`backtrace/projection/parameter_fit.py`](../backtrace/projection/parameter_fit.py)
+
+**闭式 OLS 估计每只票的 (k̂, ĉ)**(2026-08-16 新增)。不依赖网格搜索 — 模型
+`a_S = β·a_M − k·d − c·u + F_self` 对 k/c 严格线性,2N×2 线性系统单次 `lstsq` 即可。
+
+输入: `data/projection/movement_*.csv`(由 `--movement` / `--dynamics` batch 跑产出)
+输出: `data/projection/kc_estimates.csv`(10 列)
+
+| 列 | 含义 |
+|---|---|
+| `code` / `name` / `index_code` / `index_tag` / `stock_tag` | 票与基线标识 |
+| `k_hat` | 估计的恢复力系数;正值=均值回复,负值=反回复(趋势强化) |
+| `c_hat` | 估计的阻尼系数;正值=阻尼(系统耗散),负值=反阻尼 |
+| `f_self_loss` | `F_self = a_S − β·a_M + k̂·d + ĉ·u` 的均方范数;代表「模型无法解释的自主驱动力」 |
+| `n_valid_days` | 参与 OLS 的有效观测天数(默认要求 ≥ 20) |
+| `status` | `ok (restoring, damping)` / `singular` / `too_few_days` / `extreme` / `solve_failed` |
+
+CLI:
+
+```bash
+# 默认扫描 data/projection/movement_*.csv 全部 fit
+python backtrace/projection/parameter_fit.py
+
+# 自定义股票列表(列:code;可选 name/index_code)
+python backtrace/projection/parameter_fit.py --input data/projection/stocks.csv
+
+# 冒烟 + 降低有效天数门槛
+python backtrace/projection/parameter_fit.py --limit 10 --min-valid-days 5
+
+# 截幅阈值(默认 |k|,|c| ≤ 10,超过则标 extreme)
+python backtrace/projection/parameter_fit.py --clip-extreme 5.0
+```
+
+后续用法:`kc_estimates.csv` 直接喂回 `projection_batch.py --k-restore <k_hat> --c-damp <c_hat>`
+或外层脚本按 k̂/ĉ 分布批量设参(均值 / 中位数 / 分位)。
+
 ## 已知陷阱(踩过无数次的)
 
 1. **Windows GBK 终端**:中文 print 报错 → 用 `PYTHONIOENCODING=utf-8` 或 print 全 ASCII
