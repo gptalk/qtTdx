@@ -33,14 +33,14 @@
 #       / --two-day-vec / --movement]
 #
 # 向量维度说明:
-#   默认(2-D 状态投影):每只票每个交易日产出 19 列 CSV,向量 v = (Volume, Amount)。
+#   默认(2-D 状态投影):每只票每个交易日产出 21 列 CSV,向量 v = (Volume, Amount)。
 #   --two-day-vec(4-D 状态):v = (Volume_today, Amount_today, Volume_yesterday, Amount_yesterday),
-#     产生 30 列 CSV(新增 Vol_prev / Amt_prev / prev_norm 两组共 8 列);首日无前一日数据被丢弃。
+#     产生 29 列 CSV(新增 Vol_prev / Amt_prev / prev_norm 两组共 8 列);首日无前一日数据被丢弃。
 #   --movement(运动向量投影,正交于上述两种):把 Δv_s 投到 Δv_i 上,
 #     产出 movement_{INDEX_TAG}_{STOCK_TAG}.csv(18 列,首行同样丢弃),文件名独立不覆盖。
-#   三种模式可自由组合(--two-day-vec + --movement 同时开,会得到 30 列状态 CSV + 18 列运动 CSV)。
-#   下游 find_resi_positive.py 仍按 `Date`+`State_Resi_Price` 读 22/30 列投影 CSV,与 --movement 无关。
-#   (注:2026-08-15 列名从 `Proj_*`/`Resi_*` 加 State_/Move_ 前缀,19/27 → 22/30 列,13 → 18 列)
+#   三种模式可自由组合(--two-day-vec + --movement 同时开,会得到 29 列状态 CSV + 18 列运动 CSV)。
+#   (注:2026-08-15 列名从 `Proj_*`/`Resi_*` 加 State_/Move_ 前缀,21/29 → 29 列,13 → 18 列;
+#    2026-08-16 删除 `State_Resi_Price`(2-D 退化,选股无效),列数 22/30 → 21/29)
 #
 # CLI 示例:
 #   python backtrace/projection/projection_batch.py                              # 默认 2-D,按个股所属行业基线跑
@@ -58,7 +58,7 @@
 # 输出:
 #   - 每只股票一个 CSV:data/projection/projection_{INDEX_TAG}_{STOCK_TAG}.csv
 #     (INDEX_TAG 是行业代码 881xxx 或大盘代码 000001/399001,或 --index 显式指定的代码)
-#     2-D:22 列 / 4-D:30 列(每个交易日一行,State_* 前缀)
+#     2-D:21 列 / 4-D:29 列(每个交易日一行,State_* 前缀)
 #   - --movement 启用时,额外产出 data/projection/movement_{INDEX_TAG}_{STOCK_TAG}.csv(18 列,丢首行,Move_* 前缀)
 #   - 批量清单:data/projection/batch_manifest.csv
 #     列: code, name, index_code, index_name, rows, date_start, date_end, csv_path, status
@@ -169,7 +169,7 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
         result_df = build_result_df(
             common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_norm,
             proj['projections'], proj['residuals'], proj['dot_after'],
-            proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'], proj['resi_prices'],
+            proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'],
             proj['state_stock_mag'], proj['state_index_mag'], proj['state_relative_move'],
             norm_params, index_tag, stock_tag, lag=lag,
         )

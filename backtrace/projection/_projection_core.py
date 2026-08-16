@@ -2,7 +2,7 @@
 """Shared math + I/O for projection_2d.py and projection_batch.py.
 
 Single source of truth for: market→index map, stock→industry map,
-local-cache loading, 2-D vector projection math (原始量纲), and 22-column
+local-cache loading, 2-D vector projection math (原始量纲), and 21-column
 result DataFrame assembly.
 
 No plotly / HTML / file writes — those are the calling scripts' jobs.
@@ -260,7 +260,7 @@ def compute_vectors(stock_df, index_df, index_tag, stock_tag, lag: int = 0):
 
 
 def compute_projections(vec_stock, vec_index):
-    """对每行跑 project_u_onto_v,返回 10 个 np.array(原 7 + 新增 3 个幅度量)。
+    """对每行跑 project_u_onto_v,返回 9 个 np.array(原 6 + 新增 3 个幅度量)。
 
     Args:
         vec_stock:  ndarray (T, k) — 个股原始向量(Volume, Amount, ...)
@@ -271,17 +271,19 @@ def compute_projections(vec_stock, vec_index):
 
     Returns dict keys:
         projections / residuals / dot_after / proj_coeffs / proj_mags /
-        proj_prices / resi_prices: 7 个核心投影输出(原始量纲)。
+        proj_prices: 6 个核心投影输出(原始量纲)。
         state_stock_mag:    ndarray (T,) — |u| 原始向量模长(元/手量纲)
         state_index_mag:    ndarray (T,) — |v| 原始向量模长
         state_relative_move: ndarray (T,) — |u| / |v|,|v|≈0 时 → 0(沿用 β 默认容错)
 
-    注意:`resi_prices` 不再限幅。原始量纲下 residual ⊥ v 强制
-    `resi_price = −v[0]/v[1]`(= −1/proj_price),与个股无关(2-D 退化)。
-    caller 不应拿此列做个股选股;选股请用 `state_*_mag` 或 lag=1 (4-D)。
+    设计变更(2026-08-16):state 投影不再产出 `resi_prices`。原因 — 2-D 投影几何
+    上 residual ⊥ v 强制 `resi_price = -v[0]/v[1] = -1/proj_price`,对所有共享
+    同一大盘基线的个股取值完全一样,与个股信息无关,选股无效。
+    下游选股请用 `state_*_mag`(个股相关)|或 lag=1 (4-D) — 退化自动消失。
+    注:motion 投影的 `Move_Resi_Price` 保留(基于 Δ 向量,非退化)。
     """
     projections, residuals, dot_after = [], [], []
-    proj_coeffs, proj_mags, proj_prices, resi_prices = [], [], [], []
+    proj_coeffs, proj_mags, proj_prices = [], [], []
     state_stock_mag, state_index_mag = [], []
 
     for i in range(len(vec_stock)):
@@ -295,9 +297,6 @@ def compute_projections(vec_stock, vec_index):
         proj_coeffs.append(_safe_ratio(np.dot(u, v), np.dot(v, v), default=0.0))
         proj_mags.append(np.linalg.norm(proj))
         proj_prices.append(_safe_ratio(proj[1], proj[0], default=np.sign(proj[1]) if np.isfinite(proj[1]) else 0.0))
-        # resi_price: 只走 _safe_ratio 保护 NaN/Inf/0(不再 cap;原始量纲下
-        # 阈值无业务意义,残差 Vol≈0 时 resi_price → Inf 被 _safe_ratio 压 0)。
-        resi_prices.append(_safe_ratio(residual[1], residual[0]))
         state_stock_mag.append(np.linalg.norm(u))
         state_index_mag.append(np.linalg.norm(v))
 
@@ -316,7 +315,6 @@ def compute_projections(vec_stock, vec_index):
         'proj_coeffs': np.array(proj_coeffs),
         'proj_mags': np.array(proj_mags),
         'proj_prices': np.array(proj_prices),
-        'resi_prices': np.array(resi_prices),
         'state_stock_mag': state_stock_mag,
         'state_index_mag': state_index_mag,
         'state_relative_move': state_relative_move,
@@ -550,20 +548,26 @@ def build_movement_intermediate_df(common_idx, mv, stock_df, index_df,
 
 def build_result_df(common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_norm,
                     projections, residuals, dot_after, proj_coeffs, proj_mags,
-                    proj_prices, resi_prices, state_stock_mag, state_index_mag,
+                    proj_prices, state_stock_mag, state_index_mag,
                     state_relative_move, norm_params, index_tag, stock_tag, lag: int = 0):
-    """组装 22/30 列 state 投影结果 DataFrame(raw + norm + 幅度量 + 投影 + 残差 + 4 个汇总 + 归一化参数)。
+    """组装 21/29 列 state 投影结果 DataFrame(raw + norm + 幅度量 + 投影 + 残差 + 4 个汇总 + 归一化参数)。
 
-    lag=0 → 22 列;lag=1 → 30 列(追加 4 prev_raw + 4 prev_norm)。
+    lag=0 → 21 列;lag=1 → 29 列(追加 4 prev_raw + 4 prev_norm)。
 
     所有 projection / magnitude / price 相关列加 State_ 前缀,与 movement 的 Move_ 列
     明确区分。列分组:
       1. 原始值(4 列)+ 归一化值(4 列)+ prev 列(lag=1 时 +8)
       2. 幅度量:State_Stock_Magnitude / State_Index_Magnitude / State_Relative_Move (3 列)
       3. 投影侧:State_Proj_Vol / Amt / Coeff / Magnitude / Price (5 列)
-      4. 残差侧:State_Resi_Vol / Amt / Price (3 列)
+      4. 残差侧:State_Resi_Vol / Amt (2 列)
       5. 正交验证:State_Dot_After (1 列)
       6. 归一化参数:Norm_Params (1 列)
+
+    设计变更(2026-08-16):删除 `State_Resi_Price` 列 — 2-D 投影几何上
+    `resi_price = -v[0]/v[1] = -1/State_Proj_Price`,对所有共享同一大盘的个股
+    取值完全一样(2-D 退化),与个股信息无关,选股无效。
+    残差方向斜率仍可通过 lag=1 (4-D) 退化自然消失后产出,或由下游另行计算
+    个股相关的 `State_Resi_Magnitude`(本批次不实现,见后续规划)。
     """
     prev_cols_raw = {}
     prev_cols_norm = {}
@@ -608,7 +612,6 @@ def build_result_df(common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_
         'State_Proj_Coeff': proj_coeffs,
         'State_Proj_Magnitude': proj_mags,
         'State_Proj_Price': proj_prices,
-        'State_Resi_Price': resi_prices,
         'State_Dot_After': dot_after,
         'Norm_Params': [norm_params] * len(common_idx),
     })

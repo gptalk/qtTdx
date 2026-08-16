@@ -43,8 +43,9 @@ def _fake_pair(n=5):
     return base
 
 
-def test_batch_process_one_lag0_writes_22_col_csv(tmp_path, monkeypatch):
-    """process_one 默认 lag=0 写出 22 列 CSV(State_ 前缀 + 8 维度幅度量)。"""
+def test_batch_process_one_lag0_writes_21_col_csv(tmp_path, monkeypatch):
+    """process_one 默认 lag=0 写出 21 列 CSV(State_ 前缀 + 8 维度幅度量,
+    2026-08-16 删除 State_Resi_Price 后从 22 列降为 21 列)。"""
     # 切 cwd 到 tmp,避免污染 data/projection/
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('projection_batch.CSV_OUT_DIR', str(tmp_path))
@@ -63,16 +64,17 @@ def test_batch_process_one_lag0_writes_22_col_csv(tmp_path, monkeypatch):
     assert row['rows'] == 5
     assert os.path.exists(row['csv_path'])
     csv_df = pd.read_csv(row['csv_path'])
-    assert csv_df.shape[1] == 22
-    assert 'State_Resi_Price' in csv_df.columns
+    assert csv_df.shape[1] == 21
+    # 2026-08-16:State_Resi_Price 已删除
+    assert 'State_Resi_Price' not in csv_df.columns
     # 8 维度幅度量
     assert 'State_Stock_Magnitude' in csv_df.columns
     assert 'State_Index_Magnitude' in csv_df.columns
     assert 'State_Relative_Move' in csv_df.columns
 
 
-def test_batch_process_one_lag1_writes_30_col_csv(tmp_path, monkeypatch):
-    """process_one lag=1 写出 30 列 CSV,首行降;State_ 前缀。"""
+def test_batch_process_one_lag1_writes_29_col_csv(tmp_path, monkeypatch):
+    """process_one lag=1 写出 29 列 CSV(2026-08-16 后从 30 列降为 29 列),首行降;State_ 前缀。"""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('projection_batch.CSV_OUT_DIR', str(tmp_path))
 
@@ -88,8 +90,8 @@ def test_batch_process_one_lag1_writes_30_col_csv(tmp_path, monkeypatch):
     assert row['status'] == 'ok', row
     assert row['rows'] == 4, f"5 行 - 首行 = 4 行,实际 {row['rows']}"
     csv_df = pd.read_csv(row['csv_path'])
-    assert csv_df.shape[1] == 30
-    assert 'State_Resi_Price' in csv_df.columns
+    assert csv_df.shape[1] == 29
+    assert 'State_Resi_Price' not in csv_df.columns
     assert 'Vol_000001_prev_raw' in csv_df.columns
     assert 'Vol_000001_prev_norm' in csv_df.columns
 

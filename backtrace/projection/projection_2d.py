@@ -173,14 +173,12 @@ print(f"\n归一化后向量范围: [0, 1]")
 # magnitudes 是 [0,√2] 区间,丢失真实成交量级。原始量纲下两者都直观。
 proj = compute_projections(vec_stock, vec_index)
 print(f"投影量纲: 原始(Volume=手, Amount=元) — proj_prices 是大盘边际成交均价(元/手)")
-print(f"  ⚠ State_Resi_Price 在 2-D 投影下与个股无关(= -Vol_idx/Amt_idx,仅大盘函数),不建议用于选股")
 projections = proj['projections']
 residuals = proj['residuals']
 dot_products_after = proj['dot_after']
 proj_coefficients = proj['proj_coeffs']
 proj_magnitudes = proj['proj_mags']
 proj_prices = proj['proj_prices']
-resi_prices = proj['resi_prices']
 state_stock_mag = proj['state_stock_mag']
 state_index_mag = proj['state_index_mag']
 state_relative_move = proj['state_relative_move']
@@ -414,28 +412,8 @@ fig4f.update_layout(
 )
 fig4f.write_html(out('proj_prices.html'))
 
-# 4g: state_resi_prices 时序图(state 投影的 resi_price)
-# 原始量纲:residual ⊥ v 强制 resi_price = -Vol_idx / Amt_idx = -1/proj_price
-# 与个股无关(2-D 退化)。仅作历史一致性保留,不建议用于选股。
-fig4g = go.Figure()
-fig4g.add_trace(go.Scatter(
-    x=list(common_idx), y=resi_prices,
-    mode='lines', name='state_resi_prices (残差斜率,2-D 下与个股无关)',
-    line=dict(color='red')
-))
-fig4g.add_trace(go.Scatter(
-    x=list(common_idx), y=close_stock,
-    mode='lines', name=f'{STOCK_TAG} Close收盘价',
-    line=dict(color='cyan'), opacity=0.7, yaxis='y2'
-))
-fig4g.update_layout(
-    title='state_resi_prices 时序 (残差方向斜率,2-D 下退化,不建议选股)',
-    xaxis_title='日期',
-    yaxis=dict(title='state_resi_prices'),
-    yaxis2=dict(title=f'{STOCK_TAG} Close (元)', overlaying='y', side='right', showgrid=False),
-    template='plotly_dark', height=350
-)
-fig4g.write_html(out('resi_prices.html'))
+# (2026-08-16) 原 fig4g (state_resi_prices 时序图) 已删除 — 2-D 投影几何上
+# resi_price = -1/proj_price(仅大盘函数,与个股无关),不适合做选股信号。
 
 # 图 M: 运动向量投影(仅 --movement 启用时绘制)
 if args.movement:
@@ -704,13 +682,12 @@ print(f"  2. {out('projection_verify.html')}  - 投影分解验证图")
 print(f"  3. {out('orthogonality_check.html')} - 正交性时序检验图")
 print(f"  4. {out('proj_coefficient.html')}    - 投影系数时序图")
 print(f"  5. {out('proj_prices.html')}        - state_proj_prices 时序图(state 投影方向斜率)")
-print(f"  6. {out('resi_prices.html')}        - state_resi_prices 时序图(state 残差方向斜率)")
 
-# 保存CSV(组装 22/30 列 DataFrame)
+# 保存CSV(组装 21/29 列 DataFrame)
 result_df = build_result_df(
     common_idx, vec_index, vec_stock, vec_index_norm, vec_stock_norm,
     projections, residuals, dot_products_after,
-    proj_coefficients, proj_magnitudes, proj_prices, resi_prices,
+    proj_coefficients, proj_magnitudes, proj_prices,
     state_stock_mag, state_index_mag, state_relative_move,
     norm_params, INDEX_TAG, STOCK_TAG, lag=LAG,
 )

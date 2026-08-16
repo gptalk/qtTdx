@@ -95,15 +95,16 @@ def _make_proj_dict(n, k):
     return {
         'projections': np.zeros((n, k)), 'residuals': np.zeros((n, k)),
         'dot_after': np.zeros(n), 'proj_coeffs': np.zeros(n),
-        'proj_mags': np.zeros(n), 'proj_prices': np.zeros(n), 'resi_prices': np.zeros(n),
+        'proj_mags': np.zeros(n), 'proj_prices': np.zeros(n),
         # 8 维度框架新增(state_)
         'state_stock_mag': np.zeros(n), 'state_index_mag': np.zeros(n),
         'state_relative_move': np.zeros(n),
     }
 
 
-def test_build_result_df_lag0_returns_22_columns():
-    """回归: lag=0 → 22 列(State_ 前缀 + 8 维度幅度量)。"""
+def test_build_result_df_lag0_returns_21_columns():
+    """回归: lag=0 → 21 列(State_ 前缀 + 8 维度幅度量,2026-08-16 删除
+    State_Resi_Price 后从 22 列降为 21 列)。"""
     n = 10
     common_idx = pd.date_range('2026-07-01', periods=n, freq='D')
     v_ix = np.random.rand(n, 2)
@@ -112,16 +113,16 @@ def test_build_result_df_lag0_returns_22_columns():
     df = build_result_df(
         common_idx, v_ix, v_st, v_ix, v_st,
         proj['projections'], proj['residuals'], proj['dot_after'],
-        proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'], proj['resi_prices'],
+        proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'],
         proj['state_stock_mag'], proj['state_index_mag'], proj['state_relative_move'],
         "vol_000001:[1,2] amt_000001:[1,2] vol_002475:[1,2] amt_002475:[1,2]",
         '000001', '002475',
     )
-    assert df.shape == (n, 22)
+    assert df.shape == (n, 21)
 
 
-def test_build_result_df_lag1_returns_30_columns():
-    """lag=1: 22 + 8 个 prev 列 = 30 列。"""
+def test_build_result_df_lag1_returns_29_columns():
+    """lag=1: 21 + 8 个 prev 列 = 29 列。"""
     n = 10
     common_idx = pd.date_range('2026-07-01', periods=n, freq='D')
     v_ix = np.random.rand(n, 4)
@@ -130,13 +131,13 @@ def test_build_result_df_lag1_returns_30_columns():
     df = build_result_df(
         common_idx, v_ix, v_st, v_ix, v_st,
         proj['projections'], proj['residuals'], proj['dot_after'],
-        proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'], proj['resi_prices'],
+        proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'],
         proj['state_stock_mag'], proj['state_index_mag'], proj['state_relative_move'],
         "vol_000001:[1,2] amt_000001:[1,2] vol_002475:[1,2] amt_002475:[1,2] "
         "vol_prev_000001:[1,2] amt_prev_000001:[1,2] vol_prev_002475:[1,2] amt_prev_002475:[1,2]",
         '000001', '002475', lag=1,
     )
-    assert df.shape == (n, 30)
+    assert df.shape == (n, 29)
     # 检查 prev_raw + prev_norm 4 对列都在
     for tag in ('000001', '002475'):
         for kind in ('Vol', 'Amt'):
@@ -146,7 +147,10 @@ def test_build_result_df_lag1_returns_30_columns():
 
 def test_build_result_df_lag1_preserves_projection_columns_after_prev_block():
     """lag=1 时,3 个 State_*_Magnitude/Relative 落在 idx 17/18/19,
-    State_Proj_Vol/Amt 在 idx 20/21(prev 块在 9-16)。"""
+    State_Proj_Vol/Amt 在 idx 20/21(prev 块在 9-16)。
+    2026-08-16 删除 State_Resi_Price(原 idx 22)后,投影 5 列和 resi 2 列
+    自然前移到 idx 17-21 / 22-23。
+    """
     n = 5
     common_idx = pd.date_range('2026-07-01', periods=n, freq='D')
     v_ix = np.random.rand(n, 4)
@@ -155,7 +159,7 @@ def test_build_result_df_lag1_preserves_projection_columns_after_prev_block():
     df = build_result_df(
         common_idx, v_ix, v_st, v_ix, v_st,
         proj['projections'], proj['residuals'], proj['dot_after'],
-        proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'], proj['resi_prices'],
+        proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'],
         proj['state_stock_mag'], proj['state_index_mag'], proj['state_relative_move'],
         "x", '000001', '002475', lag=1,
     )
@@ -168,23 +172,11 @@ def test_build_result_df_lag1_preserves_projection_columns_after_prev_block():
     # 然后是 State_Proj_Vol/Amt
     assert cols[20] == 'State_Proj_Vol'
     assert cols[21] == 'State_Proj_Amt'
-
-
-def test_build_result_df_lag1_state_resi_price_present():
-    """find_resi_positive.py 依赖 State_Resi_Price 列,lag=1 必须保留。"""
-    n = 5
-    common_idx = pd.date_range('2026-07-01', periods=n, freq='D')
-    v_ix = np.random.rand(n, 4)
-    v_st = np.random.rand(n, 4)
-    proj = _make_proj_dict(n, 4)
-    df = build_result_df(
-        common_idx, v_ix, v_st, v_ix, v_st,
-        proj['projections'], proj['residuals'], proj['dot_after'],
-        proj['proj_coeffs'], proj['proj_mags'], proj['proj_prices'], proj['resi_prices'],
-        proj['state_stock_mag'], proj['state_index_mag'], proj['state_relative_move'],
-        "x", '000001', '002475', lag=1,
-    )
-    assert 'State_Resi_Price' in df.columns
+    # 残差侧只剩 Vol/Amt(无 State_Resi_Price)
+    assert cols[22] == 'State_Resi_Vol'
+    assert cols[23] == 'State_Resi_Amt'
+    # State_Resi_Price 必须不存在
+    assert 'State_Resi_Price' not in df.columns
 
 
 class _FakePipeline:
@@ -704,6 +696,9 @@ def test_state_returns_magnitudes_and_relative_move():
     """compute_projections 的 state_stock_mag / state_index_mag / state_relative_move
     应等于手算的 ‖u‖ / ‖v‖ / ‖u‖/‖v‖。切原始量纲后输入是原始向量
     (这里用 0/1 数值,既是 valid 原始值也是 valid 归一化值,数字断言不变)。
+
+    2026-08-16:compute_projections 不再返回 resi_prices(2-D 退化),
+    此测试只验证 magnitude 三件套。
     """
     # 简单造 4 行:u/v 都是单位向量不同比例
     # u1=[1, 0],v1=[1, 0]  → |u|=1, |v|=1, R=1
@@ -720,6 +715,8 @@ def test_state_returns_magnitudes_and_relative_move():
     assert 'state_stock_mag' in proj
     assert 'state_index_mag' in proj
     assert 'state_relative_move' in proj
+    # 2026-08-16:resi_prices 已从 compute_projections 删除
+    assert 'resi_prices' not in proj
     assert proj['state_stock_mag'].shape == (4,)
     assert proj['state_index_mag'].shape == (4,)
     assert proj['state_relative_move'].shape == (4,)
@@ -738,57 +735,4 @@ def test_state_returns_magnitudes_and_relative_move():
     )
     # 全 finite
     assert np.all(np.isfinite(proj['state_relative_move']))
-
-
-def test_state_resi_price_no_cap_in_raw_scale():
-    """原始量纲下 resi_price 不再被 cap:典型值(几元/手 量级)全 pass。
-
-    之前 cap=3 在归一化空间里合理;原始量纲下 raw |resi_price| ≈ 6
-    (大盘 Vol/Amt 比),会被 cap 误判 → 历史 cap 分支 bug 让 89-100% 行的
-    State_Resi_Price 被压成 0。本次去掉 cap 后,正常 slope 直接透传。
-    """
-    # 真实数据量级:大盘 Volume ≈ 1e7(手),Amount ≈ 1e10(元)
-    # 大盘 Vol/Amt 比 ≈ 1e-3 → raw |resi_price| = 1/proj_price ≈ 1e3
-    vec_stock = np.array([
-        [1.0e8, 1.0e10],   # 个股成交与大盘同量级
-        [5.0e8, 5.0e10],   # 个股更大
-        [1.0e6, 1.0e8],    # 个股较小
-    ])
-    vec_index = np.array([
-        [1.0e7, 1.0e10],
-        [1.0e7, 1.0e10],
-        [1.0e7, 1.0e10],
-    ])
-    proj = compute_projections(vec_stock, vec_index)
-    # 三行 resi_price 都应 finite 且非 0(原 cap=3 分支不再触发)
-    assert np.all(np.isfinite(proj['resi_prices']))
-    assert np.all(proj['resi_prices'] != 0.0)
-    # 2-D 退化性质:resi_price = -v[0]/v[1] = -1e7/1e10 = -1e-3(三行一样)
-    np.testing.assert_allclose(proj['resi_prices'], [-1e-3, -1e-3, -1e-3], rtol=1e-9)
-
-
-def test_state_resi_price_safe_when_residual_vol_zero():
-    """residual[0]=0 时(残差 Volume 分量为 0),resi_price 应被 _safe_ratio 保护
-    为 NaN(默认),不触发 numpy RuntimeWarning 也不产生 Inf。
-
-    2-D 投影几何:residual ⊥ v 强制 residual ∝ (-v[1], v[0]),
-    所以 residual[0]=0 ⇒ v[1]=0(大盘 Amount=0,例如停牌)。
-
-    触发场景:大盘 Amount=0,residual[0]=0 → _safe_ratio 走 den=0 分支 → NaN。
-    """
-    vec_stock = np.array([
-        [1.0e8, 1.0e10],
-        [2.0e8, 2.0e10],
-    ])
-    vec_index = np.array([
-        [1.0e7, 0.0],   # v[1]=0 → β = u·v / v·v = 1e15 / 1e14 = 10
-                        #   proj = [1e8, 0], residual = [0, 1e10]
-                        #   resi_price = 1e10 / 0 → _safe_ratio NaN(default)
-        [5.0e6, 0.0],   # 同上
-    ])
-    proj = compute_projections(vec_stock, vec_index)
-    # 不应产生 Inf(安全除法)
-    assert not np.any(np.isinf(proj['resi_prices'])), proj['resi_prices']
-    # 两行都是 NaN(residual[0]=0,_safe_ratio 默认值)
-    assert np.all(np.isnan(proj['resi_prices'])), proj['resi_prices']
 
