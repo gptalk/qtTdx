@@ -605,3 +605,71 @@ sim['in_wedge']      # True
 - **`docs/superpowers/specs/`**:
   - `2026-08-16-market-stock-dynamics-design.md` — 描述层 spec(本目录的上游)
   - `2026-08-16-dynamics-system-design.md` — 本目录 spec(N 步模拟增量)
+
+### 3.4 全市场经验分布 (v4.3, 2026-08-17)
+
+把 `kc_estimates.csv` 从 4 只 smoke-test 扩张到全 A 股 (~5000 只),回答经验问题:
+"动力系统参数 (k̂, ĉ) 在全市场到底呈什么分布?"
+
+**跑全市场**:
+
+```bash
+# 1. (前置) 生成全 A 股 movement 文件 (~20-40 分钟)
+PYTHONIOENCODING=utf-8 python backtrace/projection/projection_batch.py --movement \
+    --input data/stock_basic.csv --limit 0 --days 240
+
+# 2. 跑全 A 股 parameter_fit (~20-40 分钟)
+PYTHONIOENCODING=utf-8 python backtrace/projection/parameter_fit.py --limit 0
+
+# 3. 跑 v4.3 报告
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_eigen_analysis.py
+```
+
+**数据源**:
+
+| 文件 | 用途 |
+|---|---|
+| `data/projection/kc_estimates.csv` | 主输入(全 A 股 ~5000 只 (k̂, ĉ)) |
+| `data/stock_basic.csv` | 反查 `exchange`(`market` 字段 = SH/SZ/BJ) |
+| `data/sw2/members.csv` | 反查 `industry_l1`(sector_code) / `industry_l2`(sector_name) |
+
+**输出**:
+
+| 路径 | 内容 |
+|---|---|
+| `data/dynamics/eigen_summary.csv` | 21 列(18 + industry_l1/l2/exchange) |
+| `backtrace/outputs/dynsys_eigen.html` | **2×4 网格 8 子图 plotly** (~2-4 MB) |
+| `backtrace/outputs/dynsys_eigen_summary.txt` | 纯文本汇总(便于 CI/grep) |
+| `data/dynamics/v43_eigen_top_industries.csv` | 行业聚合表(申万二级) |
+| `data/dynamics/v43_eigen_by_exchange.csv` | 交易所聚合表 |
+
+**HTML 8 子图布局**:
+
+| (行, 列) | 子图 |
+|---|---|
+| (1, 1) | (k̂, ĉ) 散点 + 楔形(分类着色) |
+| (1, 2) | ρ 直方图 + ρ=1 红虚线 |
+| (1, 3) | 11 类分类柱状 |
+| **(1, 4)** | **行业 ρ 中位数 top10**(误差棒 [p25, p75]) |
+| (2, 1) | (k̂, ĉ) 散点(楔形距离着色) |
+| (2, 2) | 楔形距离直方图 |
+| (2, 3) | ρ vs 楔形距离 |
+| **(2, 4)** | **交易所 ρ 中位数对比(SH vs SZ vs BJ)** |
+
+**关键决策**:
+
+- 聚合用 **median** 而非 mean(ρ 分布偏态,mean 被极端值拉飞)
+- 行业筛选 `n_stocks >= 50` 硬阈值取 top 10,不足则降级 `n >= 30`
+- 行业用申万二级 sector_name(sw2/members.csv),非申万一级
+- 交易所从 stock_basic.csv 的 market 字段读取(SH/SZ/BJ)
+- 文本汇总是 UTF-8 中文,Windows `PYTHONIOENCODING=utf-8` 下能直接 `cat`
+
+**v4.3 显式不做**(留 v4.4 / v4.5 / v5):
+
+- G(ω) 频率响应函数(独立 v5 工作包)
+- 行业稳定性指数 SI(v4.4+)
+- (k, c) 相图 + 7 状态颜色叠加(v4.4)
+- 状态转移矩阵(v4.5)
+- 任何 IC / basket / 交易信号(明确不做)
+
+**测试**: `tests/test_dynamics_eigen.py` 加 3 个测试,总 **26 passed**(23 旧 + 3 新)。
