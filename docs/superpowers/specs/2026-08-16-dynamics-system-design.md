@@ -322,6 +322,45 @@ sim['energy_error']           # ndarray ~ 1e-15(数值健康检查)
 - 3 个数值一致性测试(λ+λ=trace, λ·λ=det, 复共轭)
 - 3 个集成测试(energy_error, v4 字段齐全, v4.2 列齐全)
 
+### 3.6 v4.3 全市场经验分布(2026-08-17)— 仅数据层扩张
+
+数学层**完全不动**。`dynamics_eigen_analysis.py` 加 3 列读入 + 2 个聚合子图 + 1 个文本汇总:
+
+**输入扩张**:
+- `parameter_fit.py --limit 0` 跑全 A 股(~5000 只,~20-40 分钟;前置依赖: `projection_batch.py --movement` 先跑 ~20-40 分钟)
+- `data/sw2/members.csv`(列: `sector_code, sector_name, member_code`)反查 `industry_l1`(sector_code)/ `industry_l2`(sector_name)
+- `data/stock_basic.csv`(列: `code, market, name, status`)反查 `exchange`(`market` 字段 = SH/SZ/BJ)
+- 缺文件 / 缺列 → 行业列 / exchange 留空,流程不致命
+
+**聚合统计量**(用 median,不用 mean):
+- 行业(申万二级 sector_name)top10: `n_stocks` / `rho_median` / `rho_p25` / `rho_p75` / `k_hat_median` / `c_hat_median` / `schur_stable_pct` / `in_wedge_pct` / `dist_wedge_median`
+- 交易所 SH / SZ / BJ: 同 9 个统计量
+
+**HTML 2×4**(现 2×3 + 新 2):
+- (1,4) 行业 ρ 中位数 top10(误差棒 [p25, p75])
+- (2,4) 交易所 ρ 中位数对比(SH / SZ / BJ)
+
+**新增输出**:
+- `data/dynamics/eigen_summary.csv` 18 → 21 列
+- `backtrace/outputs/dynsys_eigen.html` 2×4
+- `backtrace/outputs/dynsys_eigen_summary.txt` 纯文本汇总
+- `data/dynamics/v43_eigen_top_industries.csv` 行业聚合
+- `data/dynamics/v43_eigen_by_exchange.csv` 交易所聚合
+
+**显式不做**(留 v4.4 - v5):
+- G(ω) 频率响应
+- 行业稳定性指数 SI
+- (k, c) 相图 + 7 状态颜色
+- 状态转移矩阵
+- 任何 IC / basket / 交易信号
+
+**测试**:`tests/test_dynamics_eigen.py` 加 3 个测试,总 **26 passed**(23 旧 + 3 新)。
+
+**关键修正(2026-08-17 实施时发现)**:
+- `data/stock_basic.csv` 不含 `industry_l1` / `industry_l2` 列,实际只含 `code, market, name, status`
+- 行业映射全部来自 `data/sw2/members.csv`,不是 stock_basic
+- 原 v4.3 spec 误以为 stock_basic 含 3 列,实施时已纠正(见 [`2026-08-17-dynamics-v4-3-full-market-distribution.md`](2026-08-17-dynamics-v4-3-full-market-distribution.md) §3.1)
+
 ### 3.4 重新导出的便利
 
 ```python
@@ -458,42 +497,3 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_batch.py --limit 50
 - **`prediction_ode.py`**:不替换;它做 OOS 1 步评估(给定真实 (k̂, ĉ) 算命中率),
   本目录做"已知 k/c + 已知未来大盘 → N 步轨迹"。
 - **`parameter_fit.py`**:不替换;它估 k̂/ĉ,本目录消费其结果。
-
-### 3.6 v4.3 全市场经验分布(2026-08-17)— 仅数据层扩张
-
-数学层**完全不动**。`dynamics_eigen_analysis.py` 加 3 列读入 + 2 个聚合子图 + 1 个文本汇总:
-
-**输入扩张**:
-- `parameter_fit.py --limit 0` 跑全 A 股(~5000 只,~20-40 分钟;前置依赖: `projection_batch.py --movement` 先跑 ~20-40 分钟)
-- `data/sw2/members.csv`(列: `sector_code, sector_name, member_code`)反查 `industry_l1`(sector_code)/ `industry_l2`(sector_name)
-- `data/stock_basic.csv`(列: `code, market, name, status`)反查 `exchange`(`market` 字段 = SH/SZ/BJ)
-- 缺文件 / 缺列 → 行业列 / exchange 留空,流程不致命
-
-**聚合统计量**(用 median,不用 mean):
-- 行业(申万二级 sector_name)top10: `n_stocks` / `rho_median` / `rho_p25` / `rho_p75` / `k_hat_median` / `c_hat_median` / `schur_stable_pct` / `in_wedge_pct` / `dist_wedge_median`
-- 交易所 SH / SZ / BJ: 同 9 个统计量
-
-**HTML 2×4**(现 2×3 + 新 2):
-- (1,4) 行业 ρ 中位数 top10(误差棒 [p25, p75])
-- (2,4) 交易所 ρ 中位数对比(SH / SZ / BJ)
-
-**新增输出**:
-- `data/dynamics/eigen_summary.csv` 18 → 21 列
-- `backtrace/outputs/dynsys_eigen.html` 2×4
-- `backtrace/outputs/dynsys_eigen_summary.txt` 纯文本汇总
-- `data/dynamics/v43_eigen_top_industries.csv` 行业聚合
-- `data/dynamics/v43_eigen_by_exchange.csv` 交易所聚合
-
-**显式不做**(留 v4.4 - v5):
-- G(ω) 频率响应
-- 行业稳定性指数 SI
-- (k, c) 相图 + 7 状态颜色
-- 状态转移矩阵
-- 任何 IC / basket / 交易信号
-
-**测试**:`tests/test_dynamics_eigen.py` 加 3 个测试,总 **26 passed**(23 旧 + 3 新)。
-
-**关键修正(2026-08-17 实施时发现)**:
-- `data/stock_basic.csv` 不含 `industry_l1` / `industry_l2` 列,实际只含 `code, market, name, status`
-- 行业映射全部来自 `data/sw2/members.csv`,不是 stock_basic
-- 原 v4.3 spec 误以为 stock_basic 含 3 列,实施时已纠正(见 [`2026-08-17-dynamics-v4-3-full-market-distribution.md`](2026-08-17-dynamics-v4-3-full-market-distribution.md) §3.1)
