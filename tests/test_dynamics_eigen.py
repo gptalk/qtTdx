@@ -645,3 +645,59 @@ def test_sector_si_summary_text(tmp_path):
     assert 'Top 12 弱' in content
     assert '银行' in content
     assert '半导体' in content
+
+
+# === v4.8: SI × forward return 滚动 Spearman IC 评估 ===
+
+def test_si_ic_synthetic_perfect():
+    """SI 与 forward return 完美正相关 → IC ≈ 1.0"""
+    siic = pytest.importorskip("backtrace.dynamics.dynamics_si_ic")
+    # 5 行业,SI = [0.1, 0.3, 0.5, 0.7, 0.9]
+    si = {'I1': 0.1, 'I2': 0.3, 'I3': 0.5, 'I4': 0.7, 'I5': 0.9}
+    # forward return 严格按 SI 升序:[-0.04, -0.02, 0.0, 0.02, 0.04]
+    fwd = pd.DataFrame(
+        {'I1': -0.04, 'I2': -0.02, 'I3': 0.0, 'I4': 0.02, 'I5': 0.04},
+        index=pd.date_range('2024-01-01', periods=1),
+    )
+    ts = siic.rolling_cross_sectional_ic(si, fwd, window=1, step=1)
+    assert len(ts) == 1
+    assert ts['ic'].iloc[0] > 0.99  # 完美正相关
+
+
+def test_si_ic_synthetic_random():
+    """SI 与 forward return 完全独立 → IC ≈ 0"""
+    siic = pytest.importorskip("backtrace.dynamics.dynamics_si_ic")
+    rng = np.random.default_rng(42)
+    n_industries = 10
+    n_days = 100
+    si = {f'I{i}': rng.uniform(0, 1) for i in range(n_industries)}
+    fwd = pd.DataFrame(
+        rng.normal(0, 0.02, size=(n_days, n_industries)),
+        columns=[f'I{i}' for i in range(n_industries)],
+        index=pd.date_range('2024-01-01', periods=n_days),
+    )
+    ts = siic.rolling_cross_sectional_ic(si, fwd, window=60, step=20)
+    # 跨窗口 IC 平均应该接近 0
+    assert abs(ts['ic'].mean()) < 0.3
+
+
+def test_si_ic_summary_schema(tmp_path):
+    """write_si_ic_summary 写 2 行(20d / 60d) × 6 列"""
+    siic = pytest.importorskip("backtrace.dynamics.dynamics_si_ic")
+    # 构造伪 ts_df:2 个 horizon × 5 个窗口
+    rng = np.random.default_rng(13)
+    rows = []
+    for h in (20, 60):
+        for w in range(5):
+            rows.append({
+                'window_end_date': pd.Timestamp('2024-01-01') + pd.Timedelta(days=w*20),
+                'horizon': h, 'ic': rng.uniform(-0.3, 0.3),
+                'p_value': rng.uniform(0, 0.5), 'n_industries': 50,
+            })
+    ts = pd.DataFrame(rows)
+    out_path = tmp_path / 'si_ic_summary.csv'
+    siic.write_si_ic_summary(ts, str(out_path))
+    df = pd.read_csv(out_path)
+    assert len(df) == 2  # 2 horizons
+    assert list(df['horizon']) == [20, 60]
+    assert set(df.columns) >= {'horizon', 'ic_mean', 'ic_std', 'ic_ir', 'p_value_mean', 'n_windows'}

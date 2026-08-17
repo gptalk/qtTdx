@@ -704,3 +704,29 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_eigen_analysis.py --li
 SI 定义: `SI = 0.5·ρ_health + 0.2·damping_health + 0.3·wedge_health`,权重集中在 `SI_WEIGHTS = (0.5, 0.2, 0.3)`(`dynamics_eigen_analysis.py` 顶部常量)。
 
 行业筛选(沿用 v4.3): `n_stocks >= 50` 强 / `n_stocks >= 30` 弱;两者都 < 5 行业时上层标 `low-confidence`。
+
+### 3.8 v4.8 — SI × Forward Return Rolling IC
+
+新 CLI: `backtrace/dynamics/dynamics_si_ic.py`,评估 v4.7 SI 指数与行业 forward 20d/60d 收益的滚动 cross-sectional Spearman IC。
+
+```bash
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_si_ic.py
+# 默认: window=60 日, step=20 日, horizons=20,60
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_si_ic.py --window 30 --step 10
+# 短窗口实验
+```
+
+**输出**:
+- `data/dynamics/si_ic_summary.csv` — 跨期汇总 2 行(20d / 60d),列: `horizon, ic_mean, ic_std, ic_ir, p_value_mean, n_windows`
+- `data/dynamics/si_ic_timeseries.csv` — per-window detail
+- `backtrace/outputs/dynsys_si_ic.html` — 1 HTML 3 子图(rolling IC 时序 + 行业 SI vs 累计 forward 60d 散点 + 跨期统计表)
+- `backtrace/outputs/dynsys_si_ic_summary.txt` — UTF-8 文本汇总
+
+**forward return 估算**: 行业成员股票中位数收盘价(`P_median`),forward h 日收益 = `(P_median(t+h) - P_median(t)) / P_median(t)`。
+
+**每窗口 IC**: 60 日窗口内逐日 Spearman IC 的算术平均(避免 pool 重算造成大 N 日重复计权重)。`n_industries < 5` 跳过该日。
+
+**已知陷阱**: 
+- 行业 member 数 < 3 的跳过该行业
+- v4.7 `sector_si.csv` 是单值(整期恒定),本 IC 反映"行业长期稳不稳 vs 该日 forward 收益"的相关性
+- 若 IC ≈ 0(类似 v3 README §3.4 state_prop 现象),SI 是描述性而非预测性指标
