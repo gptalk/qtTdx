@@ -35,6 +35,8 @@ if BACKTRACE_DIR not in sys.path:
 from dynamics import analyze_eigenvalues
 
 CSV_OUT_DIR = 'data/dynamics'
+AGG_INDUSTRY_CSV = os.path.join(CSV_OUT_DIR, 'v43_eigen_top_industries.csv')
+AGG_EXCHANGE_CSV = os.path.join(CSV_OUT_DIR, 'v43_eigen_by_exchange.csv')
 DEFAULT_INPUT = 'data/projection/kc_estimates.csv'
 DEFAULT_OUTPUT_HTML = 'backtrace/outputs/dynsys_eigen.html'
 DEFAULT_STOCK_BASIC = 'data/stock_basic.csv'
@@ -199,6 +201,91 @@ def aggregate_by_exchange(df: pd.DataFrame) -> pd.DataFrame:
         dist_wedge_median=('distance_to_wedge', 'median'),
     ).reset_index().sort_values('rho_median')
     return agg
+
+
+def write_text_summary(
+    summary_df: pd.DataFrame,
+    cls_count: Counter,
+    agg_l1: pd.DataFrame,
+    l1_threshold: int,
+    agg_ex: pd.DataFrame,
+    path: str,
+) -> None:
+    """写 dynsys_eigen_summary.txt 纯文本汇总(UTF-8)。
+
+    行业 label 增强:agg_l1.groupby key 是 industry_l1(sector_code),
+    这里再读 sw2/members.csv 把 sector_name 拼过来,显示更可读。
+    """
+    import datetime as _dt
+    N = len(summary_df)
+    rho = summary_df['spectral_radius']
+    k_hat = summary_df['k_hat']
+    c_hat = summary_df['c_hat']
+    schur_n = int(summary_df['schur_stable'].sum())
+    wedge_n = int(summary_df['in_wedge'].sum())
+    rho_gt1_n = int((rho > 1.0 + 1e-8).sum())
+    dist = summary_df['distance_to_wedge']
+    timestamp = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    # 行业 label 增强:industry_l1(sector_code) → industry_l2(sector_name)
+    sb = pd.DataFrame()
+    try:
+        sb = pd.read_csv('data/sw2/members.csv', dtype={'sector_code': str})
+        if 'sector_code' in sb.columns and 'sector_name' in sb.columns:
+            name_lookup = sb.drop_duplicates('sector_code').set_index('sector_code')['sector_name'].to_dict()
+        else:
+            name_lookup = {}
+    except FileNotFoundError:
+        name_lookup = {}
+    agg_l1_label = agg_l1.copy()
+    agg_l1_label['industry_label'] = agg_l1_label['industry_l1'].map(
+        lambda c: f'{name_lookup.get(c, c)}({c})' if c else '(未知)'
+    )
+
+    lines = []
+    lines.append('=== v4.3 全市场 (k̂, ĉ) 经验分布报告 ===')
+    lines.append(f'样本数: N = {N}')
+    lines.append('数据来源: data/projection/kc_estimates.csv')
+    lines.append(f'报告时间: {timestamp}')
+    lines.append('')
+    lines.append('--- 全市场 ---')
+    lines.append(f'ρ 中位数: {rho.median():.4f} | p25: {rho.quantile(0.25):.4f} | p75: {rho.quantile(0.75):.4f}')
+    lines.append(f'k̂ 中位数: {k_hat.median():.4f} | p25: {k_hat.quantile(0.25):.4f} | p75: {k_hat.quantile(0.75):.4f}')
+    lines.append(f'ĉ 中位数: {c_hat.median():.4f} | p25: {c_hat.quantile(0.25):.4f} | p75: {c_hat.quantile(0.75):.4f}')
+    lines.append(f'Schur 稳定(ρ<1):   {schur_n}/{N} ({schur_n/N*100:.1f}%)')
+    lines.append(f'楔形内:            {wedge_n}/{N} ({wedge_n/N*100:.1f}%)')
+    lines.append(f'ρ > 1(发散):       {rho_gt1_n}/{N} ({rho_gt1_n/N*100:.1f}%)')
+    lines.append(f'distance_to_wedge 中位数: {dist.median():+.4f} (>0 在楔形内)')
+    lines.append('')
+    lines.append('--- 11 类分布 ---')
+    for cls, cnt in sorted(cls_count.items(), key=lambda x: -x[1]):
+        lines.append(f'  {cls:<28} {cnt:>5} ({cnt/N*100:>5.1f}%)')
+    lines.append('')
+    lines.append(f'--- 行业 ρ 中位数 top10 (n_stocks >= {l1_threshold}) ---')
+    if len(agg_l1_label) >= 5:
+        for _, r in agg_l1_label.iterrows():
+            lines.append(
+                f'  {r["industry_label"]:<26} n={int(r["n_stocks"]):>4}, '
+                f'ρ_med={r["rho_median"]:.3f}, p25={r["rho_p25"]:.3f}, p75={r["rho_p75"]:.3f}, '
+                f'k̂_med={r["k_hat_median"]:.3f}, ĉ_med={r["c_hat_median"]:.3f}, '
+                f'楔形内%={r["in_wedge_pct"]*100:.1f}%'
+            )
+    else:
+        lines.append(f'  (行业不足 5 个,n_stocks >= {l1_threshold} 仅 {len(agg_l1_label)} 个)')
+    lines.append('')
+    lines.append('--- 交易所 ---')
+    for _, r in agg_ex.iterrows():
+        lines.append(
+            f'  {r["exchange"]:<5} n={int(r["n_stocks"]):>4}, '
+            f'ρ_med={r["rho_median"]:.3f}, p25={r["rho_p25"]:.3f}, p75={r["rho_p75"]:.3f}, '
+            f'楔形内%={r["in_wedge_pct"]*100:.1f}%'
+        )
+    lines.append('')
+
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+    print(f'[eigen] ✓ text summary: {path}')
 
 
 def main():
@@ -537,6 +624,18 @@ def main():
     fig.write_html(args.output)
     print()
     print(f'[eigen] ✓ HTML: {args.output}')
+
+    # ---------- 4. 聚合表 + 文本汇总 ----------
+    os.makedirs(CSV_OUT_DIR, exist_ok=True)
+    agg_l1.to_csv(AGG_INDUSTRY_CSV, index=False, encoding='utf-8')
+    print(f'[eigen] ✓ industry agg: {AGG_INDUSTRY_CSV} ({len(agg_l1)} 行)')
+    agg_ex.to_csv(AGG_EXCHANGE_CSV, index=False, encoding='utf-8')
+    print(f'[eigen] ✓ exchange agg: {AGG_EXCHANGE_CSV} ({len(agg_ex)} 行)')
+
+    # 文本汇总(便于 grep / CI)
+    write_text_summary(
+        summary_df, cls_count, agg_l1, l1_threshold, agg_ex, DEFAULT_TXT_OUTPUT,
+    )
 
 
 if __name__ == '__main__':
