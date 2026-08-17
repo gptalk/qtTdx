@@ -128,6 +128,14 @@ def parse_args():
         help='滚动窗口大小,逗号分隔(默认 60,120,240)。如 "30,60,120,240"。',
     )
     p.add_argument(
+        '--rolling-time', action='store_true',
+        help='每月末用最近 N 天 OLS 估 (k̂, ĉ),产 kc_estimates_time.csv (long format)',
+    )
+    p.add_argument(
+        '--rolling-time-window', type=int, default=240,
+        help='rolling-time 模式窗口大小(交易日,默认 240)',
+    )
+    p.add_argument(
         '--plot-rolling', action='store_true',
         help=(
             '在 --rolling-fit 之上叠加 HTML 可视化:'
@@ -552,6 +560,16 @@ def main():
     if args.limit > 0:
         targets = targets[:args.limit]
 
+    if args.rolling_time:
+        print(f'输入: {args.input or f"{CSV_OUT_DIR}/movement_*.csv (扫描)"}')
+        print(f'目标: {len(targets)} 只 (limit={args.limit})')
+        print(f'时序滚动模式: 窗口={args.rolling_time_window} 交易日,月末 asof')
+        print()
+        main_rolling_time(targets,
+                          window=args.rolling_time_window,
+                          clip_extreme=args.clip_extreme)
+        return
+
     if args.rolling_fit:
         try:
             windows = _parse_windows(args.rolling_windows)
@@ -744,6 +762,120 @@ def main_rolling(targets, windows: list[int], clip_extreme: float,
         # 跨股票聚合:1 个 HTML,各窗口 k̂/ĉ 的中位数 ± p25/p75 区间
         agg_path = plot_rolling_aggregate(summary_df, windows)
         print(f'\n  跨股票聚合: {agg_path}')
+
+
+def _month_ends(dates: pd.Series) -> list:
+    """返回每月最后一个交易日的 Timestamp 列表(去重 + 升序)。"""
+    df = pd.DataFrame({'Date': pd.to_datetime(dates)})
+    df['_ym'] = df['Date'].dt.to_period('M')
+    month_ends = df.groupby('_ym')['Date'].max().sort_values().tolist()
+    return month_ends
+
+
+def main_rolling_time(targets, window: int = 240, clip_extreme: float = 10.0):
+    """每月末用最近 N 天 OLS 估 (k̂, ĉ),产 long format CSV。
+
+    对每只票:
+        1. 读 movement CSV
+        2. 找月末 asof_date 列表(每月最后交易日)
+        3. 对每个 asof_date:截幅到该日期 + 取最后 window 行,跑 OLS
+        4. 落 1 行 (asof_date, code, k_hat, c_hat, ...)
+
+    输出: data/projection/kc_estimates_time.csv
+    """
+    rows = []
+    for i, (code, name, mv_csv, index_tag, stock_tag, index_code) in enumerate(targets, 1):
+        label = f'{code} ({name})' if name else code
+        print(f'[{i}/{len(targets)}] {label} ...', end=' ', flush=True)
+        loaded, err = _load_movement(mv_csv, stock_tag, index_tag)
+        if loaded is None:
+            print(f'⚠ load failed: {err}')
+            continue
+        df, delta_u, delta_v, beta = loaded
+        u_vec, d_vec, a_u_vec, a_v_vec = _build_kinematics(delta_u, delta_v, beta)
+        dates = pd.to_datetime(df['Date'])
+        month_ends = _month_ends(dates)
+        print(f'{len(month_ends)} asof_dates', end=' ', flush=True)
+        for asof in month_ends:
+            mask = (dates <= asof).values
+            n_avail = int(mask.sum())
+            if n_avail < max(3, window // 4):   # 至少需要 window/4 天
+                rows.append({
+                    'asof_date': str(asof)[:10],
+                    'code': code, 'name': name or '',
+                    'index_code': index_code,
+                    'index_tag': index_tag, 'stock_tag': stock_tag,
+                    'k_hat': np.nan, 'c_hat': np.nan,
+                    'f_self_loss': np.nan, 'n_valid_days': 0,
+                    'status': f'too_few_days ({n_avail})',
+                })
+                continue
+            # 取最后 window 行
+            idx = np.where(mask)[0][-window:]
+            sub = slice(idx[0], idx[-1] + 1)
+            valid = (
+                np.isfinite(a_u_vec[sub]).all(axis=1)
+                & np.isfinite(a_v_vec[sub]).all(axis=1)
+                & np.isfinite(d_vec[sub]).all(axis=1)
+                & np.isfinite(u_vec[sub]).all(axis=1)
+            )
+            n_valid = int(valid.sum())
+            if n_valid < 3:
+                rows.append({
+                    'asof_date': str(asof)[:10],
+                    'code': code, 'name': name or '',
+                    'index_code': index_code,
+                    'index_tag': index_tag, 'stock_tag': stock_tag,
+                    'k_hat': np.nan, 'c_hat': np.nan,
+                    'f_self_loss': np.nan,
+                    'n_valid_days': n_valid,
+                    'status': f'too_few_valid ({n_valid})',
+                })
+                continue
+            try:
+                k_hat, c_hat, f_loss, _, rank = _solve_ols(
+                    a_u_vec[sub], a_v_vec[sub], d_vec[sub], u_vec[sub], beta[sub], valid,
+                )
+            except Exception as e:
+                rows.append({
+                    'asof_date': str(asof)[:10],
+                    'code': code, 'name': name or '',
+                    'index_code': index_code,
+                    'index_tag': index_tag, 'stock_tag': stock_tag,
+                    'k_hat': np.nan, 'c_hat': np.nan,
+                    'f_self_loss': np.nan,
+                    'n_valid_days': n_valid,
+                    'status': f'solve_failed: {type(e).__name__}: {e}',
+                })
+                continue
+            finite = np.isfinite(k_hat) and np.isfinite(c_hat)
+            extreme = abs(k_hat) > clip_extreme or abs(c_hat) > clip_extreme
+            if not finite:
+                status = 'solve_failed'
+            elif rank < 2:
+                status = 'singular'
+            elif extreme:
+                status = f'extreme (|k| or |c| > {clip_extreme:g})'
+            else:
+                status = 'ok'
+            rows.append({
+                'asof_date': str(asof)[:10],
+                'code': code, 'name': name or '',
+                'index_code': index_code,
+                'index_tag': index_tag, 'stock_tag': stock_tag,
+                'k_hat': k_hat, 'c_hat': c_hat,
+                'f_self_loss': f_loss,
+                'n_valid_days': n_valid,
+                'status': status,
+            })
+        print('✓')
+    out = pd.DataFrame(rows, columns=[
+        'asof_date', 'code', 'name', 'index_code', 'index_tag', 'stock_tag',
+        'k_hat', 'c_hat', 'f_self_loss', 'n_valid_days', 'status',
+    ])
+    out_path = os.path.join(CSV_OUT_DIR, 'kc_estimates_time.csv')
+    out.to_csv(out_path, index=False, encoding='utf-8')
+    print(f'✓ {out_path} ({len(out)} 行)')
 
 
 if __name__ == '__main__':

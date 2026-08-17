@@ -45,3 +45,7 @@ data/
 # 编辑器备份
 *~
 *.swp
+
+# superpowers SDD 工作区
+.superpowers/sdd/
+

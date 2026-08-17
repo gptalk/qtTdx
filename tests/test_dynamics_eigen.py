@@ -701,3 +701,42 @@ def test_si_ic_summary_schema(tmp_path):
     assert len(df) == 2  # 2 horizons
     assert list(df['horizon']) == [20, 60]
     assert set(df.columns) >= {'horizon', 'ic_mean', 'ic_std', 'ic_ir', 'p_value_mean', 'n_windows'}
+
+
+def test_rolling_time_basic_shape():
+    """_month_ends 应返回每月最后一个交易日(去重 + 升序)。"""
+    import types, importlib
+    proj_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'backtrace', 'projection')
+    if proj_dir not in sys.path:
+        sys.path.insert(0, proj_dir)
+    # parameter_fit 顶层 import common.tsfresh_pipeline(依赖 tsfresh)。
+    # 本测试只验纯 pandas 的 _month_ends,故环境缺 tsfresh 时打桩,避免无关依赖。
+    saved = {k: sys.modules.get(k) for k in ('common', 'common.tsfresh_pipeline')}
+    try:
+        try:
+            import common.tsfresh_pipeline  # noqa: F401
+        except Exception:
+            pkg = types.ModuleType('common'); pkg.__path__ = []
+            sys.modules['common'] = pkg
+            sys.modules['common.tsfresh_pipeline'] = types.ModuleType(
+                'common.tsfresh_pipeline')
+        from parameter_fit import _month_ends
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
+    dates = pd.to_datetime([
+        '2024-01-15', '2024-01-31', '2024-02-29', '2024-03-31', '2024-04-30',
+        '2024-05-31', '2024-06-30',
+    ])
+    ends = _month_ends(pd.Series(dates))
+    assert ends == [
+        pd.Timestamp('2024-01-31'), pd.Timestamp('2024-02-29'),
+        pd.Timestamp('2024-03-31'), pd.Timestamp('2024-04-30'),
+        pd.Timestamp('2024-05-31'), pd.Timestamp('2024-06-30'),
+    ]
