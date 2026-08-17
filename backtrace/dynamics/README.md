@@ -158,25 +158,34 @@ dyn = compute_dynamics(mv, lambda_q=None)
 states = classify_states(dyn['R'], dyn['theta'], dyn['E_self'],
                           (0.10, 0.50, np.deg2rad(30), np.deg2rad(90)))
 
-# 2. 1 步预测
+# 2. 1 步预测(2026-08-17 v3 — u / a_M 内部派生,防 caller 飘移)
 v_S_now = mv['stock_move'][-1]               # (2,)
-a_M_now = np.diff(mv['index_move'][-2:], axis=0)[0]   # 最近有效 a_M
-a_S_recent = np.diff(mv['stock_move'][-2:], axis=0)[0]  # 最近有效 a_S
+v_M_now = mv['index_move'][-1]               # (2,)
+v_M_next = mv['index_move'][-2] if len(mv['index_move']) >= 2 else v_M_now  # 下一日(若可取)
 beta_now = mv['proj_coeff'][-1]
-# d_now / u_now 重建(同 dynamics_system.py)
+beta_next = mv['proj_coeff'][-2] if len(mv['proj_coeff']) >= 2 else beta_now
+# d_now 重建(同 dynamics_system.py)
 u_full = mv['stock_move'] - mv['proj_coeff'][:, None] * mv['index_move']
 d_full = np.zeros_like(mv['stock_move'])
 d_full[1:] = np.cumsum(u_full[:-1], axis=0)
-# q_t 锚定强度:从 description 层拿(2026-08-17 时间轴重构新增)
+# q_t 锚定强度:从 description 层拿
 q_now = float(dyn['q_t'][-1])
-a_pred, v_pred = predict_next_state(
-    v_S_now, a_M_now, beta_now, d_full[-1], u_full[-1],
-    a_S_now=a_S_recent, k=0.0, c=0.0, q_now=q_now,
+# v3:caller 不再传 a_M_now / u_now(内部从 v_M_now/v_M_next/β 派生);
+# 也不再传 a_S_now(F_self_now 由外部给定,默认 None = 0)
+a_pred, v_pred, d_pred, u_pred = predict_next_state(
+    v_S_now=v_S_now,
+    v_M_now=v_M_now,
+    v_M_next=v_M_next,
+    beta_now=beta_now,
+    beta_next=beta_next,
+    d_now=d_full[-1],
+    F_self_now=np.zeros(2),     # (2,) 残差;None = 0
+    k=0.0, c=0.0, q_now=q_now,
 )
-# 1 步预测: 下日个股 ΔS = v_pred
-# 注:predict_next_state 现在只返 (a_pred, v_pred);原 3 元组的第 3 个 delta_S_pred 已删除(冗余)
+# 1 步预测:下日个股 ΔS = v_pred;d_pred/u_pred 是下一状态
+# 注:v3 返回 4 元组 (a_pred, v_pred, d_pred, u_pred);只看前 2 个也兼容旧 caller
 
-# 3. N 步模拟(Oracle 模式:已知未来大盘)
+# 3. N 步模拟(Oracle 模式:已知未来大盘;2026-08-17 v3 — u_init 删除)
 N = 5
 v_S_init = mv['stock_move'][-1]
 # v_M_seq / β_seq 用 N+1 个状态(v_M_seq[t+1]-v_M_seq[t] 产生 N 个 a_M,无 NaN)
@@ -186,8 +195,8 @@ F_self_seq = np.tile(np.array([0.0, 0.0]), (N, 1))  # 残差序列是步长量 (
 sim = simulate_trajectory(
     v_S_init=v_S_init,
     v_M_seq=v_M_seq, beta_seq=beta_seq, F_self_seq=F_self_seq,
-    d_init=d_full[-1],                  # NEW(2026-08-17 v2):d[t+1]=d[t]+u[t],自然初值
-    u_init=u_full[-1],
+    d_init=d_full[-1],                  # d[t+1]=d[t]+u[t] 的自然初值
+    # v3:u_init 删除(派生量,simulate_trajectory 在 t=0 自动派生)
     k=0.0, c=0.0,
 )
 sim_df = build_simulation_df(sim, dates=None, index_tag='399001', stock_tag='002475')
@@ -210,8 +219,8 @@ F_self_pred = make_rolling_mean_f_self_predictor(F_self_full, window=10)
 sim = simulate_trajectory(
     v_S_init=v_S_init, v_M_seq=v_M_seq, beta_seq=beta_seq,
     F_self_predictor=F_self_pred,
-    d_init=d_full[-1],                  # NEW(2026-08-17 v2):自然初值
-    u_init=u_full[-1],
+    d_init=d_full[-1],
+    # v3:u_init 删除(派生量)
     k=0.0, c=0.0, q_t_seq=q_t_seq,
 )
 # 注意:sim['F_self_predictor_used'] 会回放这个 predictor
@@ -301,6 +310,91 @@ F_self_d(t+1) = μ_d + ρ_d · (F_self_d(t) - μ_d)
 
 `compute_dynamics` / `compute_forces`(description 层)保留原 `v_proj = q·β·v_M` 投影不动 —
 那个 β 是回归斜率,语义独立,与 simulate 层的"严格正交"是两件事。
+
+## 6.7 派生量统一(2026-08-17 v3)
+
+为消除"`u` 作为独立输入但其实是代数约束"和"`predict_next_state` 让 caller 重复造轮子"的两处 API 表面与技术债:
+
+### 6.7.1 问题
+
+```python
+# simulate_trajectory 旧签名:caller 必须计算 u_init
+u_init = u_full[-1]                                  # day T-1
+sim = simulate_trajectory(..., u_init=u_init, ...)
+# 但 u_seq[1] 立刻被覆盖:
+u_seq[1] = v_seq[1] - beta_seq[1] * v_M_seq[1]      # 派生值
+# u_init 在 t=1 之后永远不再被使用
+```
+
+```python
+# predict_next_state 旧签名:caller 同时持有 v_M_now / v_M_next 才能算 a_M_now
+a_M_now = v_M_next - v_M_now                        # caller 算
+u_now = v_S_now - beta_now * v_M_now                 # caller 算
+a_pred, v_pred = predict_next_state(v_S_now, a_M_now, beta_now, d_now, u_now, ...)
+# 传错任何一个就飘移
+```
+
+`u` 由代数约束 `u(t) = v_S(t) − β(t)·v_M(t)` 唯一决定 — 系统真正的状态只有 `X(t) = (d(t), v_S(t)) ∈ R⁴`,`u` 是导出量。caller 传 `u_init` 是**误导性的 footgun**(内部立即覆盖,传错没人发现)。
+
+### 6.7.2 修复
+
+**(1)** `predict_next_state` 新签名:
+
+```python
+# v3:caller 只传 v_M_now / v_M_next / β_now / β_next,内部派生 u_now / a_M_now
+a_pred, v_pred, d_pred, u_pred = predict_next_state(
+    v_S_now, v_M_now, v_M_next, beta_now, beta_next, d_now,
+    F_self_now=None,         # None = 0;旧版 a_S_now 参数删除
+    k=0.0, c=0.0, q_now=1.0,
+)
+# 内部:
+#   u_now   = v_S_now - beta_now * v_M_now          # 代数约束
+#   a_M_now = v_M_next - v_M_now                    # 前向差
+#   a_S     = q_now * beta_now * a_M_now - k * d_now - c * u_now + F_self_now
+#   v_pred  = v_S_now + a_S
+#   u_pred  = v_pred - beta_next * v_M_next         # 代数约束
+#   d_pred  = d_now + u_now                         # spec 写法
+```
+
+**(2)** `simulate_trajectory` 删除 `u_init` 参数:
+
+```python
+# v3:不再传 u_init
+sim = simulate_trajectory(
+    v_S_init=v_S_init, d_init=d_init,
+    v_M_seq=v_M_seq, beta_seq=beta_seq,
+    k=0.0, c=0.0, q_t_seq=q_t_seq,
+    F_self_seq=F_self_seq,    # 或 F_self_predictor
+)
+# 内部在 t=0 自动派生:
+#   u_seq[0] = v_S_init - beta_seq[0] * v_M_seq[0]
+```
+
+### 6.7.3 影响
+
+| 项 | 行为 |
+|---|---|
+| 旧 caller 传 `u_init=...` | `TypeError: unexpected keyword argument 'u_init'` |
+| 旧 caller 用 `a_M_now=...` / `u_now=...` kwarg | `TypeError` |
+| 旧 2 元组解构 `a, v = predict_next_state(...)` | **仍兼容**(新 4 元组的前 2 元素不变) |
+| 模拟数值 | u[0] 变化(v2 用 u_init=v_full[-1] 是 day T-1,v3 用 β[0]·v_M[0] 是 day T-1-N)。其后 v/u/d 全部按新 u[0] 重新递推,与 v2 数值**略有偏移**。API 破坏性,数值在合理范围内。 |
+| `dynamics_1step_oos.py` 的 1 步预测 | **零数值变化**(旧 API 内部用的就是同一组方程) |
+| `dynamics_1step_oos.py` 的返回值解构 | 改成 `a_pred, v_pred, _d_pred, _u_pred = ...` |
+
+### 6.7.4 状态空间的明确化
+
+v3 后,系统的状态空间变得**显式且不可误用**:
+
+```
+真状态 X(t) = (d(t), v_S(t)) ∈ R⁴
+派生量 u(t) = v_S(t) − β(t)·v_M(t)       ← 代数约束(不递推)
+外部输入 v_M(t), β(t), q(t), F_self(t)
+市场加速度 a_M(t) = v_M(t+1) − v_M(t)
+动力学 a(t) = q(t)·β(t)·a_M(t) − k·d(t) − c·u(t) + F_self(t)
+递推 v_S(t+1) = v_S(t) + a(t)
+     u(t+1)   = v_S(t+1) − β(t+1)·v_M(t+1)        ← 派生
+     d(t+1)   = d(t) + u(t)                       ← spec 写法
+```
 
 ## 7. 与其他目录的关系
 

@@ -259,7 +259,8 @@ def main():
         beta_seq=beta_seq,
         F_self_seq=F_self_seq,
         F_self_predictor=F_self_predictor,
-        d_init=d_init, u_init=u_init,
+        d_init=d_init,
+        # v3:u_init 删除(派生量,simulate_trajectory 在 t=0 自动派生 u[0] = v_S[0] - β[0]·v_M[0])
         k=args.k_restore, c=args.c_damp,
         q_t_seq=q_t_seq,
         classify_thresholds=(R_LOW, R_HIGH, theta_following_rad, theta_against_rad),

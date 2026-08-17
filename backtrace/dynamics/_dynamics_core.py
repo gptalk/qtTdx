@@ -40,50 +40,59 @@ from _projection_core import (
 # === 1 步预测(用户 prompt §19) ==============================================
 def predict_next_state(
     v_S_now: np.ndarray,        # (2,) 当前个股速度
-    a_M_now: np.ndarray,        # (2,) 当前大盘加速度
+    v_M_now: np.ndarray,        # (2,) 当前大盘速度
+    v_M_next: np.ndarray,       # (2,) 下一天大盘速度
     beta_now: float,            # 当前 β
+    beta_next: float,           # 下一天 β
     d_now: np.ndarray,          # (2,) 当前位置偏离
-    u_now: np.ndarray,          # (2,) 当前速度偏离
-    F_self_now: np.ndarray | None = None,  # (2,) 当前残差;None 时按 F_self = a_S - β·a_M 推
-    a_S_now: np.ndarray | None = None,     # (2,) 当前个股加速度(F_self=None 时必传)
+    F_self_now: np.ndarray | None = None,  # (2,) 当前残差;None = 0
     k: float = 0.0,
     c: float = 0.0,
     q_now: float = 1.0,         # 锚定强度 q_t;默认 1.0 = 无阻尼(向后兼容旧 caller)
 ) -> tuple:
-    """1 步预测下一个交易日的个股加速度 / 速度。
+    """1 步预测下一个交易日的完整状态(2026-08-17 v3 派生量统一版)。
 
-    模型(用户 prompt §14-19,**统一版**;与 simulate_trajectory 共享同一方程):
-        a_pred = q_now * β·a_M - k·d - c·u + F_self
-        v_pred = v_S + a_pred          (Δt = 1)
+    **内部派生**(消除 caller 重复造轮子,防飘移):
+        u_now    = v_S_now - beta_now * v_M_now         # 代数约束
+        a_M_now  = v_M_next - v_M_now                   # 前向差
 
-    旧版本仅返 (a_pred, v_pred, delta_S_pred) — 但 delta_S_pred ≡ v_pred(纯冗余),
-    现已删除第 3 个返回值。旧 caller 若解构 3 元组会报 too many values to unpack。
+    动力学方程(用户 prompt §14-19,**统一版**;与 simulate_trajectory 共享):
+        a_S      = q_now * beta_now * a_M_now - k * d_now - c * u_now + F_self_now
+        v_pred   = v_S_now + a_S                        (Δt = 1)
+        u_pred   = v_pred - beta_next * v_M_next        # 代数约束
+        d_pred   = d_now + u_now                        # spec 写法
+
+    v3 主要变化:
+        - 旧 `a_M_now` / `u_now` 参数删除(改为内部派生,防 caller 飘移)
+        - 旧 `a_S_now` 参数删除(残差由外部 F_self_now 直接给)
+        - 返回 4 元组 (a_pred, v_pred, d_pred, u_pred),前 2 个与 v2 兼容
+        - 旧 caller 解构 `a_pred, v_pred = predict_next_state(...)` 会成功
+          (前 2 元素与 v2 一致);但 keyword `a_M_now=...` / `u_now=...` 会 TypeError
 
     时间轴约定(全篇):见 simulate_trajectory 顶部 docstring。
 
     Args:
-        v_S_now:  当前 v_S(2-D 向量,ΔVol/ΔAmt 量纲)
-        a_M_now:  当前 a_M(2-D 向量,代表"从 step t 到 step t+1 的市场速度变化")
-        beta_now: 当前 β
+        v_S_now / v_M_now / v_M_next: 当前 + 下一天大盘速度(2-D 向量,ΔVol/ΔAmt 量纲)
+        beta_now / beta_next:         当前 + 下一天回归系数
         d_now:    当前 d(2-D 位置偏离累积)
-        u_now:    当前 u(2-D 速度偏离)
-        F_self_now: (可选)外部给定的残差;若 None 则由 a_S_now 推 F_self = a_S - q·β·a_M + k·d + c·u
-        a_S_now:   (F_self_now=None 时必传)当前 a_S
+        F_self_now: (可选)外部给定的残差;若 None 则按 0 处理
         k: 恢复系数
         c: 阻尼系数
         q_now: 锚定强度(与 simulate_trajectory 的 q_t_seq[t] 同语义);
                默认 1.0 表示无阻尼。description 层用 q = ‖ΔM‖/(‖ΔM‖+λ_q) ∈ [0,1]。
 
     Returns:
-        (a_pred, v_pred),都是 (2,) ndarray
+        (a_pred, v_pred, d_pred, u_pred),都是 (2,) ndarray
     """
+    u_now = v_S_now - beta_now * v_M_now       # 派生(代数约束)
+    a_M_now = v_M_next - v_M_now               # 派生(前向差)
     if F_self_now is None:
-        if a_S_now is None:
-            raise ValueError("F_self_now=None 时必须传 a_S_now 才能推残差")
-        F_self_now = a_S_now - q_now * beta_now * a_M_now + k * d_now + c * u_now
+        F_self_now = np.zeros(2)
     a_pred = q_now * beta_now * a_M_now - k * d_now - c * u_now + F_self_now
     v_pred = v_S_now + a_pred                  # Δt = 1
-    return a_pred, v_pred
+    u_pred = v_pred - beta_next * v_M_next     # 派生
+    d_pred = d_now + u_now                     # spec 写法:用 t 时刻的 u 累积
+    return a_pred, v_pred, d_pred, u_pred
 
 
 # === F_self 预测器(用户 prompt §14-19 中"残差外推"的扩展) ===================
@@ -311,7 +320,6 @@ def simulate_trajectory(
     v_M_seq: np.ndarray,            # (N+1, 2) t=0..N 大盘速度
     beta_seq: np.ndarray,           # (N+1,)   t=0..N 回归系数
     d_init: np.ndarray,             # (2,)   起点位置偏离
-    u_init: np.ndarray,             # (2,)   起点速度偏离
     k: float = 0.0,
     c: float = 0.0,
     q_t_seq: np.ndarray | None = None,   # (N,) 步长量;None 时默认 1
@@ -319,23 +327,29 @@ def simulate_trajectory(
     F_self_seq: np.ndarray | None = None,         # (N, 2) 残差序列;若 predictor=None 则必传
     F_self_predictor: 'callable | None' = None,   # 残差预测器: t -> (2,);优先级高于 F_self_seq
 ) -> dict:
-    """N 步前向模拟(2026-08-17 时间轴彻底重构版)。
+    """N 步前向模拟(2026-08-17 v3 派生量统一版 + 时间轴彻底重构)。
 
     时间轴约定(全篇,**N+1 个状态**):
         v_M_seq[t]   t=0..N 大盘速度(2-D 向量,ΔVol/ΔAmt 量纲)
         a_M_seq[t]   = v_M_seq[t+1] - v_M_seq[t],t=0..N-1(恰好 N 个市场加速度,**无 NaN**)
         v_S_seq[t]   t=0..N 个股速度;t=0 = v_S_init(末日观测);t=1..N 由递推产生
         a_S_seq[t]   = v_S_seq[t+1] - v_S_seq[t],t=0..N-1(末行 NaN:无 t=N 的 a_M)
-        u_seq[t]     = v_S_seq[t] - β_seq[t] * v_M_seq[t],t=0..N
+        u_seq[t]     = v_S_seq[t] - β_seq[t] * v_M_seq[t],t=0..N(派生)
         d_seq[t+1]   = d_seq[t] + u_seq[t],t=0..N-1(递推,与 spec 写法一致)
         F_self(t)    = F_self_seq[t] 或 F_self_predictor(t),t=0..N-1 步长量
+
+    **状态空间**(v3 明确):
+        X(t) = (d(t), v_S(t)) ∈ R⁴         ← 真状态
+        u(t) = v_S(t) - β(t)·v_M(t)        ← 代数约束(派生量,不递推)
+        β(t), v_M(t), q(t)                 ← 外部输入
+        F_self(t)                          ← 残差(可外部给定或预测)
 
     物理意义:
         大盘未来 N 天 → 个股未来 N 天,**每一天**都严格遵循:
             a_M(t) = v_M(t+1) - v_M(t)               # 市场变化(从 t 到 t+1)
             a(t)   = q(t)·β(t)·a_M(t) - k·d(t) - c·u(t) + F_self(t)
             v(t+1) = v(t) + a(t)
-            u(t+1) = v(t+1) - β(t+1)·v_M(t+1)
+            u(t+1) = v(t+1) - β(t+1)·v_M(t+1)        # 派生
             d(t+1) = d(t) + u(t)
         (β/q 是状态量,有 N+1 个;a_M/u/F_self/a 是步长量,有 N 个)
 
@@ -359,13 +373,17 @@ def simulate_trajectory(
         v_S_init: (2,) 起点速度(末日真实 v_S)
         v_M_seq:  (N+1, 2) t=0..N 大盘速度(N+1 个状态)
         beta_seq: (N+1,)   t=0..N 回归系数(状态量)
-        d_init / u_init: (2,) 起点状态(**自然定义** = d_full[-1] / u_full[-1],
-                       不需要再减 u_full[-1])
+        d_init: (2,) 起点位置偏离(**自然定义** = d_full[-1],无需 u 补偿)
         k / c: 力模型系数
         q_t_seq: (N,) 步长量,None 时默认全 1(无阻尼);与 description 层 λ_q 同语义
         classify_thresholds: 4 元组,与 classify_states 同
         F_self_seq: (N, 2) 残差序列。predictor=None 时必传;predictor≠None 时被忽略。
         F_self_predictor: callable(t, hist=None) -> (2,) 残差预测器。优先级最高。
+
+    v3 主要变化:
+        - 删除 `u_init` 参数(冗余 — u(t) 是代数约束,在 t=0 由 v_S_init/β[0]/v_M[0] 派生)
+        - caller 不再需要计算 `u_init`,simulate_trajectory 在 t=0 自动派生
+        - 旧 caller 传 `u_init=u_init` 会立即 TypeError;删掉该 kwarg 即可
 
     Returns:
         dict with keys(均为长度 N+1,index 0=起点):
@@ -407,7 +425,8 @@ def simulate_trajectory(
     # t=0 = 起点
     v_seq[0] = v_S_init
     d_seq[0] = d_init
-    u_seq[0] = u_init
+    # v3:u[0] 派生(代数约束),消除 caller 重复造轮子
+    u_seq[0] = v_seq[0] - beta_seq[0] * v_M_seq[0]
 
     # 大盘加速度 a_M(t) = v_M_seq[t+1] - v_M_seq[t],t=0..N-1,恰好 N 个,**无 NaN**
     a_M_seq = np.diff(v_M_seq, axis=0)   # (N, 2)

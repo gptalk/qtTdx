@@ -151,12 +151,14 @@ def predict_one(stock_code, days, prefer_industry, index_code,
         actual = delta_u[t + 1]
         if not np.isfinite(actual).all():
             continue
-        a_pred, v_pred = predict_next_state(
+        # v3:predict_next_state 内部派生 u_now / a_M_now(防飘移)
+        a_pred, v_pred, _d_pred, _u_pred = predict_next_state(
             v_S_now=delta_u[t],
-            a_M_now=a_v[t],
+            v_M_now=delta_v[t],
+            v_M_next=delta_v[t + 1],
             beta_now=beta[t],
+            beta_next=beta[t + 1],
             d_now=d_vec[t],
-            u_now=u_vec[t],
             F_self_now=F_self_pred,
             k=k, c=c,
             q_now=float(q_t_seq[t]),

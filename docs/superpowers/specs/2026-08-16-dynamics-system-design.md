@@ -52,66 +52,86 @@
 
 ## 3. 新 API 设计(`_dynamics_core.py`)
 
-### 3.1 `predict_next_state`
+### 3.1 `predict_next_state` (2026-08-17 v3 派生量统一版)
 
 ```python
 def predict_next_state(
-    v_S_now: np.ndarray,    # (2,) 当前个股速度
-    a_M_now: np.ndarray,    # (2,) 当前大盘加速度
-    beta_now: float,        # 当前 β
-    d_now: np.ndarray,      # (2,) 当前位置偏离
-    u_now: np.ndarray,      # (2,) 当前速度偏离
-    F_self_now: np.ndarray | None = None,  # (2,) 当前残差;None 时按 F_self = a_S - q·β·a_M + k·d + c·u 推
-    a_S_now: np.ndarray | None = None,     # (2,) 当前个股加速度(F_self_now=None 时必传)
-    k: float = 0.0,         # 恢复系数
-    c: float = 0.0,         # 阻尼系数
-    q_now: float = 1.0,     # 锚定强度 q_t;默认 1.0(无阻尼)
-) -> tuple[np.ndarray, np.ndarray]:
-    """a_pred = q_now · β · a_M - k · d - c · u + F_self
-       v_pred = v_S + a_pred
-       返回 (a_pred, v_pred),都是 (2,) ndarray。
+    v_S_now: np.ndarray,           # (2,) 当前个股速度
+    v_M_now: np.ndarray,           # (2,) 当前大盘速度
+    v_M_next: np.ndarray,          # (2,) 下一天大盘速度
+    beta_now: float,               # 当前 β
+    beta_next: float,              # 下一天 β
+    d_now: np.ndarray,             # (2,) 当前位置偏离
+    F_self_now: np.ndarray | None = None,  # (2,) 当前残差;None = 0
+    k: float = 0.0,                # 恢复系数
+    c: float = 0.0,                # 阻尼系数
+    q_now: float = 1.0,            # 锚定强度 q_t;默认 1.0(无阻尼)
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """1 步预测下一个交易日完整状态。
+
+    **内部派生**(消除 caller 重复造轮子,防飘移):
+        u_now    = v_S_now - beta_now * v_M_now       # 代数约束
+        a_M_now  = v_M_next - v_M_now                 # 前向差
+
+    动力学:
+        a_S     = q_now * beta_now * a_M_now - k * d_now - c * u_now + F_self_now
+        v_pred  = v_S_now + a_S
+        u_pred  = v_pred - beta_next * v_M_next       # 代数约束
+        d_pred  = d_now + u_now                       # spec 写法
+
+    Returns:
+        (a_pred, v_pred, d_pred, u_pred) — 全 (2,) ndarray
     """
 ```
 
-**注**:用当前观测的 a_S 算 F_self = a_S - q·β·a_M + k·d + c·u,这就是
-"残差项";然后预测下日 a。如果 k=c=0 且 F_self=None,F_self 完全吸收模型误差。
+**v3 主要变化**(2026-08-17):
+- **删除** `a_M_now` / `u_now` 参数 — 内部派生,消除 caller 飘移源
+- **删除** `a_S_now` 参数 — 残差由外部 F_self_now 直接给(默认 None = 0)
+- **返回 4 元组** (a_pred, v_pred, d_pred, u_pred),前 2 个与 v2 兼容
+- 旧 2 元组 caller `a, v = predict_next_state(...)` 仍兼容(前 2 元素不变)
 
-**2026-08-17 变化**:
+**v2 旧版**(2026-08-17):
 - 新增 `q_now` 参数(默认 1.0,向后兼容)
 - 删除返回值的第 3 个元素 `delta_S_pred`(冗余 ≡ v_pred);现返 2 元组
-- 旧 caller 若解构 3 元组会 `ValueError: too many values to unpack`
 - 与 `simulate_trajectory` 共享同一方程 `a = q·β·a_M - k·d - c·u + F_self`
 
-### 3.2 `simulate_trajectory`
+### 3.2 `simulate_trajectory` (2026-08-17 v3 派生量统一版)
 
 ```python
 def simulate_trajectory(
-    v_S_init: np.ndarray,           # (2,) 起点速度(取末日真实 v_S)
-    M_future: np.ndarray,           # (N+1, 2) t=0..N 大盘速度(2026-08-17 v2:N+1 个状态)
-    beta_future: np.ndarray,        # (N+1,)   t=0..N 回归系数(2026-08-17 v2:状态量)
+    v_S_init: np.ndarray,           # (2,) 起点速度(末日真实 v_S)
+    v_M_seq: np.ndarray,            # (N+1, 2) t=0..N 大盘速度(2026-08-17 v2:N+1 个状态)
+    beta_seq: np.ndarray,           # (N+1,)   t=0..N 回归系数(2026-08-17 v2:状态量)
     d_init: np.ndarray,             # (2,) 起点位置偏离
-    u_init: np.ndarray,             # (2,) 起点速度偏离
-    F_self_seq: np.ndarray,         # (N+1, 2) 残差序列(0..N);末日残差外推
+    # v3:删除 u_init 参数(派生量,在 t=0 由 v_S_init - β[0]·v_M[0] 派生)
     k: float = 0.0,
     c: float = 0.0,
     q_t_seq: np.ndarray | None = None,   # (N,) 锚定强度;None = 默认 1(无阻尼)
+    F_self_seq: np.ndarray | None = None,         # (N, 2) 残差序列
+    F_self_predictor: callable | None = None,     # 残差预测器
 ) -> dict:
-    """N 步前向模拟(Oracle/Forecast 模式;2026-08-17 v2 时间轴彻底重构)。
+    """N 步前向模拟(Oracle/Forecast 模式;2026-08-17 v3 + 时间轴彻底重构)。
+
+    状态空间:
+        真状态 X(t) = (d(t), v_S(t)) ∈ R⁴
+        派生量 u(t) = v_S(t) - β(t)·v_M(t)        ← 代数约束(不递推)
+        外部输入 v_M(t+1), β(t+1), q(t), F_self(t)
 
     时间轴约定(全篇):
       v_M(t)     第 t 步的大盘速度
       a_M(t)     = v_M(t+1) - v_M(t),代表"step t→t+1 发生的市场速度变化"(前向差)
       v_S(t)     个股速度
-      u(t)       = v_S(t) - β(t)·v_M(t)
+      u(t)       = v_S(t) - β(t)·v_M(t)           ← 派生
       d(t+1)     = d(t) + u(t)(递推:在 step t 内加 step t 的 u)
 
     链:
       for t in range(N):
         a_M(t) = v_M(t+1) - v_M(t)                 # 市场变化,前向差(N 个,无 NaN)
-        a_t = q_t · β_t · a_M(t) - k · d_t - c · u_t + F_self(t)
-        v_{t+1} = v_t + a_t
-        u_{t+1} = v_{t+1} - β_{t+1} · v_M(t+1)     # 速度偏离
-        d_{t+1} = d_t + u_t                         # 位置偏离累计(用 step t 的 u)
+        u(t)   = v_S(t) - β(t)·v_M(t)              # 派生
+        a_t    = q_t · β_t · a_M(t) - k · d_t - c · u_t + F_self(t)
+        v(t+1) = v(t) + a_t
+        u(t+1) = v(t+1) - β(t+1)·v_M(t+1)          # 派生
+        d(t+1) = d(t) + u(t)                       # 位置偏离累计(用 step t 的 u)
 
     能量分解(沿 v_M(t) 方向的真正 Gram-Schmidt 投影):
       v_proj(t) = (v_S(t) · v_M(t) / |v_M(t)|²) · v_M(t)
@@ -125,16 +145,18 @@ def simulate_trajectory(
     注:本 spec 模拟层用「沿 v_M(t) 方向的严格正交」与 description 层 `compute_dynamics` 的
     「v_proj = q·β·v_M」不同——后者是 β 回归投影(设计选择),前者是 Gram-Schmidt 正交。
 
-    d_init 取值约定(2026-08-17 v2):`d(0) = d_full[-1]`(自然初始条件),
-    `d(1) = d_full[-1] + u_full[-1]`(最直观物理定义,**无 u 补偿**)。
+    d_init 取值约定(2026-08-17 v2):`d(0) = d_full[-1]`(自然初始条件,无 u 补偿)。
     旧 v1 的 `d_init = d_full[-1] - u_full[-1]` 已被删除。
+
+    u[0] 取值约定(2026-08-17 v3):`u(0) = v_S_init - β(0)·v_M(0)`,派生自代数约束。
+    旧 caller 传的 `u_init=u_full[-1]` 已被删除(simulate_trajectory 在 t=0 自动派生)。
 
     Returns:
         dict with keys:
           v_seq:  ndarray (N+1, 2)  v_0=init, v_1..v_N 模拟
           a_seq:  ndarray (N, 2)    a_0..a_{N-1}
           d_seq:  ndarray (N+1, 2)  d_0=init, d_1..d_N 累计
-          u_seq:  ndarray (N+1, 2)  u_0=init, u_1..u_N
+          u_seq:  ndarray (N+1, 2)  u_0=派生, u_1..u_N
           E_total / E_market / E_self:  ndarray (N+1,)
           R:                        ndarray (N+1,)
           theta:                    ndarray (N+1,) 弧度

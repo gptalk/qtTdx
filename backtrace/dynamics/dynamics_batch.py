@@ -239,7 +239,8 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
             v_S_init=v_S_init, v_M_seq=v_M_seq, beta_seq=beta_seq,
             F_self_seq=F_self_seq_for_manifest,
             F_self_predictor=F_self_predictor,
-            d_init=d_init, u_init=u_init,
+            d_init=d_init,
+            # v3:u_init 删除(派生量,simulate_trajectory 在 t=0 自动派生 u[0])
             k=eff_k, c=eff_c, q_t_seq=q_t_seq,
             classify_thresholds=(r_low, r_high, theta_following_rad, theta_against_rad),
         )
