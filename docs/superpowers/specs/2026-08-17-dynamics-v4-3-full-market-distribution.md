@@ -10,10 +10,10 @@
 ## 1. 范围(Scope)
 
 **In scope**:
-1. 跑 `parameter_fit.py` 全 A 股 (~5000 只,~20-40 分钟),补齐 `data/projection/kc_estimates.csv`
+1. 跑 `parameter_fit.py` 全 A 股 (~5000 只,~20-40 分钟),补齐 `data/projection/kc_estimates.csv`(实际已跑出 5211 行,4972 ok)
 2. 改 `dynamics_eigen_analysis.py`:
-   - 多读 3 列 `industry_l1` / `industry_l2` / `exchange`(从 `data/stock_basic.csv` 反查)
-   - HTML 从 2×3 → **2×4**,新增 2 个聚合子图(行业 top10、交易所 SH vs SZ)
+   - 多读 3 列 `industry_l1` / `industry_l2` / `exchange`(分别从 `data/sw2/members.csv` 和 `data/stock_basic.csv` 反查)
+   - HTML 从 2×3 → **2×4**,新增 2 个聚合子图(申万二级行业 top10、交易所 SH / SZ / BJ)
    - 写出**纯文本汇总** `backtrace/outputs/dynsys_eigen_summary.txt`
 3. 加 3 个新单元测试(`tests/test_dynamics_eigen.py`)
 4. 更新 `backtrace/dynamics/README.md` 和 [`2026-08-16-dynamics-system-design.md`](2026-08-16-dynamics-system-design.md) §3.5
@@ -51,9 +51,14 @@
 
 | 来源 | 用途 | 备注 |
 |---|---|---|
-| `data/projection/kc_estimates.csv` | 单股 (k̂, ĉ) 主输入 | v4.3 之前只 4 只 smoke-test,本次跑全 A 股 |
-| `data/stock_basic.csv` | 反查 `industry_l1` / `industry_l2` / `exchange` | 已存在;运行时**判定缺失条件** = 该列存在但有效值(非空、非"-")数 < 5 → 触发 TQ 拉一次;否则不调 TQ |
-| `data/stocks.csv` | (可选)行业代码 → 行业名 映射 | projection_batch 已生成 |
+| `data/projection/kc_estimates.csv` | 单股 (k̂, ĉ) 主输入 | v4.3 之前只 4 只 smoke-test,本次跑全 A 股 (5211 行, 4972 ok) |
+| `data/stock_basic.csv` | 反查 `exchange` (SH / SZ / BJ) | 列: `code, market, name, status`;`market` 即交易所 |
+| `data/sw2/members.csv` | 反查 `industry_l1` / `industry_l2` (申万二级) | 5215 行;列: `sector_code, sector_name, member_code`。`sector_name` 作 `industry_l2`,`sector_code` 作 `industry_l1` |
+
+**重要修正(2026-08-17)**:
+- `stock_basic.csv` 不含行业列 — 行业来自 `data/sw2/members.csv`
+- 原 v4.3 spec 误以为 `stock_basic.csv` 含 3 列,实施时已纠正
+- 申万二级有 128 个行业,平均每行业 40 只 — `n >= 50` 可能不够 10 个,会触发降级到 `n >= 30`
 
 ### 3.2 输出(全部 gitignored)
 
