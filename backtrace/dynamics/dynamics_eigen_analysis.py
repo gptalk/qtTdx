@@ -606,6 +606,98 @@ def build_phase_plot_html(summary_df: pd.DataFrame, output_path: str) -> None:
         f.write(html)
 
 
+def compute_sector_stability_timeseries(
+    kc_long_df: pd.DataFrame,
+    industry_lookup: dict | None = None,
+    n_stocks_threshold: int = 50,
+) -> pd.DataFrame:
+    """按 (asof_date, industry_l1) 计算稳定性指数 SI 时序。
+
+    公式与 v4.7 compute_sector_stability 完全一致,只多了 asof_date 轴:
+      ρ_health      = clip(1 - ρ_med / 2,        0, 1)
+      damping_health = clip(1 - |c_med - 1| / 2,  0, 1)
+      wedge_health   = clip(in_wedge_pct,         0, 1)
+      SI = 0.5·ρ_health + 0.2·damping_health + 0.3·wedge_health
+
+    Args:
+        kc_long_df: 含 asof_date, code, k_hat, c_hat 列(Task 1 产出)
+        industry_lookup: 可选 code → industry_l1 反查表
+                         (默认无 → 每行都需自带 industry_l1 列)
+        n_stocks_threshold: 行业筛选阈值(沿用 v4.3,默认 50)
+
+    Returns:
+        11 列 DataFrame: asof_date, industry_l1, sector_name, n_stocks,
+                         rho_median, c_median, in_wedge_pct,
+                         rho_health, damping_health, wedge_health, SI
+        按 (asof_date ASC, SI DESC) 排序
+    """
+    if kc_long_df.empty:
+        return pd.DataFrame(columns=[
+            'asof_date', 'industry_l1', 'sector_name', 'n_stocks',
+            'rho_median', 'c_median', 'in_wedge_pct',
+            'rho_health', 'damping_health', 'wedge_health', 'SI',
+        ])
+    # 加 industry_l1(若没有)
+    df = kc_long_df.copy()
+    if 'industry_l1' not in df.columns:
+        if industry_lookup is None:
+            raise ValueError('kc_long_df missing industry_l1 and no lookup given')
+        df['industry_l1'] = df['code'].map(industry_lookup).fillna('')
+        df = df[df['industry_l1'] != '']
+    # 加 spectral_radius + in_wedge(单值 (k, c) → analyze_eigenvalues)
+    # 性能:5000 × 60 asof = 300k calls,每个 ~0.1ms → ~30s,可接受
+    spec_radii, in_wedges = [], []
+    for k, c in zip(df['k_hat'].values, df['c_hat'].values):
+        if not (np.isfinite(k) and np.isfinite(c)):
+            spec_radii.append(np.nan)
+            in_wedges.append(False)
+            continue
+        eig = analyze_eigenvalues(float(k), float(c))
+        spec_radii.append(eig['spectral_radius'])
+        in_wedges.append(eig['in_wedge'])
+    df['spectral_radius'] = spec_radii
+    df['in_wedge'] = in_wedges
+    # 聚合
+    rho_w, damp_w, wedge_w = SI_WEIGHTS
+    agg_kwargs = dict(
+        n_stocks=('code', 'count'),
+        rho_median=('spectral_radius', 'median'),
+        c_median=('c_hat', 'median'),
+        wedge_pct=('in_wedge', 'mean'),
+    )
+    # 若输入有 n_valid_days 列,聚合为 min(n_valid_days) 作 ramp-up filter 防御层
+    if 'n_valid_days' in df.columns:
+        agg_kwargs['n_valid_days_min'] = ('n_valid_days', 'min')
+    agg = df.groupby(['asof_date', 'industry_l1']).agg(**agg_kwargs).reset_index()
+    # 行业筛选(沿用 v4.3 / v4.7)
+    agg['rho_health'] = (1.0 - agg['rho_median'] / 2.0).clip(0.0, 1.0)
+    agg['damping_health'] = (1.0 - (agg['c_median'] - 1.0).abs() / 2.0).clip(0.0, 1.0)
+    agg['wedge_health'] = agg['wedge_pct'].clip(0.0, 1.0)
+    agg['SI'] = (
+        rho_w * agg['rho_health']
+        + damp_w * agg['damping_health']
+        + wedge_w * agg['wedge_health']
+    )
+    # 重命名 wedge_pct → in_wedge_pct(对齐 v4.7 compute_sector_stability + spec §3.3 schema)
+    agg = agg.rename(columns={'wedge_pct': 'in_wedge_pct'})
+    # sector_name(若给了 lookup)
+    if 'sector_name' not in agg.columns:
+        agg['sector_name'] = ''
+    # 排序 + 列顺序
+    agg = agg.sort_values(['asof_date', 'SI'], ascending=[True, False]).reset_index(drop=True)
+    # n_stocks 过滤:每 (asof_date, industry_l1) 都应用阈值;简化版本直接保留全部
+    # 与 v4.7 不同:时序版不过滤(避免 warmup 期空缺),上层汇总会标 low-confidence
+    cols = [
+        'asof_date', 'industry_l1', 'sector_name', 'n_stocks',
+        'rho_median', 'c_median', 'in_wedge_pct',
+        'rho_health', 'damping_health', 'wedge_health', 'SI',
+    ]
+    # 若带 n_valid_days_min(ramp-up filter 防御层所需),追加
+    if 'n_valid_days_min' in agg.columns:
+        cols.insert(4, 'n_valid_days_min')  # 放在 n_stocks 之后
+    return agg[cols]
+
+
 def main():
     args = parse_args()
     if not os.path.exists(args.input):

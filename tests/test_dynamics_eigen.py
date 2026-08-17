@@ -749,3 +749,131 @@ def test_rolling_time_basic_shape():
         pd.Timestamp('2024-03-31'), pd.Timestamp('2024-04-30'),
         pd.Timestamp('2024-05-31'), pd.Timestamp('2024-06-30'),
     ]
+
+
+# === v4.9: SI 时序 + 漂移检测 ===
+
+def test_si_timeseries_basic_shape():
+    """5 行业 × 100 日 → 500 行,SI ∈ [0,1]。"""
+    pytest.importorskip("backtrace.dynamics.dynamics_eigen_analysis")
+    from backtrace.dynamics.dynamics_eigen_analysis import compute_sector_stability_timeseries
+    # 构造 synthetic kc_long_df
+    rows = []
+    for ind in range(5):
+        for d in range(100):
+            rows.append({
+                'asof_date': pd.Timestamp('2024-01-01') + pd.DateOffset(days=d*7),
+                'code': f'{ind:06d}.SH',
+                'name': f'测试_{ind}',
+                'industry_l1': f'8010{ind:02d}',
+                'k_hat': 0.5, 'c_hat': 1.0,
+                'n_valid_days': 240, 'status': 'ok',
+            })
+    kc_long = pd.DataFrame(rows)
+    out = compute_sector_stability_timeseries(kc_long)
+    # 5 行业 × 100 日
+    assert len(out) == 5 * 100, f'expected 500 rows, got {len(out)}'
+    assert out['SI'].between(0, 1).all(), 'SI must be in [0, 1]'
+    assert set(out.columns) >= {'asof_date', 'industry_l1', 'SI', 'rho_median', 'c_median'}
+
+
+def test_si_timeseries_stable_industry():
+    """k̂, ĉ 恒定 → SI 几乎不变。"""
+    pytest.importorskip("backtrace.dynamics.dynamics_eigen_analysis")
+    from backtrace.dynamics.dynamics_eigen_analysis import compute_sector_stability_timeseries
+    rows = []
+    for d in range(120):  # 120 个 asof_dates
+        rows.append({
+            'asof_date': pd.Timestamp('2024-01-01') + pd.DateOffset(days=d*7),
+            'code': '000001.SH',
+            'name': '测试银行',
+            'industry_l1': '801010',
+            'k_hat': 0.5, 'c_hat': 1.0,  # 恒定
+            'n_valid_days': 240, 'status': 'ok',
+        })
+    kc_long = pd.DataFrame(rows)
+    out = compute_sector_stability_timeseries(kc_long)
+    # SI 应该几乎恒定(每行只有 1 只票 → SI 等于该票 SI)
+    si_values = out[out['industry_l1'] == '801010']['SI']
+    assert si_values.std() < 1e-6, f'SI should be constant, got std={si_values.std()}'
+
+
+def test_si_timeseries_drift_zscore():
+    """detect_si_drift z-score 计算正确。"""
+    pytest.importorskip("backtrace.dynamics.dynamics_si_timeseries")
+    from backtrace.dynamics.dynamics_si_timeseries import detect_si_drift
+    # 构造 SI 时序:0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.1 (t=7)
+    dates = pd.date_range('2024-01-01', periods=8, freq='7D')
+    si_ts = pd.DataFrame({
+        'asof_date': dates,
+        'industry_l1': '801010',
+        'sector_name': '银行',
+        'n_stocks': 42,
+        'rho_median': 0.85,
+        'c_median': 1.05,
+        'in_wedge_pct': 0.92,
+        'rho_health': 0.575,
+        'damping_health': 0.975,
+        'wedge_health': 0.92,
+        'SI': [0.85, 0.85, 0.85, 0.85, 0.85, 0.85, 0.85, 0.1],
+    })
+    drift = detect_si_drift(si_ts, window=3, z_threshold=-2.0)
+    # t=7 应该触发 drift event(0.1 比 0.85 低很多)
+    assert len(drift) >= 1, f'expected ≥ 1 drift, got {len(drift)}'
+    assert drift.iloc[0]['industry_l1'] == '801010'
+    # z_score 应该是负值且 < -2
+    assert drift.iloc[0]['z_score'] < -2.0
+
+
+def test_si_timeseries_sudden_drop():
+    """构造 SI(t=50) 从 0.8 → 0.2 → 触发 drift event。"""
+    pytest.importorskip("backtrace.dynamics.dynamics_si_timeseries")
+    from backtrace.dynamics.dynamics_si_timeseries import detect_si_drift
+    dates = pd.date_range('2024-01-01', periods=60, freq='7D')
+    si_values = [0.8] * 50 + [0.2] * 10
+    si_ts = pd.DataFrame({
+        'asof_date': dates,
+        'industry_l1': '801080',
+        'sector_name': '半导体',
+        'n_stocks': 38,
+        'rho_median': 0.85,
+        'c_median': 1.05,
+        'in_wedge_pct': 0.92,
+        'rho_health': 0.575,
+        'damping_health': 0.975,
+        'wedge_health': 0.92,
+        'SI': si_values,
+    })
+    drift = detect_si_drift(si_ts, window=3, z_threshold=-2.0)
+    # t=50 起应该触发 drift(0.2 比 0.8 低)
+    assert len(drift) >= 1, f'expected ≥ 1 drift, got {len(drift)}'
+    # 至少一个 drift 的 asof_date ≥ t=50
+    assert any(drift['asof_date'] >= dates[50])
+
+
+def test_si_timeseries_summary_text(tmp_path):
+    """write_si_timeseries_summary 包含 '漂移事件' + 中文行业名。"""
+    pytest.importorskip("backtrace.dynamics.dynamics_si_timeseries")
+    from backtrace.dynamics.dynamics_si_timeseries import write_si_timeseries_summary
+    si_ts = pd.DataFrame({
+        'asof_date': [pd.Timestamp('2024-01-01'), pd.Timestamp('2024-02-01')],
+        'industry_l1': ['801010', '801010'],
+        'sector_name': ['银行', '银行'],
+        'n_stocks': [42, 42],
+        'rho_median': [0.85, 0.85],
+        'c_median': [1.05, 1.05],
+        'in_wedge_pct': [0.92, 0.92],
+        'rho_health': [0.575, 0.575],
+        'damping_health': [0.975, 0.975],
+        'wedge_health': [0.92, 0.92],
+        'SI': [0.85, 0.85],
+    })
+    drift = pd.DataFrame(columns=[
+        'asof_date', 'industry_l1', 'sector_name',
+        'SI', 'rolling_mean', 'rolling_std', 'z_score',
+    ])
+    out = tmp_path / 'summary.txt'
+    write_si_timeseries_summary(si_ts, drift, str(out))
+    content = out.read_text(encoding='utf-8')
+    assert '漂移事件' in content
+    assert '银行' in content
