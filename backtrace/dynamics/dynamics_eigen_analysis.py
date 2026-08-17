@@ -157,6 +157,50 @@ def load_industry_lookup(path: str = 'data/sw2/members.csv') -> pd.DataFrame:
     return df
 
 
+def aggregate_by_industry(
+    df: pd.DataFrame, min_stocks: int = 50, fallback_min: int = 30,
+) -> tuple[pd.DataFrame, int]:
+    """按 industry_l1 聚合 ρ 中位数。
+
+    Returns:
+        agg_df: top 10(降序),列: industry_l1, n_stocks, rho_median, rho_p25, rho_p75,
+               k_hat_median, c_hat_median, schur_stable_pct, in_wedge_pct, dist_wedge_median
+        threshold_used: 实际生效的 n_stocks 阈值(50 或 30;若都 <5 则返回 fallback_min)
+    """
+    for thr in (min_stocks, fallback_min):
+        agg = df.groupby('industry_l1').agg(
+            n_stocks=('code', 'count'),
+            rho_median=('spectral_radius', 'median'),
+            rho_p25=('spectral_radius', lambda s: s.quantile(0.25)),
+            rho_p75=('spectral_radius', lambda s: s.quantile(0.75)),
+            k_hat_median=('k_hat', 'median'),
+            c_hat_median=('c_hat', 'median'),
+            schur_stable_pct=('schur_stable', 'mean'),
+            in_wedge_pct=('in_wedge', 'mean'),
+            dist_wedge_median=('distance_to_wedge', 'median'),
+        ).reset_index()
+        agg = agg[agg['n_stocks'] >= thr].sort_values('rho_median', ascending=False).head(10)
+        if len(agg) >= 5:
+            return agg, thr
+    return agg, fallback_min   # 都凑不够 5,返回最后尝试的结果
+
+
+def aggregate_by_exchange(df: pd.DataFrame) -> pd.DataFrame:
+    """按 exchange 聚合(SH / SZ / BJ),列同行业聚合(无 n_stocks >= 50 阈值)。"""
+    agg = df.groupby('exchange').agg(
+        n_stocks=('code', 'count'),
+        rho_median=('spectral_radius', 'median'),
+        rho_p25=('spectral_radius', lambda s: s.quantile(0.25)),
+        rho_p75=('spectral_radius', lambda s: s.quantile(0.75)),
+        k_hat_median=('k_hat', 'median'),
+        c_hat_median=('c_hat', 'median'),
+        schur_stable_pct=('schur_stable', 'mean'),
+        in_wedge_pct=('in_wedge', 'mean'),
+        dist_wedge_median=('distance_to_wedge', 'median'),
+    ).reset_index().sort_values('rho_median')
+    return agg
+
+
 def main():
     args = parse_args()
     if not os.path.exists(args.input):
@@ -240,18 +284,20 @@ def main():
 
     # ---------- 3. 画 HTML(plotly) ----------
     fig = make_subplots(
-        rows=2, cols=3,
+        rows=2, cols=4,
         subplot_titles=(
             '(k̂, ĉ) 散点 + 楔形(颜色=分类)',
             'ρ 分布直方图',
             '11 类分类分布',
+            '行业 ρ 中位数 top10',                       # ← 新
             '(k̂, ĉ) 散点(颜色=楔形距离)',
             '楔形距离分布',
             'ρ vs 楔形距离',
+            '交易所 ρ 中位数(SH vs SZ)',                  # ← 新
         ),
-        specs=[[{'type': 'scatter'}, {'type': 'histogram'}, {'type': 'bar'}],
-               [{'type': 'scatter'}, {'type': 'histogram'}, {'type': 'scatter'}]],
-        horizontal_spacing=0.08,
+        specs=[[{'type': 'scatter'}, {'type': 'histogram'}, {'type': 'bar'},    {'type': 'bar'}],
+               [{'type': 'scatter'}, {'type': 'histogram'}, {'type': 'scatter'}, {'type': 'bar'}]],
+        horizontal_spacing=0.06,                          # ← 0.08 改 0.06(4 列更挤)
         vertical_spacing=0.18,
     )
 
@@ -345,6 +391,39 @@ def main():
     fig.update_xaxes(title_text='分类', row=1, col=3, tickangle=-30)
     fig.update_yaxes(title_text='数量', row=1, col=3)
 
+    # (1,4) 行业 ρ 中位数 top10(误差棒 p25-p75)
+    agg_l1, l1_threshold = aggregate_by_industry(summary_df)
+    if len(agg_l1) >= 5:
+        fig.add_trace(
+            go.Bar(
+                x=agg_l1['industry_l1'],
+                y=agg_l1['rho_median'],
+                error_y=dict(
+                    type='data',
+                    symmetric=False,
+                    array=agg_l1['rho_p75'] - agg_l1['rho_median'],
+                    arrayminus=agg_l1['rho_median'] - agg_l1['rho_p25'],
+                    color='black',
+                    thickness=1.5,
+                    width=4,
+                ),
+                marker_color='steelblue',
+                name=f'行业 top10 (n≥{l1_threshold})',
+                text=[f"n={n}<br>ρ={r:.2f}" for n, r in zip(agg_l1['n_stocks'], agg_l1['rho_median'])],
+                hovertemplate='<b>%{x}</b><br>ρ 中位数: %{y:.3f}<br>%{text}<extra></extra>',
+                showlegend=False,
+            ),
+            row=1, col=4,
+        )
+    else:
+        fig.add_annotation(
+            text=f'行业不足(n<{l1_threshold},仅 {len(agg_l1)} 个)',
+            xref='x4 domain', yref='y4 domain', x=0.5, y=0.5,
+            showarrow=False, font=dict(size=12, color='gray'),
+        )
+    fig.update_xaxes(title_text=f'行业 (n≥{l1_threshold})', row=1, col=4, tickangle=-30)
+    fig.update_yaxes(title_text='ρ 中位数', row=1, col=4)
+
     # (2,1) — (k̂, ĉ) 散点按楔形距离上色(连续 colormap)
     fig.add_trace(
         go.Scatter(
@@ -419,12 +498,40 @@ def main():
     fig.update_xaxes(title_text='distance_to_wedge', row=2, col=3)
     fig.update_yaxes(title_text='ρ(A)', row=2, col=3)
 
+    # (2,4) 交易所 ρ 中位数 SH vs SZ vs BJ
+    agg_ex = aggregate_by_exchange(summary_df)
+    ex_colors = {'SH': '#1f77b4', 'SZ': '#ff7f0e', 'BJ': '#2ca02c'}
+    fig.add_trace(
+        go.Bar(
+            x=agg_ex['exchange'],
+            y=agg_ex['rho_median'],
+            error_y=dict(
+                type='data',
+                symmetric=False,
+                array=agg_ex['rho_p75'] - agg_ex['rho_median'],
+                arrayminus=agg_ex['rho_median'] - agg_ex['rho_p25'],
+                color='black',
+                thickness=1.5,
+                width=8,
+            ),
+            marker_color=[ex_colors.get(e, '#888888') for e in agg_ex['exchange']],
+            name='交易所 ρ 中位数',
+            text=[f"n={n}<br>ρ={r:.2f}" for n, r in zip(agg_ex['n_stocks'], agg_ex['rho_median'])],
+            hovertemplate='<b>%{x}</b><br>ρ 中位数: %{y:.3f}<br>%{text}<extra></extra>',
+            showlegend=False,
+        ),
+        row=2, col=4,
+    )
+    fig.update_xaxes(title_text='交易所', row=2, col=4)
+    fig.update_yaxes(title_text='ρ 中位数', row=2, col=4)
+
     fig.update_layout(
-        height=950, width=1500,
-        title_text=f'动力系统特征值分析 v4.1 ({total} 只,Schur 稳定 {schur_n}/{total},楔形内 {wedge_n}/{total})',
+        height=1000,        # ← 950 改 1000
+        width=1800,         # ← 1500 改 1800
+        title_text=f'动力系统特征值分析 v4.3 ({total} 只,Schur 稳定 {schur_n}/{total},楔形内 {wedge_n}/{total})',  # ← v4.1 改 v4.3
         template='plotly_white',
         showlegend=True,
-        legend=dict(orientation='v', yanchor='top', y=1.0, xanchor='left', x=1.30),
+        legend=dict(orientation='v', yanchor='top', y=1.0, xanchor='left', x=1.32),  # ← 1.30 改 1.32(4 列 legend 位置)
     )
     os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
     fig.write_html(args.output)
