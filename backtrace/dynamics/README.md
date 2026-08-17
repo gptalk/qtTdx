@@ -675,3 +675,21 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_eigen_analysis.py
 **测试**: `tests/test_dynamics_eigen.py` 加 3 个测试,总 **26 passed**(23 旧 + 3 新)。
 
 **v4.4 (2026-08-17)**: (1,4) bar chart x-axis 也升级到 `电力(881459.SH)` 格式(文本汇总原已支持),通过抽出 `_industry_name_lookup` helper 复用 lookup。
+
+### 3.6 v4.5 phase plot (2026-08-17)
+
+新增独立 HTML `dynsys_eigen_phase.html`,画 (k̂, ĉ) 散点 + 11 类离散着色 + 楔形稳定区边界 overlay(浅绿背景 + 3 段虚线)。
+启用:`--phase-plot` 标志(默认 off,不影响 v4.3 2x4 行为)。
+
+11 类分类:`CLASS_COLORS` 字典定义(11 种颜色 + 11 中文标签)。
+楔形 boundary 由 `wedge_boundary_polygon(k_max, n)` helper 提供。
+
+用法:
+```bash
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_eigen_analysis.py --limit 50 --phase-plot
+# 产出 backtrace/outputs/dynsys_eigen_phase.html
+```
+
+输出示例(实证发现,N=4972):
+- 大多数票落在 `monotonic_divergent` (橙) + `anti_restoring` (棕) + `stable_overdamped` (蓝) 三大区域
+- `jordan_drift` / `marginal_const` 在 N=4972 样本中 0 只 → 该 trace 跳过(代码已处理)

@@ -452,3 +452,62 @@ def test_industry_name_lookup(tmp_path):
     bad = tmp_path / 'bad.csv'
     bad.write_text('foo,bar\n1,2\n', encoding='utf-8')
     assert _industry_name_lookup(str(bad)) == {}
+
+
+# === v4.5:楔形边界 helper ===
+
+def test_wedge_boundary_polygon():
+    """楔形边界 3 段:左 c=0 / 底 c=0 / 上 c=2√(k+1)"""
+    from dynamics.dynamics_eigen_analysis import wedge_boundary_polygon
+
+    boundary = wedge_boundary_polygon(k_max=4.0, n=50)
+
+    # 上边界:起点 (k=0, c=2),终点 (k=4, c=2√5 ≈ 4.47)
+    assert boundary['upper_curve'][0] == (0.0, 2.0)
+    assert abs(boundary['upper_curve'][-1][0] - 4.0) < 1e-9
+    assert abs(boundary['upper_curve'][-1][1] - 2.0 * np.sqrt(5.0)) < 1e-9
+
+    # k 轴:起点 (0, 0),终点 (4, 0)
+    assert boundary['k_axis'][0] == (0.0, 0.0)
+    assert boundary['k_axis'][-1] == (4.0, 0.0)
+
+    # c 轴:起点 (0, 0),终点 (0, 2)
+    assert boundary['c_axis'][0] == (0.0, 0.0)
+    assert boundary['c_axis'][-1] == (0.0, 2.0)
+
+    # 长度: n 个点(由 n=50 参数)
+    assert len(boundary['k_axis']) == 50
+    assert len(boundary['c_axis']) == 50
+    assert len(boundary['upper_curve']) == 50
+
+    # k_max 字段
+    assert boundary['k_max'] == 4.0
+
+
+# === v4.5:phase plot HTML smoke ===
+
+def test_phase_plot_html_smoke(tmp_path):
+    """build_phase_plot_html 写文件成功 + HTML 包含 11 类 marker。"""
+    from dynamics.dynamics_eigen_analysis import CLASS_COLORS, CLASS_LABEL_CN, build_phase_plot_html
+
+    # mock 11 类样本,每类 5 只票
+    rng = np.random.default_rng(42)
+    rows = []
+    for cls in CLASS_COLORS:
+        for _ in range(5):
+            rows.append({
+                'code': f'{rng.integers(0, 999999):06d}.SH',
+                'k_hat': rng.uniform(0, 4),
+                'c_hat': rng.uniform(0, 4),
+                'classification': cls,
+            })
+    df = pd.DataFrame(rows)
+    out = tmp_path / 'phase.html'
+    build_phase_plot_html(df, str(out))
+
+    assert out.exists()
+    content = out.read_text(encoding='utf-8')
+    assert 'scatter' in content.lower()  # plotly HTML
+    # 11 类名称都出现在 HTML 里(CLASS_LABEL_CN 中文标签)
+    for cn in CLASS_LABEL_CN.values():
+        assert cn in content

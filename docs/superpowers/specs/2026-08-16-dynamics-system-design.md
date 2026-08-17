@@ -367,6 +367,12 @@ sim['energy_error']           # ndarray ~ 1e-15(数值健康检查)
 文本汇总 v4.3 已支持,v4.4 通过 `_industry_name_lookup(sw2_path)` 私有 helper 复用,消除两份输出的视觉不一致。
 1 新测试 + 2 文件改动,数学层 / 3 caller 零修改。
 
+### 3.8 v4.5 phase plot (2026-08-17)— (k,c) 11 类颜色叠加
+
+新增独立 HTML `dynsys_eigen_phase.html`,画 (k̂, ĉ) 散点 + 11 类离散着色 + 楔形稳定区边界 overlay。
+启用: `--phase-plot` 标志(默认 off)。
+2 新测试 (`test_wedge_boundary_polygon` + `test_phase_plot_html_smoke`) + 1 文件改动,数学层 / 3 caller 零修改。
+
 ### 3.4 重新导出的便利
 
 ```python

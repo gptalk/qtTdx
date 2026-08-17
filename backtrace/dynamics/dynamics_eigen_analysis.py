@@ -84,6 +84,7 @@ def parse_args():
                    help='stock_basic CSV 路径(反查 exchange);默认 data/stock_basic.csv')
     p.add_argument('--sw2-members', default='data/sw2/members.csv',
                    help='sw2/members CSV 路径(反查 industry_l1/l2);默认 data/sw2/members.csv')
+    p.add_argument('--phase-plot', action='store_true', help='画 (k,c) 11 类 phase plot 到独立 HTML(默认 off)')
     return p.parse_args()
 
 
@@ -299,6 +300,98 @@ def write_text_summary(
     with open(path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
     print(f'[eigen] ✓ text summary: {path}')
+
+
+def wedge_boundary_polygon(k_max: float = 4.0, n: int = 100) -> dict:
+    """楔形稳定区边界 3 段折线。
+
+    Schur 稳定区定义: c² ≤ 4(k+1) AND c ≥ 0 AND k ≥ 0
+    边界曲线:
+      - k 轴: c = 0, k ∈ [0, k_max]
+      - c 轴: k = 0, c ∈ [0, 2]
+      - 上抛物线: c = 2√(k+1), k ∈ [0, k_max]
+
+    Returns:
+        dict with keys: 'k_axis', 'c_axis', 'upper_curve', 'k_max'
+        每段都是 list[(k, c)] 长度 n。
+    """
+    k_axis = [(k, 0.0) for k in np.linspace(0, k_max, n)]
+    c_axis = [(0.0, c) for c in np.linspace(0, 2.0, n)]
+    upper_curve = [(k, 2.0 * np.sqrt(k + 1.0)) for k in np.linspace(0, k_max, n)]
+    return {'k_axis': k_axis, 'c_axis': c_axis, 'upper_curve': upper_curve, 'k_max': k_max}
+
+
+def build_phase_plot_html(summary_df: pd.DataFrame, output_path: str) -> None:
+    """画 (k̂, ĉ) 散点 + 11 类颜色 + 楔形稳定区边界 overlay。
+
+    独立 HTML,不动 v4.3 2x4 输出。被 main() 通过 --phase-plot flag 调用。
+    """
+    import json as _json
+
+    fig = go.Figure()
+
+    # 楔形稳定区填充(浅绿背景)
+    k_max = summary_df['k_hat'].quantile(0.99)
+    boundary = wedge_boundary_polygon(k_max=k_max)
+    fill_k = [k for k, c in boundary['upper_curve']] + [k for k, c in boundary['k_axis']][::-1]
+    fill_c = [c for k, c in boundary['upper_curve']] + [c for k, c in boundary['k_axis']][::-1]
+    fig.add_trace(go.Scatter(
+        x=fill_k, y=fill_c, fill='toself', fillcolor='rgba(44, 160, 44, 0.08)',
+        line=dict(color='rgba(0,0,0,0)'), name='楔形稳定区', showlegend=True, hoverinfo='skip',
+    ))
+
+    # 楔形边界 3 段虚线
+    for label, pts in [('c=0', boundary['k_axis']),
+                        ('k=0', boundary['c_axis']),
+                        ('c=2√(k+1)', boundary['upper_curve'])]:
+        fig.add_trace(go.Scatter(
+            x=[k for k, c in pts], y=[c for k, c in pts],
+            mode='lines', line=dict(color='black', width=1.5, dash='dash'),
+            name=label, showlegend=False, hoverinfo='skip',
+        ))
+
+    # 11 类散点(每类 1 trace,图例 1 entry)
+    for cls in CLASS_COLORS:
+        sub = summary_df[summary_df['classification'] == cls]
+        if len(sub) == 0:
+            continue
+        fig.add_trace(go.Scatter(
+            x=sub['k_hat'], y=sub['c_hat'],
+            mode='markers',
+            marker=dict(color=CLASS_COLORS[cls], size=6, opacity=0.7, line=dict(width=0)),
+            name=f'{CLASS_LABEL_CN[cls]} ({len(sub)})',
+            hovertemplate=f'<b>{cls}</b><br>k̂=%{{x:.4f}}<br>ĉ=%{{y:.4f}}<extra></extra>',
+            showlegend=True,
+        ))
+
+    fig.update_layout(
+        title='全市场 (k̂, ĉ) 11 类稳定性分类 phase plot',
+        xaxis_title='k̂ (回复力强度)',
+        yaxis_title='ĉ (阻尼系数)',
+        width=1100, height=750,
+        legend=dict(title='11 类分类', x=1.02, y=1, bgcolor='rgba(255,255,255,0.9)'),
+        template='plotly_white',
+    )
+
+    # plotly 默认 to_html 会把中文转 \uXXXX,这里手动拼 HTML 保留原始字符
+    fig_dict = fig.to_dict()
+    data_json = _json.dumps(fig_dict.get('data', []), ensure_ascii=False)
+    layout_json = _json.dumps(fig_dict.get('layout', {}), ensure_ascii=False)
+    config_json = _json.dumps({'responsive': True}, ensure_ascii=False)
+    html = (
+        '<!DOCTYPE html>\n<html><head><meta charset="utf-8" />\n'
+        '<script type="text/javascript">window.PlotlyConfig = {MathJaxConfig: \'local\'};</script>\n'
+        '<script charset="utf-8" src="https://cdn.plot.ly/plotly-3.1.0.min.js"></script>\n'
+        '</head><body>\n'
+        '<div id="phase-plot-div" class="plotly-graph-div" style="height:750px; width:1100px;"></div>\n'
+        '<script type="text/javascript">\n'
+        'window.PLOTLYENV = window.PLOTLYENV || {};\n'
+        'if (document.getElementById("phase-plot-div")) {\n'
+        f'    Plotly.newPlot("phase-plot-div", {data_json}, {layout_json}, {config_json});\n'
+        '};\n</script>\n</body></html>'
+    )
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(html)
 
 
 def main():
@@ -656,6 +749,12 @@ def main():
         summary_df, cls_count, agg_l1, l1_threshold, agg_ex, DEFAULT_TXT_OUTPUT,
         sw2_members_path=args.sw2_members, name_lookup=name_lookup,
     )
+
+    # ---------- 5. (可选) (k,c) phase plot ----------
+    if args.phase_plot:
+        phase_path = args.output.replace('dynsys_eigen.html', 'dynsys_eigen_phase.html')
+        build_phase_plot_html(summary_df, phase_path)
+        print(f'[eigen] ✓ phase plot: {phase_path}')
 
 
 if __name__ == '__main__':
