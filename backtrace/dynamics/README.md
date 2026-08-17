@@ -673,3 +673,5 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_eigen_analysis.py
 - 任何 IC / basket / 交易信号(明确不做)
 
 **测试**: `tests/test_dynamics_eigen.py` 加 3 个测试,总 **26 passed**(23 旧 + 3 新)。
+
+**v4.4 (2026-08-17)**: (1,4) bar chart x-axis 也升级到 `电力(881459.SH)` 格式(文本汇总原已支持),通过抽出 `_industry_name_lookup` helper 复用 lookup。

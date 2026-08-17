@@ -426,3 +426,29 @@ def test_html_2x4_layout_and_text_summary(tmp_path, monkeypatch):
     assert '--- 交易所 ---' in txt_content
     assert (tmp_path / 'v43_eigen_top_industries.csv').exists()
     assert (tmp_path / 'v43_eigen_by_exchange.csv').exists()
+
+
+# === v4.4:行业 name lookup helper ===
+
+def test_industry_name_lookup(tmp_path):
+    """_industry_name_lookup 3 个 case: 正常 / 缺文件 / 缺关键列。"""
+    from dynamics.dynamics_eigen_analysis import _industry_name_lookup
+
+    # 1. 正常:写 mock sw2/members.csv,验证返回 dict
+    sw2 = tmp_path / 'sw2.csv'
+    sw2.write_text(
+        'sector_code,sector_name,member_code\n'
+        '881459.SH,电力,600000.SH\n'
+        '881001.SH,银行,600001.SH\n',
+        encoding='utf-8',
+    )
+    result = _industry_name_lookup(str(sw2))
+    assert result == {'881459.SH': '电力', '881001.SH': '银行'}
+
+    # 2. 缺文件:返回空 dict
+    assert _industry_name_lookup(str(tmp_path / 'nope.csv')) == {}
+
+    # 3. 缺关键列:返回空 dict
+    bad = tmp_path / 'bad.csv'
+    bad.write_text('foo,bar\n1,2\n', encoding='utf-8')
+    assert _industry_name_lookup(str(bad)) == {}

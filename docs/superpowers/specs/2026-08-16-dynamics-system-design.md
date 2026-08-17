@@ -361,6 +361,12 @@ sim['energy_error']           # ndarray ~ 1e-15(数值健康检查)
 - 行业映射全部来自 `data/sw2/members.csv`,不是 stock_basic
 - 原 v4.3 spec 误以为 stock_basic 含 3 列,实施时已纠正(见 [`2026-08-17-dynamics-v4-3-full-market-distribution.md`](2026-08-17-dynamics-v4-3-full-market-distribution.md) §3.1)
 
+### 3.7 v4.4 bar chart label 增强(2026-08-17)— 复用 v4.3 lookup
+
+(1,4) bar chart x-axis 由 `industry_l1` (sector_code `881459.SH`) 升级到 `industry_label` (`电力(881459.SH)`)。
+文本汇总 v4.3 已支持,v4.4 通过 `_industry_name_lookup(sw2_path)` 私有 helper 复用,消除两份输出的视觉不一致。
+1 新测试 + 2 文件改动,数学层 / 3 caller 零修改。
+
 ### 3.4 重新导出的便利
 
 ```python

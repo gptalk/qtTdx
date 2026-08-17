@@ -203,6 +203,21 @@ def aggregate_by_exchange(df: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
+def _industry_name_lookup(sw2_members_path: str = 'data/sw2/members.csv') -> dict:
+    """sector_code → sector_name 反查表。
+
+    文件不存在 / 缺关键列 → 返回空 dict(让 caller 走 fallback)。
+    """
+    if not os.path.exists(sw2_members_path):
+        print(f'[eigen] ⚠ sw2_members 不存在: {sw2_members_path},行业 label 走 fallback')
+        return {}
+    df = pd.read_csv(sw2_members_path, dtype={'sector_code': str})
+    if 'sector_code' not in df.columns or 'sector_name' not in df.columns:
+        print(f'[eigen] ⚠ sw2_members 缺关键列: {sw2_members_path}')
+        return {}
+    return df.drop_duplicates('sector_code').set_index('sector_code')['sector_name'].to_dict()
+
+
 def write_text_summary(
     summary_df: pd.DataFrame,
     cls_count: Counter,
@@ -211,12 +226,14 @@ def write_text_summary(
     agg_ex: pd.DataFrame,
     path: str,
     sw2_members_path: str = 'data/sw2/members.csv',
+    name_lookup: dict | None = None,
 ) -> None:
     """写 dynsys_eigen_summary.txt 纯文本汇总(UTF-8)。
 
     行业 label 增强:agg_l1.groupby key 是 industry_l1(sector_code),
     这里再读 sw2/members.csv 把 sector_name 拼过来,显示更可读。
-    sw2_members_path 由 caller 经 --sw2-members 传入,默认即仓库内 data/sw2/members.csv。
+    sw2_members_path 默认即仓库内 data/sw2/members.csv。
+    name_lookup 若 caller 已构造好(测试隔离 / main() 复用)则用之,否则 fallback 到 helper。
     """
     import datetime as _dt
     N = len(summary_df)
@@ -230,15 +247,9 @@ def write_text_summary(
     timestamp = _dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     # 行业 label 增强:industry_l1(sector_code) → industry_l2(sector_name)
-    sb = pd.DataFrame()
-    try:
-        sb = pd.read_csv(sw2_members_path, dtype={'sector_code': str})
-        if 'sector_code' in sb.columns and 'sector_name' in sb.columns:
-            name_lookup = sb.drop_duplicates('sector_code').set_index('sector_code')['sector_name'].to_dict()
-        else:
-            name_lookup = {}
-    except FileNotFoundError:
-        name_lookup = {}
+    # 优先用 caller 传入的 lookup(避免重复读 csv),否则 fallback 到 helper
+    if name_lookup is None:
+        name_lookup = _industry_name_lookup(sw2_members_path)
     agg_l1_label = agg_l1.copy()
     agg_l1_label['industry_label'] = agg_l1_label['industry_l1'].map(
         lambda c: f'{name_lookup.get(c, c)}({c})' if c else '(未知)'
@@ -482,10 +493,16 @@ def main():
 
     # (1,4) 行业 ρ 中位数 top10(误差棒 p25-p75)
     agg_l1, l1_threshold = aggregate_by_industry(summary_df)
+    # 行业 label 增强(sector_code → sector_name),(1,4) bar chart + 文本汇总共用
+    name_lookup = _industry_name_lookup(args.sw2_members)
+    agg_l1_label = agg_l1.copy()
+    agg_l1_label['industry_label'] = agg_l1_label['industry_l1'].map(
+        lambda c: f'{name_lookup.get(c, c)}({c})' if c else '(未知)'
+    )
     if len(agg_l1) >= 5:
         fig.add_trace(
             go.Bar(
-                x=agg_l1['industry_l1'],
+                x=agg_l1_label['industry_label'],
                 y=agg_l1['rho_median'],
                 error_y=dict(
                     type='data',
@@ -637,7 +654,7 @@ def main():
     # 文本汇总(便于 grep / CI)
     write_text_summary(
         summary_df, cls_count, agg_l1, l1_threshold, agg_ex, DEFAULT_TXT_OUTPUT,
-        sw2_members_path=args.sw2_members,
+        sw2_members_path=args.sw2_members, name_lookup=name_lookup,
     )
 
 
