@@ -539,3 +539,109 @@ def test_aggregate_by_industry_no_data():
     agg, threshold = EA.aggregate_by_industry(df_one)
     assert len(agg) == 1  # 1 个行业
     assert threshold > 0  # 有数据(虽然只 1 个行业),threshold >= 30 (fallback_min)
+
+
+# === v4.7:行业稳定性指数 SI (Sector Stability Index) ===
+
+def test_sector_si_basic_shape():
+    """SI = 0.5·ρ_health + 0.2·damping_health + 0.3·wedge_health,锁定权重
+
+    1 行业 100 只全稳定(ρ=0.5, c=1.0, in_wedge=True) → SI = 0.875
+    """
+    rng = np.random.default_rng(41)
+    rows = []
+    for i in range(100):
+        rows.append({
+            'code': f'X{i:03d}', 'industry_l1': '881999.SH',
+            'spectral_radius': 0.5, 'c_hat': 1.0, 'in_wedge': True,
+            'k_hat': 0.1, 'schur_stable': True, 'distance_to_wedge': 0.3,
+        })
+    df = pd.DataFrame(rows)
+    si = EA.compute_sector_stability(df)
+    assert len(si) == 1
+    # ρ_health = clip(1 - 0.5/2, 0, 1) = 0.75
+    # damping_health = clip(1 - |1-1|/2, 0, 1) = 1.0
+    # wedge_health = clip(1.0, 0, 1) = 1.0
+    # SI = 0.5*0.75 + 0.2*1.0 + 0.3*1.0 = 0.875
+    assert np.isclose(si['SI'].iloc[0], 0.875, atol=1e-9)
+
+
+def test_sector_si_anti_restoring():
+    """anti_restoring 类(ρ=3.0, c=1.5, in_wedge=False) → SI = 0.15"""
+    rows = []
+    for i in range(100):
+        rows.append({
+            'code': f'X{i:03d}', 'industry_l1': '881888.SH',
+            'spectral_radius': 3.0, 'c_hat': 1.5, 'in_wedge': False,
+            'k_hat': -0.05, 'schur_stable': False, 'distance_to_wedge': -0.5,
+        })
+    df = pd.DataFrame(rows)
+    si = EA.compute_sector_stability(df)
+    assert len(si) == 1
+    # ρ_health = clip(1 - 3/2, 0, 1) = 0
+    # damping_health = clip(1 - 0.5/2, 0, 1) = 0.75
+    # wedge_health = 0
+    # SI = 0.5*0 + 0.2*0.75 + 0.3*0 = 0.15
+    assert np.isclose(si['SI'].iloc[0], 0.15, atol=1e-9)
+
+
+def test_sector_si_clamps_extreme():
+    """极端 ρ=10, c=10 → ρ_health=0, damping_health=0,wedge 也 0 → SI=0"""
+    rows = []
+    for i in range(50):
+        rows.append({
+            'code': f'X{i:03d}', 'industry_l1': '881777.SH',
+            'spectral_radius': 10.0, 'c_hat': 10.0, 'in_wedge': False,
+            'k_hat': -1.0, 'schur_stable': False, 'distance_to_wedge': -2.0,
+        })
+    df = pd.DataFrame(rows)
+    si = EA.compute_sector_stability(df)
+    assert len(si) == 1
+    assert si['rho_health'].iloc[0] == 0.0
+    assert si['damping_health'].iloc[0] == 0.0
+    assert si['SI'].iloc[0] == 0.0
+
+
+def test_sector_si_perfect():
+    """完美: ρ=0, c=1, in_wedge_pct=1 → SI = 1.0"""
+    rows = []
+    for i in range(50):
+        rows.append({
+            'code': f'X{i:03d}', 'industry_l1': '881666.SH',
+            'spectral_radius': 0.0, 'c_hat': 1.0, 'in_wedge': True,
+            'k_hat': 0.0, 'schur_stable': True, 'distance_to_wedge': 1.0,
+        })
+    df = pd.DataFrame(rows)
+    si = EA.compute_sector_stability(df)
+    assert len(si) == 1
+    assert np.isclose(si['SI'].iloc[0], 1.0, atol=1e-9)
+
+
+def test_sector_si_summary_text(tmp_path):
+    """write_sector_si_summary 包含 "Top 12 强" + 至少 1 个中文行业名"""
+    # 构造 3 个行业,确保前 12 名至少有 1 个中文
+    rng = np.random.default_rng(42)
+    rows = []
+    industries = [
+        ('881111.SH', '银行', 0.5, 1.0, 1.0),
+        ('881222.SH', '半导体', 3.0, 1.5, 0.0),
+        ('881333.SH', '公用事业', 0.7, 1.0, 0.8),
+    ]
+    name_lookup = {code: name for code, name, _, _, _ in industries}
+    for code, _, rho, c, wedge in industries:
+        for i in range(60):
+            rows.append({
+                'code': f'{code}{i:03d}', 'industry_l1': code,
+                'spectral_radius': rho, 'c_hat': c, 'in_wedge': wedge > 0.5,
+                'k_hat': 0.1, 'schur_stable': rho < 1.0,
+                'distance_to_wedge': 0.2 if wedge > 0.5 else -0.2,
+            })
+    df = pd.DataFrame(rows)
+    df_si = EA.compute_sector_stability(df, name_lookup=name_lookup)
+    out_path = tmp_path / 'si_summary.txt'
+    EA.write_sector_si_summary(df_si, str(out_path))
+    content = out_path.read_text(encoding='utf-8')
+    assert 'Top 12 强' in content
+    assert 'Top 12 弱' in content
+    assert '银行' in content
+    assert '半导体' in content

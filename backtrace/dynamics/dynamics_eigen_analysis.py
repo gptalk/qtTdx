@@ -23,6 +23,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 import os
 import argparse
 from collections import Counter
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -70,6 +71,9 @@ CLASS_LABEL_CN = {
     'marginal_const':           '边界常数模',
     'jordan_drift':             'Jordan 漂移',
 }
+
+# 行业稳定性指数 SI 权重(ρ / damping / wedge;总和 = 1.0)
+SI_WEIGHTS = (0.5, 0.2, 0.3)
 
 
 def parse_args():
@@ -205,6 +209,211 @@ def aggregate_by_exchange(df: pd.DataFrame) -> pd.DataFrame:
         dist_wedge_median=('distance_to_wedge', 'median'),
     ).reset_index().sort_values('rho_median', ascending=False)
     return agg
+
+
+def compute_sector_stability(
+    df: pd.DataFrame, name_lookup: dict | None = None,
+) -> pd.DataFrame:
+    """按申万二级行业计算稳定性指数 SI ∈ [0, 1]。
+
+    3 个 0-1 子分(线性映射,clip 到 [0,1]):
+      ρ_health      = clip(1 - ρ_med / 2,        0, 1)        # ρ=0 → 1, ρ≥2 → 0
+      damping_health = clip(1 - |c_med - 1| / 2,  0, 1)        # c=1 → 1, |c-1|≥2 → 0
+      wedge_health   = clip(in_wedge_pct,         0, 1)        # 100% 在楔形 → 1
+
+    固定权重(在 SI_WEIGHTS):
+      SI = 0.5·ρ_health + 0.2·damping_health + 0.3·wedge_health
+
+    Args:
+        df: 含 industry_l1, spectral_radius, c_hat, in_wedge 列(v4.3 eigen_summary schema)
+        name_lookup: 可选 sector_code → sector_name 反查表(默认无 → sector_name 留空)
+
+    Returns:
+        9 列 DataFrame: industry_l1, sector_name, n_stocks, rho_health, damping_health,
+                       wedge_health, SI, rho_median, c_median
+        按 SI 降序
+    """
+    if df.empty:
+        return pd.DataFrame(columns=[
+            'industry_l1', 'sector_name', 'n_stocks', 'rho_health',
+            'damping_health', 'wedge_health', 'SI', 'rho_median', 'c_median',
+        ])
+    rho_w, damp_w, wedge_w = SI_WEIGHTS
+    agg = df.groupby('industry_l1').agg(
+        n_stocks=('code', 'count'),
+        rho_median=('spectral_radius', 'median'),
+        c_median=('c_hat', 'median'),
+        wedge_pct=('in_wedge', 'mean'),
+    ).reset_index()
+    # §3.3 行业筛选阈值(沿用 v4.3): ≥50 强, ≥30 弱;两者都 < 5 行业时上层标 "no data"
+    strong = agg[agg['n_stocks'] >= 50]
+    weak = agg[(agg['n_stocks'] >= 30) & (agg['n_stocks'] < 50)]
+    if len(strong) >= 5:
+        agg = strong
+    elif len(strong) + len(weak) >= 5:
+        agg = pd.concat([strong, weak], ignore_index=True)
+    # else: 保留全部,上层汇总会标 low-confidence
+    # 3 个 0-1 子分
+    agg['rho_health'] = (1.0 - agg['rho_median'] / 2.0).clip(0.0, 1.0)
+    agg['damping_health'] = (1.0 - (agg['c_median'] - 1.0).abs() / 2.0).clip(0.0, 1.0)
+    agg['wedge_health'] = agg['wedge_pct'].clip(0.0, 1.0)
+    agg['SI'] = (
+        rho_w * agg['rho_health']
+        + damp_w * agg['damping_health']
+        + wedge_w * agg['wedge_health']
+    )
+    # sector_name 反查(可选)
+    if name_lookup:
+        agg['sector_name'] = agg['industry_l1'].map(name_lookup).fillna('')
+    else:
+        agg['sector_name'] = ''
+    # 排序 + 列顺序
+    agg = agg.sort_values('SI', ascending=False).reset_index(drop=True)
+    return agg[[
+        'industry_l1', 'sector_name', 'n_stocks', 'rho_health',
+        'damping_health', 'wedge_health', 'SI', 'rho_median', 'c_median',
+    ]]
+
+
+def write_sector_si_summary(df_si: pd.DataFrame, output_path: str) -> None:
+    """写 UTF-8 文本汇总(top 12 强 / 弱 行业 + SI 直方图分布)。
+
+    Args:
+        df_si: `compute_sector_stability` 输出
+        output_path: 文本文件路径
+    """
+    lines = []
+    lines.append(f'行业稳定性指数 SI(N={len(df_si)} 各行业)')
+    lines.append('=' * 70)
+    if df_si.empty:
+        lines.append('(无数据)')
+        Path(output_path).write_text('\n'.join(lines) + '\n', encoding='utf-8')
+        return
+    # Top 12 强
+    lines.append('')
+    lines.append('Top 12 强 SI:')
+    lines.append('-' * 70)
+    top_strong = df_si.head(12)
+    for _, row in top_strong.iterrows():
+        name = row['sector_name'] or row['industry_l1']
+        lines.append(
+            f"  {name:<14s} SI={row['SI']:.3f}  "
+            f"ρ_med={row['rho_median']:.3f}  "
+            f"c_med={row['c_median']:.3f}  "
+            f"wedge={row['wedge_health']:.2f}  "
+            f"n={row['n_stocks']}"
+        )
+    # Top 12 弱
+    lines.append('')
+    lines.append('Top 12 弱 SI:')
+    lines.append('-' * 70)
+    top_weak = df_si.tail(12).iloc[::-1]  # 升序反转成从弱到最弱
+    for _, row in top_weak.iterrows():
+        name = row['sector_name'] or row['industry_l1']
+        lines.append(
+            f"  {name:<14s} SI={row['SI']:.3f}  "
+            f"ρ_med={row['rho_median']:.3f}  "
+            f"c_med={row['c_median']:.3f}  "
+            f"wedge={row['wedge_health']:.2f}  "
+            f"n={row['n_stocks']}"
+        )
+    # 直方图分布
+    lines.append('')
+    lines.append('SI 直方图分布:')
+    lines.append('-' * 70)
+    bins = [(0, 0.2), (0.2, 0.4), (0.4, 0.6), (0.6, 0.8), (0.8, 1.01)]
+    for lo, hi in bins:
+        count = ((df_si['SI'] >= lo) & (df_si['SI'] < hi)).sum()
+        lines.append(f'  [{lo:.1f}, {hi:.1f}): {count:>3d} 行业')
+    content = '\n'.join(lines) + '\n'
+    Path(output_path).write_text(content, encoding='utf-8')
+
+
+def build_sector_si_html(df_si: pd.DataFrame, output_path: str) -> None:
+    """画 4 子图 plotly HTML:(1,1) SI 分布直方图 (1,2) SI vs ρ_med 散点
+    (2,1) Top 12 强 SI 行业 (2,2) Top 12 弱 SI 行业。
+
+    Args:
+        df_si: `compute_sector_stability` 输出
+        output_path: HTML 输出路径
+    """
+    from plotly.subplots import make_subplots
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=(
+            'SI 分布直方图', 'SI vs ρ_med(气泡 = n_stocks)',
+            'Top 12 强 SI 行业', 'Top 12 弱 SI 行业',
+        ),
+        specs=[
+            [{'type': 'xy'}, {'type': 'xy'}],
+            [{'type': 'xy'}, {'type': 'xy'}],
+        ],
+        horizontal_spacing=0.12, vertical_spacing=0.18,
+    )
+    if df_si.empty:
+        fig.add_annotation(text='无数据', xref='paper', yref='paper', x=0.5, y=0.5, showarrow=False)
+        fig.write_html(output_path, include_plotlyjs='cdn')
+        return
+    # (1, 1) SI 分布直方图
+    fig.add_trace(
+        go.Histogram(x=df_si['SI'], nbinsx=20, name='SI', marker_color='#1f77b4'),
+        row=1, col=1,
+    )
+    fig.add_vline(x=0.5, line_dash='dash', line_color='red', row=1, col=1)
+    # (1, 2) SI vs ρ_med 散点
+    fig.add_trace(
+        go.Scatter(
+            x=df_si['rho_median'], y=df_si['SI'],
+            mode='markers',
+            marker=dict(
+                size=df_si['n_stocks'].clip(lower=5, upper=50),
+                color=df_si['SI'], colorscale='RdYlGn', showscale=True,
+                colorbar=dict(title='SI', x=0.46, len=0.5, y=0.78),
+            ),
+            text=df_si['sector_name'],
+            hovertemplate='%{text}<br>ρ_med=%{x:.3f}<br>SI=%{y:.3f}<br>n=%{marker.size}<extra></extra>',
+            name='行业',
+        ),
+        row=1, col=2,
+    )
+    # (2, 1) Top 12 强 SI 行业
+    top_strong = df_si.head(12).iloc[::-1]  # 反转让最强在最上
+    fig.add_trace(
+        go.Bar(
+            x=top_strong['SI'], y=top_strong['sector_name'],
+            orientation='h',
+            marker=dict(color=top_strong['SI'], colorscale='Greens', cmin=0, cmax=1),
+            text=[f"SI={s:.2f}" for s in top_strong['SI']],
+            textposition='outside',
+            name='强 SI',
+        ),
+        row=2, col=1,
+    )
+    # (2, 2) Top 12 弱 SI 行业
+    top_weak = df_si.tail(12)
+    fig.add_trace(
+        go.Bar(
+            x=top_weak['SI'], y=top_weak['sector_name'],
+            orientation='h',
+            marker=dict(color=top_weak['SI'], colorscale='Reds', cmin=0, cmax=1),
+            text=[f"SI={s:.2f}" for s in top_weak['SI']],
+            textposition='outside',
+            name='弱 SI',
+        ),
+        row=2, col=2,
+    )
+    fig.update_layout(
+        height=900, width=1400,
+        title_text='行业稳定性指数 SI(v4.7)',
+        showlegend=False,
+    )
+    fig.update_xaxes(title_text='SI', row=1, col=1)
+    fig.update_xaxes(title_text='ρ_med', row=1, col=2)
+    fig.update_yaxes(title_text='频数', row=1, col=1)
+    fig.update_yaxes(title_text='SI', row=1, col=2)
+    fig.update_xaxes(title_text='SI', row=2, col=1)
+    fig.update_xaxes(title_text='SI', row=2, col=2)
+    fig.write_html(output_path, include_plotlyjs='cdn')
 
 
 def _industry_name_lookup(sw2_members_path: str = 'data/sw2/members.csv') -> dict:
@@ -752,6 +961,22 @@ def main():
         summary_df, cls_count, agg_l1, l1_threshold, agg_ex, DEFAULT_TXT_OUTPUT,
         sw2_members_path=args.sw2_members, name_lookup=name_lookup,
     )
+
+    # ---------- 4.5 v4.7 行业稳定性指数 SI ----------
+    from pathlib import Path
+    print(f'[eigen] 计算行业稳定性指数 SI ...')
+    si_name_lookup = _industry_name_lookup(args.sw2_members)
+    df_si = compute_sector_stability(summary_df, name_lookup=si_name_lookup)
+    si_csv = os.path.join(CSV_OUT_DIR, 'sector_si.csv')
+    df_si.to_csv(si_csv, index=False, encoding='utf-8-sig')
+    print(f'[eigen] SI CSV: {si_csv}({len(df_si)} 行业)')
+    out_path = Path(args.output)
+    si_html = str(out_path.with_name(out_path.stem + '_sector_si' + out_path.suffix))
+    si_txt = str(out_path.with_name(out_path.stem + '_sector_si_summary.txt'))
+    build_sector_si_html(df_si, si_html)
+    print(f'[eigen] SI HTML: {si_html}')
+    write_sector_si_summary(df_si, si_txt)
+    print(f'[eigen] SI TXT : {si_txt}')
 
     # ---------- 5. (可选) (k,c) phase plot ----------
     if args.phase_plot:

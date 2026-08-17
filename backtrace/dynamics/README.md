@@ -693,3 +693,14 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_eigen_analysis.py --li
 输出示例(实证发现,N=4972):
 - 大多数票落在 `monotonic_divergent` (橙) + `anti_restoring` (棕) + `stable_overdamped` (蓝) 三大区域
 - `jordan_drift` / `marginal_const` 在 N=4972 样本中 0 只 → 该 trace 跳过(代码已处理)
+
+### 3.7 v4.7 — 行业稳定性指数 SI (Sector Stability Index)
+
+`dynamics_eigen_analysis.py` 默认运行后追加产出:
+- `data/dynamics/sector_si.csv` (9 列)
+- `backtrace/outputs/dynsys_sector_si.html` (4 子图 plotly)
+- `backtrace/outputs/dynsys_sector_si_summary.txt` (UTF-8 中文 top 12 强/弱)
+
+SI 定义: `SI = 0.5·ρ_health + 0.2·damping_health + 0.3·wedge_health`,权重集中在 `SI_WEIGHTS = (0.5, 0.2, 0.3)`(`dynamics_eigen_analysis.py` 顶部常量)。
+
+行业筛选(沿用 v4.3): `n_stocks >= 50` 强 / `n_stocks >= 30` 弱;两者都 < 5 行业时上层标 `low-confidence`。
