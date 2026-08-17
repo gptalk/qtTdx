@@ -730,3 +730,46 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_si_ic.py --window 30 -
 - 行业 member 数 < 3 的跳过该行业
 - v4.7 `sector_si.csv` 是单值(整期恒定),本 IC 反映"行业长期稳不稳 vs 该日 forward 收益"的相关性
 - 若 IC ≈ 0(类似 v3 README §3.4 state_prop 现象),SI 是描述性而非预测性指标
+
+### 3.9 v4.9 — SI 时序 + 漂移检测 (Sector Stability Timeseries + Drift)
+
+v4.7 SI 单值答"哪些行业最稳",v4.8 IC ≈ 0 答"稳定对未来收益无预测力"。v4.9 把 SI 扩展到时序:
+行业稳定性是否随时间漂移?漂移能否预警风险?
+
+**数据流**:
+1. `parameter_fit.py --rolling-time` (新增) — 每月末用最近 240 天 OLS 估 (k̂, ĉ)
+   产出 `data/projection/kc_estimates_time.csv` (long format)
+2. `compute_sector_stability_timeseries` (eigen_analysis 末尾追加) — 复用 v4.7 SI 公式,
+   按 (asof_date, industry_l1) 聚合
+3. `detect_si_drift` — rolling 60 日 z-score < -2 → drift event
+
+**输出** (全 gitignored):
+- `data/dynamics/sector_si_timeseries.csv` — 11 列 long format
+- `data/dynamics/si_drift_events.csv` — drift event list
+- `backtrace/outputs/dynsys_si_timeseries.html` — 4 子图 plotly
+- `backtrace/outputs/dynsys_si_timeseries_summary.txt` — UTF-8 中文汇总
+
+**漂移检测**: rolling window = 3 asof_dates (≈ 60 交易日 ≈ 3 个月)。
+对每个行业 SI(t):
+  rolling_mean = mean(SI over [t-60d, t))
+  rolling_std = std(SI over [t-60d, t))
+  z_score = (SI(t) - rolling_mean) / rolling_std
+  drift event: z_score < -2.0
+
+**CLI**:
+```bash
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_si_timeseries.py
+# 默认: window=3, z_threshold=-2.0, ramp-up-min-n-valid=192
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_si_timeseries.py --window 6 --z-threshold -1.5
+# 调参
+```
+
+**已知陷阱**:
+- 月末 asof_date 列表依赖 daily data 完整性,数据 < 60 天则该 asof_date 跳过
+- 行业 member 数 < 10 → SI 噪声大,n_stocks_threshold=50 沿用 v4.7
+- drift event 是经验性信号,不是预测性 — v4.10 lagged IC 验证
+- **ramp-up filter (reviewer finding #2)**: Task 1 `--rolling-time` 早期 asof_date 用 expanding
+  window(非固定 240),(k̂, ĉ) 估计单调漂移易被误判为行业 SI 漂移。`--ramp-up-min-n-valid 192`
+  (= 240 × 0.8) 会在 `main()` 入口剔除 `n_valid_days < 192` 的行,使其从 SI 时序消失,
+  漂移检测不会被 ramp-up artifact 污染。`detect_si_drift` 还内置 0.01 noise floor + 二次防御层
+  (若 si_ts 含 `n_valid_days_min` 列,跳过低于阈值的历史点)
