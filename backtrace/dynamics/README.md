@@ -172,13 +172,14 @@ a_pred, v_pred = predict_next_state(
 # 3. N 步模拟(Oracle 模式:已知未来大盘)
 N = 5
 v_S_init = mv['stock_move'][-1]
-v_M_seq = mv['index_move'][-N:]              # (N, 2)
-beta_seq = mv['proj_coeff'][-N:]             # (N,)
-F_self_seq = np.tile(np.array([0.0, 0.0]), (N, 1))  # 假设无残差(或用末日 a_S 推)
+# v_M_seq / β_seq 用 N+1 个状态(v_M_seq[t+1]-v_M_seq[t] 产生 N 个 a_M,无 NaN)
+v_M_seq = mv['index_move'][-(N + 1):]        # (N+1, 2)
+beta_seq = mv['proj_coeff'][-(N + 1):]       # (N+1,)
+F_self_seq = np.tile(np.array([0.0, 0.0]), (N, 1))  # 残差序列是步长量 (N, 2)
 sim = simulate_trajectory(
     v_S_init=v_S_init,
     v_M_seq=v_M_seq, beta_seq=beta_seq, F_self_seq=F_self_seq,
-    d_init=d_full[-1] - u_full[-1],  # NEW(2026-08-17):d[t+1]=d[t]+u[t] 递推,前推一格
+    d_init=d_full[-1],                  # NEW(2026-08-17 v2):d[t+1]=d[t]+u[t],自然初值
     u_init=u_full[-1],
     k=0.0, c=0.0,
 )
@@ -189,20 +190,20 @@ from dynamics import (
     forecast_v_M_random_walk, forecast_beta_rolling_mean,
     forecast_q_t_constant, make_rolling_mean_f_self_predictor,
 )
-# v_M 用随机游走(噪声 std 估自历史 diff)
+# v_M 用随机游走(噪声 std 估自历史 diff);返 (N+1, 2)
 v_M_last = mv['index_move'][-1]
 diff_std = float(np.nanstd(np.diff(mv['index_move'], axis=0), axis=0).mean())
 v_M_seq = forecast_v_M_random_walk(v_M_last, N, sigma_per_step=diff_std, random_state=42)
-# β 用末日滚动均值
+# β 用末日滚动均值;返 (N+1,)
 beta_seq = forecast_beta_rolling_mean(mv['proj_coeff'], N, window=10)
-# q_t 用末日观测(没有未来 ‖ΔM‖,沿用)
+# q_t 用末日观测(没有未来 ‖ΔM‖,沿用);q_t 是步长量,返 (N,)
 q_t_seq = forecast_q_t_constant(float(dyn['q_t'][-1]), N)
 # F_self 用滚动均值预测器(避免末日瞬时值过拟合)
 F_self_pred = make_rolling_mean_f_self_predictor(F_self_full, window=10)
 sim = simulate_trajectory(
     v_S_init=v_S_init, v_M_seq=v_M_seq, beta_seq=beta_seq,
     F_self_predictor=F_self_pred,
-    d_init=d_full[-1] - u_full[-1],  # NEW(2026-08-17):前推一格
+    d_init=d_full[-1],                  # NEW(2026-08-17 v2):自然初值
     u_init=u_full[-1],
     k=0.0, c=0.0, q_t_seq=q_t_seq,
 )
@@ -230,7 +231,9 @@ sim = simulate_trajectory(
 | `state=none` 频繁 | 前 2 步斜率不够;或 θ NaN(末行) | 设 `--horizon ≥ 3` |
 | 批量速度慢(单只 ≈ 0.3s) | `compute_movement_projection` 在描述层 + 模拟层各跑一次 | 后续可缓存 mv dict |
 | **predict_next_state 现在返 2 元组不是 3** | delta_S_pred 已被删除(冗余 ≡ v_pred) | 旧 caller 改成 `a, v = predict_next_state(...)` |
-| **d_init 必须 = `d_full[-1] - u_full[-1]`** | `simulate_trajectory` 改用 `d[t+1]=d[t]+u[t]`,要使 d_seq[1] 与 description 层 d_full[-1] 一致需前推一格 | 已自动在 batch/system 脚本里改好;手动调用时注意 |
+| **d_init 必须 = `d_full[-1]`(2026-08-17 v2)** | `simulate_trajectory` 改用 N+1 个 v_M/β 状态,让所有 N 个 a_M 都有效;d 递推用 spec 的 `d[t+1]=d[t]+u[t]`,d_init 取自然初始值 `d_full[-1]` | 已自动在 batch/system 脚本里改好 |
+| **v_M_seq / beta_seq 长度 N+1(2026-08-17 v2)** | 大盘未来 N 天 → 个股未来 N 天,需要 N 个 a_M;v_M/β 是状态量,故长度 N+1 | caller 切片用 `[-(N+1):]`;旧 (N,) 切片会报错 |
+| **sim['state'] 末项从 'none' 变真状态(2026-08-17 v2)** | t=N 现在有有效 v_S/v_M,R/theta/E 全有限,状态分类覆盖末行 | state 分布计数会偏移(7 状态而非 7+none);manifest 已用 `[:horizon]` 切片不受影响 |
 
 ## 6.5 时间轴重构(2026-08-17)
 
@@ -244,8 +247,22 @@ sim = simulate_trajectory(
 6. `F_restore[0]` 的 `hasattr(k * d_init, '__len__')` 死分支 → 改用 `np.linalg.norm(k * d_init)`
 7. `forecast_v_M_random_walk` docstring 噪声索引不准 → 改 `noise[t-1]`
 
-CSV schema / sim dict keys / manifest 字段全部向后兼容;旧 batch CSV 列数与列名不变。
-**数值会偏移**(d_init 改、真正交改)— 旧 simulation_*.csv 与新结果不会逐行相等。
+## 6.6 时间轴彻底重构(2026-08-17 v2)
+
+为消除"`simulate_trajectory` 主循环最末步无 a_M"的隐藏状态污染:
+
+**问题**:上一版(6.5)`v_M_seq.shape == (N, 2)`,`a_M_seq[t] = v_M_seq[t+1] - v_M_seq[t]` 只产生 N-1 个有效加速度;末步 `a_M_seq[N-1] = NaN`,代码特判"末步 a_pred = -k·d - c·u + F_self",**第 N 步完全没有市场驱动力 `q·β·a_M`**。名义上 N 步模拟,实际只有 N-1 步真正遵循动力方程。
+
+**修复**(4 处):
+
+1. `v_M_seq` shape `(N, 2)` → `(N+1, 2)`(t=0..N 共 N+1 个状态)
+2. `beta_seq` shape `(N,)` → `(N+1,)`(β 是状态量,需覆盖 t=0..N)
+3. `forecast_*` helper 全部按 `n_steps+1` 个状态生成(`forecast_q_t_constant` 除外 — q_t 是步长量)
+4. `d_init = d_full[-1]`(自然初值,无 `u` 补偿)— 因为 `d(1) = d(0) + u(0) = d_full[-1] + u_full[-1]`,这是最直观的物理定义
+
+**主循环不再有 NaN 跳步**:每天都严格遵循同一方程 `a(t) = q(t)·β(t)·a_M(t) - k·d(t) - c·u(t) + F_self(t)`。
+
+**CSV schema 不变**(19 列);但 `sim['state']` 末项从 `'none'` 变成真状态,`sim['v_M_seq_used']` 从 (N, 2) 变成 (N+1, 2)(末行不再是 NaN pad)。**数值再次偏移**(API 破坏性变更)— 旧 simulation_*.csv 与新结果不会逐行相等。
 
 `compute_dynamics` / `compute_forces`(description 层)保留原 `v_proj = q·β·v_M` 投影不动 —
 那个 β 是回归斜率,语义独立,与 simulate 层的"严格正交"是两件事。

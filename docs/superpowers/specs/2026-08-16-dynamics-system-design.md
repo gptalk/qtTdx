@@ -87,8 +87,8 @@ def predict_next_state(
 ```python
 def simulate_trajectory(
     v_S_init: np.ndarray,           # (2,) 起点速度(取末日真实 v_S)
-    M_future: np.ndarray,           # (N, 2) 未来 N 天大盘速度输入
-    beta_future: np.ndarray,        # (N,) 未来 N 天 β
+    M_future: np.ndarray,           # (N+1, 2) t=0..N 大盘速度(2026-08-17 v2:N+1 个状态)
+    beta_future: np.ndarray,        # (N+1,)   t=0..N 回归系数(2026-08-17 v2:状态量)
     d_init: np.ndarray,             # (2,) 起点位置偏离
     u_init: np.ndarray,             # (2,) 起点速度偏离
     F_self_seq: np.ndarray,         # (N+1, 2) 残差序列(0..N);末日残差外推
@@ -96,7 +96,7 @@ def simulate_trajectory(
     c: float = 0.0,
     q_t_seq: np.ndarray | None = None,   # (N,) 锚定强度;None = 默认 1(无阻尼)
 ) -> dict:
-    """N 步前向模拟(Oracle 模式:未来大盘已知)。
+    """N 步前向模拟(Oracle/Forecast 模式;2026-08-17 v2 时间轴彻底重构)。
 
     时间轴约定(全篇):
       v_M(t)     第 t 步的大盘速度
@@ -107,7 +107,7 @@ def simulate_trajectory(
 
     链:
       for t in range(N):
-        a_M(t) = v_M(t+1) - v_M(t)                 # 市场变化,前向差(末步 NaN)
+        a_M(t) = v_M(t+1) - v_M(t)                 # 市场变化,前向差(N 个,无 NaN)
         a_t = q_t · β_t · a_M(t) - k · d_t - c · u_t + F_self(t)
         v_{t+1} = v_t + a_t
         u_{t+1} = v_{t+1} - β_{t+1} · v_M(t+1)     # 速度偏离
@@ -125,8 +125,9 @@ def simulate_trajectory(
     注:本 spec 模拟层用「沿 v_M(t) 方向的严格正交」与 description 层 `compute_dynamics` 的
     「v_proj = q·β·v_M」不同——后者是 β 回归投影(设计选择),前者是 Gram-Schmidt 正交。
 
-    d_init 取值约定:要使 d_seq[1] 与 description 层 d_full[-1] 一致,
-    需 d_init = d_full[-1] - u_full[-1](「前推一格」消去累积 u)。
+    d_init 取值约定(2026-08-17 v2):`d(0) = d_full[-1]`(自然初始条件),
+    `d(1) = d_full[-1] + u_full[-1]`(最直观物理定义,**无 u 补偿**)。
+    旧 v1 的 `d_init = d_full[-1] - u_full[-1]` 已被删除。
 
     Returns:
         dict with keys:

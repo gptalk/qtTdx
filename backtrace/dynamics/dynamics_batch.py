@@ -178,16 +178,17 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
 
         # 4. 模拟
         v_S_init = mv['stock_move'][-1]
-        beta_seq = mv['proj_coeff'][-horizon:]
-        v_M_seq = mv['index_move'][-horizon:]
+        # NEW(2026-08-17 时间轴重构 v2):v_M_seq / β_seq 改用 N+1 个状态量,
+        # 让所有 N 个 a_M(t) = v_M(t+1) - v_M(t) 都有效(无 NaN 跳步)。
+        beta_seq = mv['proj_coeff'][-(horizon + 1):]   # (N+1,)
+        v_M_seq = mv['index_move'][-(horizon + 1):]    # (N+1, 2)
         u_full = mv['stock_move'] - mv['proj_coeff'][:, None] * mv['index_move']
         d_full = np.zeros_like(mv['stock_move'])
         if len(u_full) >= 2:
             d_full[1:] = np.cumsum(u_full[:-1], axis=0)
-        # NEW(2026-08-17 时间轴重构):simulate_trajectory 改为 d[t+1]=d[t]+u[t],
-        # 要让 d_seq[1] 与 description 层 d_full[-1] 一致,需要 d_init 前推一格:
-        #   d_seq[1] = d_init + u_init = d_full[-1] - u_full[-1] + u_full[-1] = d_full[-1]
-        d_init = d_full[-1] - u_full[-1]
+        # NEW(2026-08-17 v2):d[t+1]=d[t]+u[t] 递推。d(0)=d_full[-1] 为自然初始条件,
+        # d(1) = d_full[-1] + u_full[-1](最直观的物理定义,无需 u 补偿)
+        d_init = d_full[-1]
         u_init = u_full[-1]
         a_u_vec = np.full_like(mv['stock_move'], np.nan)
         a_v_vec = np.full_like(mv['index_move'], np.nan)
