@@ -173,7 +173,7 @@ def build_simulation_df(sim: dict, index_tag: str, stock_tag: str) -> pd.DataFra
     """组装 19 列模拟结果 DataFrame(长度 N+1)。"""
 ```
 
-### 3.5 `analyze_eigenvalues` (2026-08-17 v4 — 2D 离散系统特征值分析)
+### 3.5 `analyze_eigenvalues` (2026-08-17 v4.1 + v4.2 — ρ-primary 分类 + 楔形距离)
 
 把 `simulate_trajectory` 的核心动力学方程(在 `F_self=0`、忽略外部驱动时)
 写成标准 2D 状态转移形式:
@@ -189,45 +189,71 @@ u(t+1) = (1 − c) · u(t) − k · d(t)
 
 `A` 只依赖 (k, c),是 LTI 系统 → 特征值 / 谱半径 / 稳定性分类全是 (k, c) 的纯函数。
 
+**R⁴ 状态空间澄清(v4.1)**:本 2×2 A 是"单个 Vol 或 Amt 分量"对应的核心动力矩阵。
+完整 2-D 状态 (Vol, Amt) 各自的偏离和速度构成 4-D 状态:
+
+```
+X(t) = [d_Vol, d_Amt, u_Vol, u_Amt]^T ∈ R⁴
+A_4x4 = [[I_2,    I_2  ],
+         [-kI_2, (1-c)I_2]]
+```
+
+4×4 A 的特征值集合 = 2×2 A 的特征值各重复一次:`{λ₁, λ₁, λ₂, λ₂}`,**谱半径相同**。
+所以"2×2 A 的 ρ"等价于"4×4 系统的 ρ"——用 2×2 矩阵做分析数学上完全成立。
+
 ```python
 def analyze_eigenvalues(k: float, c: float, tol: float = 1e-8) -> dict:
     """对 2D 离散系统 [[1,1],[-k,1-c]] 求特征值 + 11 类稳定性分类。
 
+    v4.1 ρ-primary 分类逻辑:
+      - k=0,c=0 → jordan_drift
+      - k=0,c>0 → marginal_const
+      - ρ < 1 → schur_stable(按 D 划分 stable_oscillatory/overdamped/critical_damping)
+      - ρ > 1 → unstable(按 k 符号 / D 划分 anti_restoring/oscillatory_divergent/monotonic_divergent)
+      - ρ ≈ 1 → critical(按 λ≈±1 划分 critical_period2/periodic/real_unit)
+
     Returns:
         dict with keys:
-          A:                  2×2 ndarray
-          eigenvalues:        list[np.complex128] (长度 2)
-          spectral_radius:    ρ(A) = max(|λ|)
-          trace:              2 − c
-          determinant:        1 − c + k
-          discriminant:       c² − 4k          ← mode 判定:D<0 复根,D>0 实根
-          mode:               'real' / 'complex' / 'repeated_real'
-          stability:          'stable' / 'unstable' / 'marginal'
-          classification:     11 类字符串(见下表)
-          schur_stable:       bool — Jury/Schur 准则下 ρ<1
-          in_wedge:           bool — (k, c) 落在楔形 k>0,k<c<2+k/2 内
-          distance_to_unit_circle: 1 − ρ(稳定)或 ρ−1(不稳定)
-          is_k0 / is_c_eq_k / is_c_eq_2pk_half:  bool 边界判定
+          # 原始参数 + 矩阵
+          k, c:                 float
+          A:                    2×2 ndarray
+          # 特征系统
+          eigenvalues:          list[complex] (length 2)
+          spectral_radius:      ρ(A) = max(|λ|)
+          trace:                2 − c
+          determinant:          1 − c + k
+          discriminant:         c² − 4k
+          mode:                 'real_distinct' / 'real_double' / 'complex_conjugate'
+          # 稳定性 + 分类
+          stability:            'schur_stable' / 'unstable' / 'critical'
+          classification:       11 类字符串(见下表)
+          schur_stable:         bool
+          # 几何距离(v4.2)
+          in_wedge:             bool
+          distance_to_unit_circle:  1 − ρ
+          distance_lower_boundary:  c - k
+          distance_upper_boundary:  2 + k/2 - c
+          distance_to_wedge:        min(k, c-k, 2+k/2-c)(有符号)
     """
 ```
 
-**11 类分类法**:
+**11 类分类法(v4.1 ρ-primary)**:
 
 | 分类 | 触发 | 物理 |
 |---|---|---|
-| `stable_oscillatory` | k>0, D<0, ρ<1 | 共振稳定 |
-| `stable_overdamped` | k>0, D>0, ρ<1 | 过阻尼稳定 |
-| `stable_critical_damping` | k>0, D=0, ρ<1 | 临界阻尼 |
-| `oscillatory_divergent` | k>0, D<0, ρ>1 | 振幅发散(共振本质) |
-| `monotonic_divergent` | k>0, D>0, ρ>1 | 单调发散 |
+| `stable_oscillatory` | ρ<1, D<0 | 共振稳定 |
+| `stable_overdamped` | ρ<1, D>0 | 过阻尼稳定 |
+| `stable_critical_damping` | ρ<1, D≈0 | 临界阻尼 |
+| `oscillatory_divergent` | ρ>1, D<0, k≥0 | 振幅发散(共振本质) |
+| `monotonic_divergent` | ρ>1, D≥0, k≥0 | 单调发散 |
 | `anti_restoring` | k<0 | 反回复力(趋势强化) |
-| `critical_periodic` | D<0, ρ≈1 | λ≈1 周期边界 |
-| `critical_period2` | D<0, ρ≈1, λ≈−1 | 周期-2 边界 |
-| `critical_real_unit` | D>0, ρ≈1 | 实根单位圆边界 |
-| `marginal_const` | k≈0, c>0, ρ<1 | 纯阻尼 |
+| `critical_periodic` | ρ≈1, D<0, 无 λ=±1 | 周期-N 振荡边界 |
+| `critical_period2` | ρ≈1, ∃ λ≈-1 | 周期-2 边界(隔日反向) |
+| `critical_real_unit` | ρ≈1, 有 λ=+1 | 实根单位圆边界 |
+| `marginal_const` | k≈0, c>0 | 纯阻尼 |
 | `jordan_drift` | k≈0, c≈0 | Jordan 漂移 |
 
-**Schur 楔形(完整稳定性)**:
+**Schur 楔形(完整稳定性,ρ<1 的充分条件)**:
 
 ```
             c
@@ -245,31 +271,56 @@ def analyze_eigenvalues(k: float, c: float, tol: float = 1e-8) -> dict:
 完整 Schur 条件:`k > 0` ∧ `k < c < 2 + k/2`。
 只看 `c > k` 是不完整的 — `c=3, k=1` 满足 `c>k` 但 ρ=1.5,实际发散。
 
+**v4.1 关键边界修正**:
+- `c = 2 + k/2` 当 k>4:λ₁=-1,λ₂=1-k/2,**|λ₂|>1** — 之前误判 critical_period2,现归 unstable
+- `c = k` 当 k>4:实根 |λ₁|>1 — 之前误判 critical_real_unit,现归 unstable
+
+**楔形距离几何(v4.2)**:三个距离量衡量"距离稳定边界多远":
+```
+distance_lower_boundary  = c - k
+distance_upper_boundary  = 2 + k/2 - c
+distance_to_wedge        = min(k, c-k, 2+k/2-c)  # 有符号
+```
+正值越大越稳定,负值越大越发散。比 ρ 多一层几何解释力(接近边界 vs 远离边界)。
+
 **与 `simulate_trajectory` 集成**:
 
-`simulate_trajectory` 在返回 dict 里**附带** `analyze_eigenvalues(k, c)` 结果:
+`simulate_trajectory` 在返回 dict 里**附带** `analyze_eigenvalues(k, c)` 结果
++ `energy_error = E_total - E_market - E_self`(v4.1 Gram-Schmidt 数值自检,误差 ~ 1e-15):
 
 ```python
 sim = simulate_trajectory(...)
-sim['spectral_radius']   # 0.849
-sim['classification']    # 'stable_overdamped'
-sim['schur_stable']      # True
-sim['in_wedge']          # True
-sim['eigenvalues']       # [0.849+0j, 0.849+0j]
+sim['spectral_radius']        # 0.849
+sim['classification']         # 'stable_overdamped'
+sim['schur_stable']           # True
+sim['in_wedge']               # True
+sim['distance_to_wedge']      # 0.145
+sim['energy_error']           # ndarray ~ 1e-15(数值健康检查)
 ```
 
-`build_simulation_df` 在 19 列基础上**加 6 列**(整 trajectory 常量):
-- `Sim_Lambda1_Real`, `Sim_Lambda1_Imag`, `Sim_Lambda2_Real`, `Sim_Lambda2_Imag`
-- `Sim_SpectralRadius`, `Sim_DynamicClass`
+`build_simulation_df` 在原 19 列基础上**加 10 列**(v4 + v4.2):
+- 6 eigenvalue 列(Lambda1/2_Real/Imag, SpectralRadius, DynamicClass)
+- 3 楔形距离列(DistanceLower/Upper/ToWedge)
+- 1 能量误差列(EnergyError)
 
 **新 CLI**:`dynamics_eigen_analysis.py`(batch)
 
 读 `data/projection/kc_estimates.csv` → 对每行 (k̂, ĉ) 调 `analyze_eigenvalues` → 输出:
-- `data/dynamics/eigen_summary.csv`(14 列:code/name/k/c/λ₁/λ₂/ρ/分类/Schur/wedge)
-- `backtrace/outputs/dynsys_eigen.html`(4 子图 plotly:散点+楔形、ρ 直方图、11 类柱状图、ρ vs k̂)
+- `data/dynamics/eigen_summary.csv`(18 列:基础 + v4.2 楔形距离)
+- `backtrace/outputs/dynsys_eigen.html`(**6 子图 plotly**,v4.2 起):
+  1. (k̂, ĉ) 散点 + 楔形背景(颜色 = 分类)
+  2. ρ 直方图 + ρ=1 红虚线
+  3. 11 类分类柱状图
+  4. (k̂, ĉ) 散点按楔形距离上色(RdYlGn)
+  5. 楔形距离分布直方图
+  6. ρ vs 楔形距离
 
-零额外计算开销(`analyze_eigenvalues` 只算 2×2 矩阵特征值 + 一些布尔判断),
-但把"参数稳定性"和"模拟结果"绑在一张表里 — 后续可按 `Sim_DynamicClass` 分组做 IC / basket 回测。
+**测试覆盖**:`tests/test_dynamics_eigen.py`(23 个测试,2026-08-17 v4.1 起)
+- 11 个分类全分支测试
+- 2 个边界 bug 回归测试(c=2+k/2 k>4, c=k k>4)
+- 4 个 wedge distance 字段测试
+- 3 个数值一致性测试(λ+λ=trace, λ·λ=det, 复共轭)
+- 3 个集成测试(energy_error, v4 字段齐全, v4.2 列齐全)
 
 ### 3.4 重新导出的便利
 

@@ -123,6 +123,10 @@ def main():
             'stability': eig['stability'],
             'schur_stable': eig['schur_stable'],
             'in_wedge': eig['in_wedge'],
+            # v4.2:楔形距离
+            'distance_lower_boundary': eig['distance_lower_boundary'],
+            'distance_upper_boundary': eig['distance_upper_boundary'],
+            'distance_to_wedge': eig['distance_to_wedge'],
         })
     summary_df = pd.DataFrame(rows)
     out_csv = os.path.join(CSV_OUT_DIR, 'eigen_summary.csv')
@@ -134,7 +138,7 @@ def main():
     cls_count = Counter(summary_df['classification'])
     total = len(summary_df)
     print()
-    print('=== 8 类稳定性分类分布 ===')
+    print('=== 11 类稳定性分类分布(v4.1:ρ-primary) ===')
     print(f'{"分类":<28} {"标签":<14} {"数量":>5} {"占比":>7}')
     for cls, count in sorted(cls_count.items(), key=lambda x: -x[1]):
         label = CLASS_LABEL_CN.get(cls, cls)
@@ -143,26 +147,33 @@ def main():
     schur_n = summary_df['schur_stable'].sum()
     wedge_n = summary_df['in_wedge'].sum()
     rho_gt1_n = (summary_df['spectral_radius'] > 1.0 + 1e-8).sum()
+    wedge_close_n = (np.abs(summary_df['distance_to_wedge']) < 0.1).sum()
     print()
-    print(f'Schur 稳定(楔形内): {schur_n}/{total}({schur_n / total * 100:.1f}%)')
-    print(f'在楔形内:             {wedge_n}/{total}({wedge_n / total * 100:.1f}%)')
-    print(f'ρ > 1(发散):          {rho_gt1_n}/{total}({rho_gt1_n / total * 100:.1f}%)')
+    print(f'Schur 稳定(ρ<1):  {schur_n}/{total}({schur_n / total * 100:.1f}%)')
+    print(f'在楔形内:         {wedge_n}/{total}({wedge_n / total * 100:.1f}%)')
+    print(f'ρ > 1(发散):      {rho_gt1_n}/{total}({rho_gt1_n / total * 100:.1f}%)')
+    print(f'距楔形边界 < 0.1: {wedge_close_n}/{total}({wedge_close_n / total * 100:.1f}%)')
     rho_median = float(summary_df['spectral_radius'].median())
     rho_mean = float(summary_df['spectral_radius'].mean())
+    dist_median = float(summary_df['distance_to_wedge'].median())
+    dist_mean = float(summary_df['distance_to_wedge'].mean())
     print(f'ρ 中位数: {rho_median:.4f} | 均值: {rho_mean:.4f}')
+    print(f'楔形距离 中位数: {dist_median:+.4f} | 均值: {dist_mean:+.4f}(>0 在楔形内,<0 在外)')
 
     # ---------- 3. 画 HTML(plotly) ----------
     fig = make_subplots(
-        rows=2, cols=2,
+        rows=2, cols=3,
         subplot_titles=(
-            '(k̂, ĉ) 散点 + 稳定楔形',
+            '(k̂, ĉ) 散点 + 楔形(颜色=分类)',
             'ρ 分布直方图',
-            '8 类分类分布',
-            'ρ vs k̂ (颜色 = 分类)',
+            '11 类分类分布',
+            '(k̂, ĉ) 散点(颜色=楔形距离)',
+            '楔形距离分布',
+            'ρ vs 楔形距离',
         ),
-        specs=[[{'type': 'scatter'}, {'type': 'histogram'}],
-               [{'type': 'bar'}, {'type': 'scatter'}]],
-        horizontal_spacing=0.10,
+        specs=[[{'type': 'scatter'}, {'type': 'histogram'}, {'type': 'bar'}],
+               [{'type': 'scatter'}, {'type': 'histogram'}, {'type': 'scatter'}]],
+        horizontal_spacing=0.08,
         vertical_spacing=0.18,
     )
 
@@ -236,7 +247,7 @@ def main():
     fig.update_xaxes(title_text='ρ(A) = max(|λ|)', row=1, col=2)
     fig.update_yaxes(title_text='数量', row=1, col=2)
 
-    # 8 类分类柱状图
+    # 11 类分类柱状图(v4.1:ρ-primary)
     cls_sorted = sorted(cls_count.items(), key=lambda x: -x[1])
     cls_labels = [CLASS_LABEL_CN.get(c, c) for c, _ in cls_sorted]
     cls_counts = [n for _, n in cls_sorted]
@@ -245,46 +256,97 @@ def main():
         go.Bar(
             x=cls_labels, y=cls_counts,
             marker_color=cls_colors,
-            name='8 类分布',
+            name='11 类分布',
             text=[f'{c / total * 100:.1f}%' for c in cls_counts],
             textposition='outside',
             hovertemplate='%{x}<br>%{y} 只 (%{text})<extra></extra>',
             showlegend=False,
         ),
+        row=1, col=3,
+    )
+    fig.update_xaxes(title_text='分类', row=1, col=3, tickangle=-30)
+    fig.update_yaxes(title_text='数量', row=1, col=3)
+
+    # (2,1) — (k̂, ĉ) 散点按楔形距离上色(连续 colormap)
+    fig.add_trace(
+        go.Scatter(
+            x=summary_df['k_hat'], y=summary_df['c_hat'],
+            mode='markers',
+            marker=dict(
+                color=summary_df['distance_to_wedge'],
+                colorscale='RdYlGn',
+                cmin=-2.0, cmax=2.0,
+                size=8,
+                colorbar=dict(title='楔形距离', x=1.02, len=0.5, y=0.25, yanchor='middle'),
+                line=dict(color='white', width=0.5),
+            ),
+            text=summary_df['code'] + ' / dist=' + summary_df['distance_to_wedge'].round(3).astype(str),
+            hovertemplate='<b>%{text}</b><br>k̂=%{x:.4f}<br>ĉ=%{y:.4f}<extra></extra>',
+            showlegend=False,
+        ),
         row=2, col=1,
     )
-    fig.update_xaxes(title_text='分类', row=2, col=1, tickangle=-30)
-    fig.update_yaxes(title_text='数量', row=2, col=1)
+    # 楔形上下边界也加到 (2,1)
+    fig.add_trace(
+        go.Scatter(x=k_grid, y=c_lower, mode='lines',
+                   line=dict(color='black', dash='dash', width=1),
+                   name='c=k', hoverinfo='skip', showlegend=False),
+        row=2, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(x=k_grid, y=c_upper, mode='lines',
+                   line=dict(color='black', dash='dash', width=1),
+                   name='c=2+k/2', hoverinfo='skip', showlegend=False),
+        row=2, col=1,
+    )
+    fig.update_xaxes(title_text='k̂', row=2, col=1)
+    fig.update_yaxes(title_text='ĉ', row=2, col=1)
 
-    # ρ vs k̂(按分类上色)
-    for cls in sorted(set(summary_df['classification'])):
-        sub = summary_df[summary_df['classification'] == cls]
-        fig.add_trace(
-            go.Scatter(
-                x=sub['k_hat'], y=sub['spectral_radius'],
-                mode='markers',
-                marker=dict(
-                    color=CLASS_COLORS.get(cls, '#888888'),
-                    size=6,
-                    symbol='circle',
-                ),
-                name=cls,
-                text=sub['code'],
-                hovertemplate='<b>%{text}</b><br>k̂=%{x:.4f}<br>ρ=%{y:.4f}<extra></extra>',
-                showlegend=False,
+    # (2,2) — 楔形距离分布直方图
+    fig.add_trace(
+        go.Histogram(
+            x=summary_df['distance_to_wedge'],
+            nbinsx=40,
+            marker=dict(color='steelblue', line=dict(color='white', width=1)),
+            name='楔形距离分布',
+            hovertemplate='距离区间: %{x}<br>数量: %{y}<extra></extra>',
+        ),
+        row=2, col=2,
+    )
+    fig.add_vline(x=0.0, line_dash='dash', line_color='red', row=2, col=2,
+                  annotation_text='楔形边界', annotation_position='top right')
+    fig.update_xaxes(title_text='distance_to_wedge (>0 楔形内)', row=2, col=2)
+    fig.update_yaxes(title_text='数量', row=2, col=2)
+
+    # (2,3) — ρ vs 楔形距离(整体稳定性视角)
+    fig.add_trace(
+        go.Scatter(
+            x=summary_df['distance_to_wedge'], y=summary_df['spectral_radius'],
+            mode='markers',
+            marker=dict(
+                color=summary_df['distance_to_wedge'],
+                colorscale='RdYlGn',
+                cmin=-2.0, cmax=2.0,
+                size=6,
+                line=dict(color='white', width=0.3),
             ),
-            row=2, col=2,
-        )
-    fig.add_hline(y=1.0, line_dash='dash', line_color='red', row=2, col=2)
-    fig.update_xaxes(title_text='k̂', row=2, col=2)
-    fig.update_yaxes(title_text='ρ', row=2, col=2)
+            text=summary_df['code'] + ' / ' + summary_df['classification'],
+            hovertemplate='<b>%{text}</b><br>dist=%{x:.3f}<br>ρ=%{y:.3f}<extra></extra>',
+            showlegend=False,
+        ),
+        row=2, col=3,
+    )
+    fig.add_hline(y=1.0, line_dash='dash', line_color='red', row=2, col=3)
+    fig.add_vline(x=0.0, line_dash='dash', line_color='red', row=2, col=3)
+    fig.update_xaxes(title_text='distance_to_wedge', row=2, col=3)
+    fig.update_yaxes(title_text='ρ(A)', row=2, col=3)
 
     fig.update_layout(
-        height=900, width=1400,
-        title_text=f'动力系统特征值分析 ({total} 只,Schur 稳定 {schur_n}/{total})',
+        height=950, width=1500,
+        title_text=f'动力系统特征值分析 v4.1 ({total} 只,Schur 稳定 {schur_n}/{total},楔形内 {wedge_n}/{total})',
         template='plotly_white',
         showlegend=True,
-        legend=dict(orientation='v', yanchor='top', y=1.0, xanchor='left', x=1.02),
+        legend=dict(orientation='v', yanchor='top', y=1.0, xanchor='left', x=1.30),
     )
     os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
     fig.write_html(args.output)

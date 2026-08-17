@@ -429,33 +429,99 @@ eig = analyze_eigenvalues(k=0.145, c=1.112)
 #  'schur_stable': True, 'in_wedge': True, 'distance_to_unit_circle': 0.151, ...}
 ```
 
-### 6.8.2 11 类分类法(完整)
+### 6.8.2 11 类分类法(v4.1 ρ-primary)
+
+v4.1 起分类逻辑**以谱半径 ρ 作主信号**,边界判定仅作辅助(避免把"在楔形
+边界外但 ρ≈1"误判成 critical):
 
 | 分类 | 触发条件 | 物理含义 |
 |---|---|---|
-| `stable_oscillatory` | k>0, D<0, ρ<1 | 共振稳定(振幅衰减振荡) |
-| `stable_overdamped` | k>0, D>0, c<2−2√k 等价 ρ<1 | 过阻尼稳定(无振荡,单调回归) |
-| `stable_critical_damping` | k>0, D=0 且 ρ<1 | 临界阻尼(最快的非振荡回归) |
-| `oscillatory_divergent` | k>0, D<0, ρ>1 | 振幅发散(共振本质 — 危险!) |
-| `monotonic_divergent` | k>0, D>0, ρ>1 | 单调发散 |
-| `anti_restoring` | k<0 | 反回复力(趋势强化 / 远离 d=0) |
-| `critical_periodic` | D<0, ρ≈1 | 周期振荡边界(λ=1 附近) |
-| `critical_period2` | D<0, ρ≈1, λ≈−1 | 周期-2 振荡边界 |
-| `critical_real_unit` | D>0, ρ≈1 | 实根单位圆边界(单调临界) |
-| `marginal_const` | k≈0, c>0, ρ<1 | 边界常数模(纯阻尼,无恢复) |
+| `stable_oscillatory` | ρ<1, D<0 | 共振稳定(衰减振荡) |
+| `stable_overdamped` | ρ<1, D>0 | 过阻尼稳定(单调回归) |
+| `stable_critical_damping` | ρ<1, D≈0 | 临界阻尼(最快的非振荡回归) |
+| `oscillatory_divergent` | ρ>1, D<0, k≥0 | 振幅发散(共振本质 — 危险!) |
+| `monotonic_divergent` | ρ>1, D≥0, k≥0 | 单调发散 |
+| `anti_restoring` | k<0 | 反回复力(趋势强化,必发散) |
+| `critical_periodic` | ρ≈1, D<0, 无 λ=±1 | 周期-N 振荡边界 |
+| `critical_period2` | ρ≈1, ∃ λ≈-1 | 周期-2 边界(隔日反向) |
+| `critical_real_unit` | ρ≈1, 有 λ=+1(或实根兜底) | 实根单位圆边界 |
+| `marginal_const` | k≈0, c>0 | 边界常数模(纯阻尼,无恢复) |
 | `jordan_drift` | k≈0, c≈0 | Jordan 漂移(`x(t) ~ t·x(0)` 多项式漂移) |
 
-### 6.8.3 Schur 楔形(完整稳定性条件)
+### 6.8.3 v4.1 关键边界修正
+
+**之前误判**:把整条 `c = 2 + k/2` 都标 `critical_period2`,把整条 `c = k` 都按
+ρ=1 标 `critical_periodic` / `critical_real_unit`。这是错的——这些边界只是
+Jury 准则的几何位置,但**不等于** ρ=1。
+
+**反例**:
+- `c = 2 + k/2` 当 k>4:λ₁=-1,λ₂=1-k/2,**|λ₂|>1**(实际发散,不是临界)
+- `c = k` 当 k>4:实根,|λ₁| = k-√(k²-4) > 1(实际发散,不是临界)
+
+新逻辑用 ρ 作主信号:
+- ρ<1 ⇒ schur_stable(自动覆盖楔形内)
+- ρ>1 ⇒ unstable,再按 k 符号 / D 符号细分
+- ρ≈1 ⇒ critical,按"是否存在 λ=±1"细分
+
+**测试覆盖**:`tests/test_dynamics_eigen.py::test_boundary_fix_*` 锁住这两个
+反例作为回归测试。
+
+### 6.8.4 Schur 楔形(完整稳定性条件)
 
 只有 `c > k` 是**不完整**的。完整 Schur 稳定性(2nd-order Jury 准则):
 - `1 + a₁ + a₀ > 0`:⇒  `k > 0`
 - `1 − a₁ + a₀ > 0`:⇒  `c < 2 + k/2`
 - `|a₀| < 1`:⇒  `|1 − c + k| < 1` ⇒  `0 < c − k < 2`
 
-合起来:`k > 0` 且 `k < c < 2 + k/2`(**楔形区域**),这是 2D 离散线性系统真正稳定的几何区域。
+合起来:`k > 0` 且 `k < c < 2 + k/2`(**楔形区域**),这是 2D 离散线性系统
+ρ<1 的**充分条件**(楔形内 ⇒ ρ<1,但楔形外不一定 ρ>1,见 6.8.3 反例)。
 
-楔形外的"看似稳定"(比如 `c=3, k=1`)实际上是**发散**:`ρ=1.5` 或更大。在用经验 OLS
-得到的 (k̂, ĉ) 上做稳定判定时,只看 `c > k` 会把一部分实际发散的票误判为稳定。
+### 6.8.5 楔形距离几何(v4.2)
+
+为度量"一只股票距离稳定边界多远",定义三个距离量:
+
+```
+distance_lower_boundary  = c - k                # > 0 表示在 c=k 上方
+distance_upper_boundary  = 2 + k/2 - c          # > 0 表示在 c=2+k/2 下方
+distance_to_wedge        = min(k, c-k, 2+k/2-c) # > 0 楔形内,=0 边界,<0 楔形外
+```
+
+`distance_to_wedge` 是一个**有符号**度量:正值越大越稳定,负值越大越发散。
+比单纯的 `ρ` 更有解释力——`ρ=0.98` 可以是"接近稳定边界"也可以是"远离稳定边界
+但本身模态慢衰减",后者其实更安全。楔形距离把"接近边界"和"远在内部"区分开。
+
+### 6.8.6 完整 R⁴ 状态空间(v4.1 澄清)
+
+本目录的 2×2 `A = [[1, 1], [-k, 1-c]]` 是"单个 Vol 或 Amt 分量"对应的核心
+动力矩阵。完整的 2-D 状态(Vol, Amt)各自的偏离和速度构成 4-D 状态:
+
+```
+X(t) = [d_Vol, d_Amt, u_Vol, u_Amt]^T ∈ R⁴
+X(t+1) = A_4x4 · X(t) + 外部驱动
+A_4x4 = [[I_2,    I_2  ],
+         [-kI_2, (1-c)I_2]]
+```
+
+4×4 A 的特征值集合 = 2×2 A 的特征值各重复一次:`{λ₁, λ₁, λ₂, λ₂}`,**谱半径相同**。
+所以"2×2 A 的 ρ"等价于"4×4 系统的 ρ"——用 2×2 矩阵做分析数学上完全成立。
+
+### 6.8.7 Gram-Schmidt 能量恒等式(v4.1 自检)
+
+`simulate_trajectory` 用沿 v_M(t) 方向的严格 Gram-Schmidt 投影分解
+`v_S = v_∥ + v_⊥`,因此严格满足:
+
+```
+E_total(t) = E_market(t) + E_self(t)
+           = 0.5·‖v_∥(t)‖² + 0.5·‖v_⊥(t)‖²
+           ≡ 0.5·‖v_S(t)‖²
+```
+
+`simulate_trajectory` 返 `sim['energy_error'] = E_total - E_market - E_self`
+作为数值健康检查;数值误差 ~ 1e-15(纯浮点精度)。若 > 1e-10 表明正交分解实现
+有 bug,应触发警告。
+
+测试:`tests/test_dynamics_eigen.py::test_simulate_trajectory_energy_identity`
+断言 `nanmax(|energy_error|) < 1e-10`。
 
 ### 6.8.4 经验分布(2026-08-17 kc_estimates 4 票)
 
@@ -488,12 +554,14 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_eigen_analysis.py \
 ```
 
 **输出**:
-- `data/dynamics/eigen_summary.csv` — 每只票 14 列(`code, name, k_hat, c_hat, lam1_real, lam1_imag, lam2_real, lam2_imag, spectral_radius, classification, stability, schur_stable, in_wedge, ...`)
-- `backtrace/outputs/dynsys_eigen.html` — 4 子图 plotly:
-  1. **(k̂, ĉ) 散点 + Schur 楔形背景**(绿色填充,虚线 `c=k` / `c=2+k/2` 边界)
+- `data/dynamics/eigen_summary.csv` — 每只票 18 列(基础 14 + v4.2 楔形距离 3 + 其它)
+- `backtrace/outputs/dynsys_eigen.html` — **6 子图 plotly**(v4.2 起):
+  1. **(k̂, ĉ) 散点 + 楔形背景**(颜色 = 11 类分类)
   2. **ρ 直方图 + ρ=1 红虚线**
   3. **11 类分类柱状图**(颜色按 CLASS_COLORS)
-  4. **ρ vs k̂ 散点**(颜色 = 分类)
+  4. **(k̂, ĉ) 散点按楔形距离上色**(RdYlGn 红→黄→绿)
+  5. **楔形距离分布直方图**(0 = 边界)
+  6. **ρ vs 楔形距离**(越靠右越稳,越靠下越稳)
 
 ### 6.8.6 与 `simulate_trajectory` 集成(v4 增量)
 
@@ -508,7 +576,7 @@ sim['schur_stable']  # True
 sim['in_wedge']      # True
 ```
 
-`build_simulation_df` 在 simulation CSV 里加 6 列(整个 trajectory **常量**,因 k/c 在 sim 内固定):
+`build_simulation_df` 在 simulation CSV 里加 10 列(整个 trajectory **常量**,因 k/c 在 sim 内固定):
 
 | 列 | 含义 |
 |---|---|
@@ -518,6 +586,10 @@ sim['in_wedge']      # True
 | `Sim_Lambda2_Imag` | λ₂ 虚部 |
 | `Sim_SpectralRadius` | ρ(A) = max(|λ|) |
 | `Sim_DynamicClass` | 11 类稳定性分类之一 |
+| `Sim_DistanceLowerBoundary` | c - k(到下边界距离) |
+| `Sim_DistanceUpperBoundary` | 2+k/2 - c(到上边界距离) |
+| `Sim_DistanceToWedge` | min(k, c-k, 2+k/2-c)(楔形距离,有符号) |
+| `Sim_EnergyError` | E_total - E_market - E_self(数值健康检查)|
 
 零数值开销(`analyze_eigenvalues` 只是 2×2 矩阵特征值),但把"模型参数稳定性"和"轨迹形状"绑在一张表里 — 后续 IC / basket 回测可以直接按 `Sim_DynamicClass` 分组,看"稳定 vs 发散股票的未来收益是否真有差异"。
 
