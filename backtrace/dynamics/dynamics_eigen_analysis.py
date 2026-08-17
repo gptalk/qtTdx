@@ -185,6 +185,9 @@ def aggregate_by_industry(
         agg = agg[agg['n_stocks'] >= thr].sort_values('rho_median', ascending=False).head(10)
         if len(agg) >= 5:
             return agg, thr
+    # T3.5: 区分"无数据" vs "有数据但 < 阈值"
+    if len(agg) == 0:
+        return agg, 0  # 0 = 无数据
     return agg, fallback_min   # 都凑不够 5,返回最后尝试的结果
 
 
@@ -200,7 +203,7 @@ def aggregate_by_exchange(df: pd.DataFrame) -> pd.DataFrame:
         schur_stable_pct=('schur_stable', 'mean'),
         in_wedge_pct=('in_wedge', 'mean'),
         dist_wedge_median=('distance_to_wedge', 'median'),
-    ).reset_index().sort_values('rho_median')
+    ).reset_index().sort_values('rho_median', ascending=False)
     return agg
 
 
@@ -608,7 +611,7 @@ def main():
                 ),
                 marker_color='steelblue',
                 name=f'行业 top10 (n≥{l1_threshold})',
-                text=[f"n={n}<br>ρ={r:.2f}" for n, r in zip(agg_l1['n_stocks'], agg_l1['rho_median'])],
+                text=[f"n={n}<br>ρ={r:.3f}" for n, r in zip(agg_l1['n_stocks'], agg_l1['rho_median'])],
                 hovertemplate='<b>%{x}</b><br>ρ 中位数: %{y:.3f}<br>%{text}<extra></extra>',
                 showlegend=False,
             ),
@@ -715,7 +718,7 @@ def main():
             ),
             marker_color=[ex_colors.get(e, '#888888') for e in agg_ex['exchange']],
             name='交易所 ρ 中位数',
-            text=[f"n={n}<br>ρ={r:.2f}" for n, r in zip(agg_ex['n_stocks'], agg_ex['rho_median'])],
+            text=[f"n={n}<br>ρ={r:.3f}" for n, r in zip(agg_ex['n_stocks'], agg_ex['rho_median'])],
             hovertemplate='<b>%{x}</b><br>ρ 中位数: %{y:.3f}<br>%{text}<extra></extra>',
             showlegend=False,
         ),

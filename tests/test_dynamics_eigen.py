@@ -511,3 +511,31 @@ def test_phase_plot_html_smoke(tmp_path):
     # 11 类名称都出现在 HTML 里(CLASS_LABEL_CN 中文标签)
     for cn in CLASS_LABEL_CN.values():
         assert cn in content
+
+
+def test_aggregate_by_industry_no_data():
+    """T3.5: 0-row fallback 区分 — 无任何行业时返回 threshold=0(无数据)
+
+    构造 0 行 df 应返回 (empty_df, 0)。这是与"有数据但 < 阈值"区分的标志。
+    """
+    # 空 df
+    df_empty = pd.DataFrame(columns=['code', 'industry_l1', 'spectral_radius',
+                                      'k_hat', 'c_hat', 'schur_stable',
+                                      'in_wedge', 'distance_to_wedge'])
+    agg, threshold = EA.aggregate_by_industry(df_empty)
+    assert len(agg) == 0
+    assert threshold == 0  # T3.5 修复: 0 表示无数据
+
+    # 单行业 50 只(>= 默认阈值 50,但 < 5 industries): threshold > 0
+    rng = np.random.default_rng(13)
+    rows = []
+    for i in range(50):
+        rows.append({'code': f'X{i:03d}', 'industry_l1': '881999.SH',
+                     'spectral_radius': rng.uniform(0.5, 1.0),
+                     'k_hat': 0.0, 'c_hat': 1.0,
+                     'schur_stable': True, 'in_wedge': True,
+                     'distance_to_wedge': 0.1})
+    df_one = pd.DataFrame(rows)
+    agg, threshold = EA.aggregate_by_industry(df_one)
+    assert len(agg) == 1  # 1 个行业
+    assert threshold > 0  # 有数据(虽然只 1 个行业),threshold >= 30 (fallback_min)
