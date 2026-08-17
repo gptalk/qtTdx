@@ -26,6 +26,8 @@ from ._dynamics_core import (
     predict_next_state,
     simulate_trajectory,
     build_simulation_df,
+    # 2D 动力系统特征值分析(v4 Plan)
+    analyze_eigenvalues,
     # F_self 预测器
     make_rolling_mean_f_self_predictor,
     make_constant_f_self_predictor,
@@ -50,6 +52,7 @@ __all__ = [
     'predict_next_state',
     'simulate_trajectory',
     'build_simulation_df',
+    'analyze_eigenvalues',
     'make_rolling_mean_f_self_predictor',
     'make_constant_f_self_predictor',
     'make_ar1_f_self_predictor',

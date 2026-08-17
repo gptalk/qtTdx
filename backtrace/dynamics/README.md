@@ -9,13 +9,15 @@
 
 ```
 dynamics/
-├── _dynamics_core.py       数学 re-export + 5 个新增 API
+├── _dynamics_core.py       数学 re-export + 6 个新增 API
 │                           (predict_next_state / simulate_trajectory / build_simulation_df
+│                            + analyze_eigenvalues  ← v4
 │                            + F_self 预测器 ×3 + forecast helper ×5)
 ├── dynamics_system.py      单股端到端 CLI (load → describe → simulate → HTML/CSV)
 ├── dynamics_batch.py       批量 CLI (读 stocks.csv → 全跑 → manifest)
 ├── dynamics_1step_oos.py   OOS 1 步预测(纯动力学基线,F_self 滚动均值)
 ├── dynamics_state_backtest.py  状态分组 + vbt basket 回测 + IC 评估
+├── dynamics_eigen_analysis.py  (k̂, ĉ) → 特征值 + 11 类稳定性分类 + HTML(v4)
 └── README.md               本文件
 ```
 
@@ -33,7 +35,8 @@ dynamics/
 | **Forecast 模式(新)** | `forecast_v_M_random_walk` / `forecast_v_M_last_value` / `forecast_beta_*` / `forecast_q_t_constant` | 无未来大盘观测时,合成 v_M_seq / beta_seq / q_t_seq |
 | **OOS 1 步预测 CLI(新)** | `dynamics_1step_oos.py` | 用 `predict_next_state` 跑 1 步 OOS,产预测 CSV + summary |
 | **状态分组 + vbt 回测 CLI(新)** | `dynamics_state_backtest.py` | 按 dominant_state 分组 + basket 回测 + IC |
-| **HTML/CSV 落盘** | `dynamics_system.py` / `dynamics_batch.py` | 数据组装 + 文件落地 |
+| **特征值稳定性分析(v4)** | `analyze_eigenvalues(k, c)` + `dynamics_eigen_analysis.py` | 从 2D 离散系统 `A=[[1,1],[-k,1-c]]` 求 λ₁/λ₂/ρ,11 类稳定性分类 |
+| **HTML/CSV 落盘** | `dynamics_system.py` / `dynamics_batch.py` / `dynamics_eigen_analysis.py` | 数据组装 + 文件落地 |
 
 ## 3. CLI 用法
 
@@ -395,6 +398,128 @@ v3 后,系统的状态空间变得**显式且不可误用**:
      u(t+1)   = v_S(t+1) − β(t+1)·v_M(t+1)        ← 派生
      d(t+1)   = d(t) + u(t)                       ← spec 写法
 ```
+
+## 6.8 特征值稳定性分析(2026-08-17 v4)
+
+把 2D 离散线性系统 `(d, u)` 写成标准状态转移形式:
+
+```
+d(t+1) = d(t) + u(t)               ⇒   X(t+1) = A · X(t),X = (d, u)ᵀ
+u(t+1) = (1 − c) · u(t) − k · d(t)
+
+            | 1     1   |
+      A  =  |          |        trace = 2 − c,det = 1 − c + k
+            |−k  1 − c |
+```
+
+注:`simulate_trajectory` 里的 `v_S(t+1) = v_S(t) + a(t)` 已经隐含了这个 2D 转移
+(把 `q·β·a_M` 和 `F_self` 当作外部驱动),`A` 矩阵只依赖 `(k, c)` — 是 LTI 线性时不变系统。
+
+### 6.8.1 `analyze_eigenvalues(k, c)` — 11 类稳定性分类
+
+```python
+from dynamics import analyze_eigenvalues
+eig = analyze_eigenvalues(k=0.145, c=1.112)
+# {'k': 0.145, 'c': 1.112,
+#  'A': [[1, 1], [-0.145, -0.112]],
+#  'eigenvalues': [0.849+0j, 0.849+0j],   # 实重根
+#  'spectral_radius': 0.849, 'trace': 0.888, 'determinant': 0.033,
+#  'discriminant': 1.236 - 0.580 = 0.656 > 0,
+#  'mode': 'real', 'stability': 'stable', 'classification': 'stable_overdamped',
+#  'schur_stable': True, 'in_wedge': True, 'distance_to_unit_circle': 0.151, ...}
+```
+
+### 6.8.2 11 类分类法(完整)
+
+| 分类 | 触发条件 | 物理含义 |
+|---|---|---|
+| `stable_oscillatory` | k>0, D<0, ρ<1 | 共振稳定(振幅衰减振荡) |
+| `stable_overdamped` | k>0, D>0, c<2−2√k 等价 ρ<1 | 过阻尼稳定(无振荡,单调回归) |
+| `stable_critical_damping` | k>0, D=0 且 ρ<1 | 临界阻尼(最快的非振荡回归) |
+| `oscillatory_divergent` | k>0, D<0, ρ>1 | 振幅发散(共振本质 — 危险!) |
+| `monotonic_divergent` | k>0, D>0, ρ>1 | 单调发散 |
+| `anti_restoring` | k<0 | 反回复力(趋势强化 / 远离 d=0) |
+| `critical_periodic` | D<0, ρ≈1 | 周期振荡边界(λ=1 附近) |
+| `critical_period2` | D<0, ρ≈1, λ≈−1 | 周期-2 振荡边界 |
+| `critical_real_unit` | D>0, ρ≈1 | 实根单位圆边界(单调临界) |
+| `marginal_const` | k≈0, c>0, ρ<1 | 边界常数模(纯阻尼,无恢复) |
+| `jordan_drift` | k≈0, c≈0 | Jordan 漂移(`x(t) ~ t·x(0)` 多项式漂移) |
+
+### 6.8.3 Schur 楔形(完整稳定性条件)
+
+只有 `c > k` 是**不完整**的。完整 Schur 稳定性(2nd-order Jury 准则):
+- `1 + a₁ + a₀ > 0`:⇒  `k > 0`
+- `1 − a₁ + a₀ > 0`:⇒  `c < 2 + k/2`
+- `|a₀| < 1`:⇒  `|1 − c + k| < 1` ⇒  `0 < c − k < 2`
+
+合起来:`k > 0` 且 `k < c < 2 + k/2`(**楔形区域**),这是 2D 离散线性系统真正稳定的几何区域。
+
+楔形外的"看似稳定"(比如 `c=3, k=1`)实际上是**发散**:`ρ=1.5` 或更大。在用经验 OLS
+得到的 (k̂, ĉ) 上做稳定判定时,只看 `c > k` 会把一部分实际发散的票误判为稳定。
+
+### 6.8.4 经验分布(2026-08-17 kc_estimates 4 票)
+
+| code | k̂ | ĉ | λ₁ | λ₂ | ρ | 分类 |
+|---|---|---|---|---|---|---|
+| 000001.SZ | 0.145 | 1.112 | 0.849 | 0.849 | 0.849 | stable_overdamped |
+| 000002.SZ | −0.044 | 8.292 | 7.30+0j | 0.99+0j | **7.30** | anti_restoring |
+| 000006.SZ | −0.060 | 3.978 | 2.99+0j | 0.99+0j | **2.99** | anti_restoring |
+| 000007.SZ | 0.111 | 2.244 | 1.194+0j | 0.05+0j | **1.194** | monotonic_divergent |
+
+**Schur 稳定率:25%(1/4)**;**ρ>1(发散):75%**;ρ 中位数 ≈ 1.4;ρ 均值 ≈ 3.0。
+
+**解读**:A 股个股系统的"2D 投影稳定性"在经验上偏弱 — 多数股票要么 k<0(趋势强化),
+要么 c 过大(过度阻尼 = 速度差瞬变)。这与"个股相对大盘的偏离会被市场拉回"的
+朴素直觉**不一致** — OLS 在短窗口(240 日)估出的 (k̂, ĉ) 反映的是**统计共变**而非
+**因果回拉力**(详见 projection/state_kc_analysis.py 的状态关联分析)。
+
+### 6.8.5 `dynamics_eigen_analysis.py` — 批量经验分析
+
+```bash
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_eigen_analysis.py
+# 读 data/projection/kc_estimates.csv,产 eigen_summary.csv + HTML
+
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_eigen_analysis.py --limit 500
+# 取前 500 只
+
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_eigen_analysis.py \
+    --input data/my_kc.csv --output backtrace/outputs/my_eigen.html
+# 自定义输入输出
+```
+
+**输出**:
+- `data/dynamics/eigen_summary.csv` — 每只票 14 列(`code, name, k_hat, c_hat, lam1_real, lam1_imag, lam2_real, lam2_imag, spectral_radius, classification, stability, schur_stable, in_wedge, ...`)
+- `backtrace/outputs/dynsys_eigen.html` — 4 子图 plotly:
+  1. **(k̂, ĉ) 散点 + Schur 楔形背景**(绿色填充,虚线 `c=k` / `c=2+k/2` 边界)
+  2. **ρ 直方图 + ρ=1 红虚线**
+  3. **11 类分类柱状图**(颜色按 CLASS_COLORS)
+  4. **ρ vs k̂ 散点**(颜色 = 分类)
+
+### 6.8.6 与 `simulate_trajectory` 集成(v4 增量)
+
+`simulate_trajectory` 现在在返回 dict 里**直接附带** `analyze_eigenvalues(k, c)` 结果:
+
+```python
+sim = simulate_trajectory(...)
+print(sim['spectral_radius'], sim['classification'])
+# 0.849 stable_overdamped
+
+sim['schur_stable']  # True
+sim['in_wedge']      # True
+```
+
+`build_simulation_df` 在 simulation CSV 里加 6 列(整个 trajectory **常量**,因 k/c 在 sim 内固定):
+
+| 列 | 含义 |
+|---|---|
+| `Sim_Lambda1_Real` | λ₁ 实部 |
+| `Sim_Lambda1_Imag` | λ₁ 虚部 |
+| `Sim_Lambda2_Real` | λ₂ 实部 |
+| `Sim_Lambda2_Imag` | λ₂ 虚部 |
+| `Sim_SpectralRadius` | ρ(A) = max(|λ|) |
+| `Sim_DynamicClass` | 11 类稳定性分类之一 |
+
+零数值开销(`analyze_eigenvalues` 只是 2×2 矩阵特征值),但把"模型参数稳定性"和"轨迹形状"绑在一张表里 — 后续 IC / basket 回测可以直接按 `Sim_DynamicClass` 分组,看"稳定 vs 发散股票的未来收益是否真有差异"。
 
 ## 7. 与其他目录的关系
 

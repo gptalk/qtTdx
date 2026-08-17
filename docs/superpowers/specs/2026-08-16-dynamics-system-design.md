@@ -10,12 +10,14 @@
 
 **In scope**:
 1. 公开一个统一入口模块 `backtrace/dynamics/_dynamics_core.py`,re-export 描述层 + 状态分类 + 力模型,
-   并新增两个**真正属于"动力系统"**的函数:
+   并新增三个**真正属于"动力系统"**的函数:
    - `predict_next_state(...)` — 1 步预测(扩展 `prediction_ode.py` 的散装函数为可调用 API)
    - `simulate_trajectory(...)` — N 步前向模拟(在已知未来大盘输入下,个股系统怎么演化)
-2. 两个 CLI 入口:
+   - `analyze_eigenvalues(k, c)` — (2026-08-17 v4) 从 2D 离散系统 `A=[[1,1],[-k,1-c]]` 求特征值 + 11 类稳定性分类
+2. 三个 CLI 入口:
    - `dynamics_system.py` — 单股端到端(load → describe → predict → simulate → state → HTML/CSV)
    - `dynamics_batch.py` — 批量(给 manifest 累加 simulation summary)
+   - `dynamics_eigen_analysis.py` — (2026-08-17 v4) 批量读 kc_estimates,产出 eigen_summary CSV + HTML
 3. 一份 README,串起整个 `dynamics/` 目录与 projection/ 关系。
 
 **Out of scope(已由其他脚本覆盖,本目录不重写)**:
@@ -168,8 +170,106 @@ def simulate_trajectory(
 
 ```python
 def build_simulation_df(sim: dict, index_tag: str, stock_tag: str) -> pd.DataFrame:
-    """组装 12 列模拟结果 DataFrame(长度 N+1)。"""
+    """组装 19 列模拟结果 DataFrame(长度 N+1)。"""
 ```
+
+### 3.5 `analyze_eigenvalues` (2026-08-17 v4 — 2D 离散系统特征值分析)
+
+把 `simulate_trajectory` 的核心动力学方程(在 `F_self=0`、忽略外部驱动时)
+写成标准 2D 状态转移形式:
+
+```
+d(t+1) = d(t) + u(t)               ⇒   X(t+1) = A · X(t),X = (d, u)ᵀ
+u(t+1) = (1 − c) · u(t) − k · d(t)
+
+            | 1     1   |
+      A  =  |          |        trace = 2 − c,det = 1 − c + k
+            |−k  1 − c |
+```
+
+`A` 只依赖 (k, c),是 LTI 系统 → 特征值 / 谱半径 / 稳定性分类全是 (k, c) 的纯函数。
+
+```python
+def analyze_eigenvalues(k: float, c: float, tol: float = 1e-8) -> dict:
+    """对 2D 离散系统 [[1,1],[-k,1-c]] 求特征值 + 11 类稳定性分类。
+
+    Returns:
+        dict with keys:
+          A:                  2×2 ndarray
+          eigenvalues:        list[np.complex128] (长度 2)
+          spectral_radius:    ρ(A) = max(|λ|)
+          trace:              2 − c
+          determinant:        1 − c + k
+          discriminant:       c² − 4k          ← mode 判定:D<0 复根,D>0 实根
+          mode:               'real' / 'complex' / 'repeated_real'
+          stability:          'stable' / 'unstable' / 'marginal'
+          classification:     11 类字符串(见下表)
+          schur_stable:       bool — Jury/Schur 准则下 ρ<1
+          in_wedge:           bool — (k, c) 落在楔形 k>0,k<c<2+k/2 内
+          distance_to_unit_circle: 1 − ρ(稳定)或 ρ−1(不稳定)
+          is_k0 / is_c_eq_k / is_c_eq_2pk_half:  bool 边界判定
+    """
+```
+
+**11 类分类法**:
+
+| 分类 | 触发 | 物理 |
+|---|---|---|
+| `stable_oscillatory` | k>0, D<0, ρ<1 | 共振稳定 |
+| `stable_overdamped` | k>0, D>0, ρ<1 | 过阻尼稳定 |
+| `stable_critical_damping` | k>0, D=0, ρ<1 | 临界阻尼 |
+| `oscillatory_divergent` | k>0, D<0, ρ>1 | 振幅发散(共振本质) |
+| `monotonic_divergent` | k>0, D>0, ρ>1 | 单调发散 |
+| `anti_restoring` | k<0 | 反回复力(趋势强化) |
+| `critical_periodic` | D<0, ρ≈1 | λ≈1 周期边界 |
+| `critical_period2` | D<0, ρ≈1, λ≈−1 | 周期-2 边界 |
+| `critical_real_unit` | D>0, ρ≈1 | 实根单位圆边界 |
+| `marginal_const` | k≈0, c>0, ρ<1 | 纯阻尼 |
+| `jordan_drift` | k≈0, c≈0 | Jordan 漂移 |
+
+**Schur 楔形(完整稳定性)**:
+
+```
+            c
+            │
+       2+k/2├ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─
+            │   ╱ 楔形(Schur 稳定) ╱
+            │  ╱                ╱
+            │ ╱              ╱
+            │╱            ╱
+   ─────────●────────────────── k
+            0
+              ↘ c = k(下界)
+```
+
+完整 Schur 条件:`k > 0` ∧ `k < c < 2 + k/2`。
+只看 `c > k` 是不完整的 — `c=3, k=1` 满足 `c>k` 但 ρ=1.5,实际发散。
+
+**与 `simulate_trajectory` 集成**:
+
+`simulate_trajectory` 在返回 dict 里**附带** `analyze_eigenvalues(k, c)` 结果:
+
+```python
+sim = simulate_trajectory(...)
+sim['spectral_radius']   # 0.849
+sim['classification']    # 'stable_overdamped'
+sim['schur_stable']      # True
+sim['in_wedge']          # True
+sim['eigenvalues']       # [0.849+0j, 0.849+0j]
+```
+
+`build_simulation_df` 在 19 列基础上**加 6 列**(整 trajectory 常量):
+- `Sim_Lambda1_Real`, `Sim_Lambda1_Imag`, `Sim_Lambda2_Real`, `Sim_Lambda2_Imag`
+- `Sim_SpectralRadius`, `Sim_DynamicClass`
+
+**新 CLI**:`dynamics_eigen_analysis.py`(batch)
+
+读 `data/projection/kc_estimates.csv` → 对每行 (k̂, ĉ) 调 `analyze_eigenvalues` → 输出:
+- `data/dynamics/eigen_summary.csv`(14 列:code/name/k/c/λ₁/λ₂/ρ/分类/Schur/wedge)
+- `backtrace/outputs/dynsys_eigen.html`(4 子图 plotly:散点+楔形、ρ 直方图、11 类柱状图、ρ vs k̂)
+
+零额外计算开销(`analyze_eigenvalues` 只算 2×2 矩阵特征值 + 一些布尔判断),
+但把"参数稳定性"和"模拟结果"绑在一张表里 — 后续可按 `Sim_DynamicClass` 分组做 IC / basket 回测。
 
 ### 3.4 重新导出的便利
 
@@ -181,6 +281,8 @@ from dynamics._dynamics_core import (
     STATE_LABELS, STATE_COLORS, STATE_LABELS_CN,
     # 新增
     predict_next_state, simulate_trajectory, build_simulation_df,
+    # 2D 离散系统特征值分析(v4)
+    analyze_eigenvalues,
 )
 ```
 

@@ -413,6 +413,9 @@ def simulate_trajectory(
     elif q_t_seq.shape[0] != N:
         raise ValueError(f"q_t_seq 长度 {q_t_seq.shape[0]} 应 = N = {N}")
 
+    # v4:动力系统特征值分析 — (k, c) 常数,整段模拟 λ 不变
+    eig = analyze_eigenvalues(k, c)
+
     v_seq = np.zeros((N + 1, 2))
     d_seq = np.zeros((N + 1, 2))
     u_seq = np.zeros((N + 1, 2))
@@ -537,6 +540,174 @@ def simulate_trajectory(
         'k_restore': k,
         'c_damp': c,
         'F_self_predictor_used': F_self_predictor,
+        # v4:动力系统特征值(整个模拟期 (k, c) 常数,所以 eigenvalues/ρ 恒定)
+        'eigenvalues': eig.get('eigenvalues'),
+        'spectral_radius': eig.get('spectral_radius'),
+        'dynamic_class': eig.get('classification'),
+        'dynamic_stability': eig.get('stability'),
+        'schur_stable': eig.get('schur_stable'),
+        'in_wedge': eig.get('in_wedge'),
+    }
+
+
+# === 2D 离散动力系统特征值分析(2026-08-17 v4 Plan) =========================
+def analyze_eigenvalues(k: float, c: float, tol: float = 1e-8) -> dict:
+    """分析 A = [[1, 1], [-k, 1-c]] 的特征值与稳定性(2026-08-17 v4 Plan)。
+
+    **背景**:从 simulate_trajectory 推导出来的真状态空间(把 v_S 消元后):
+        x(t)   = [d(t), u(t)]^T ∈ R⁴
+        x(t+1) = A · x(t) + B(t) · a_M(t) + G(t) · F_self(t) + ...
+        A      = [[1,  1   ],
+                  [-k, 1-c ]]
+    β / v_M / q / F_self 全部进入外部驱动 B(t),**不改变 A 的稳定性结构**。
+    所以只要 (k, c) 是常数,A 就是线性时不变 2D 离散动力系统,可用 Jury 判据
+    直接判定 Schur 稳定性。
+
+    **特征方程**:λ² - (2-c)λ + (1-c+k) = 0
+        λ₁,₂ = ((2-c) ± √(c² - 4k)) / 2
+        判别式 D = c² - 4k
+            D < 0   复根(振荡模态)
+            D = 0   重实根(临界模态)
+            D > 0   相异实根(非振荡)
+
+    **Schur 稳定性(Jury 判据完整三条件)**:
+        k > 0                            ← 条件 1(否则 k=0 时 λ=1 必现)
+        k < c < 2 + k/2                  ← 条件 2 + 3(楔形稳定区)
+    几何上:(k, c) 平面上一个**楔形**,下边界 c=k,上边界 c=2+k/2。
+
+    **8 类细分**(本函数输出):
+        stable_oscillatory:      D<0 在楔形内(复根,衰减振荡)
+        stable_overdamped:       D>0 在楔形内(双实根 <1)
+        stable_critical_damping: D≈0 在楔形内(重根,最快非振荡收敛)
+        oscillatory_divergent:   D<0 ρ>1(振荡发散,**共振的数学本质**)
+        monotonic_divergent:     D>0 ρ>1(单调发散,沿偏离方向越走越远)
+        anti_restoring:          k<0(反回复 = 趋势强化,必发散)
+        critical_periodic:       c=k, D<0(周期振荡,|λ|=1)
+        critical_period2:        c=2+k/2(λ=-1,隔日反向)
+        critical_real_unit:      c=k, D>0(实根,乘积=1,一个根=1)
+        marginal_const:          k=0,c>0(λ₁=1,λ₂=1-c,有界 + 衰减)
+        jordan_drift:            k=0,c=0(A 是 Jordan 块,多项式漂移 x(t)~t)
+
+    Args:
+        k: 恢复系数(标量)
+        c: 阻尼系数(标量)
+        tol: 边界容差(默认 1e-8;用于判定 c=k 或 c=2+k/2 是否精确在边界上)
+
+    Returns:
+        dict with keys:
+            'k', 'c':                    原始参数
+            'A':                         (2, 2) ndarray
+            'eigenvalues':               list[complex] (length 2)
+            'spectral_radius':           float (max(|λ|))
+            'trace':                     float (= 2 - c)
+            'determinant':               float (= 1 - c + k)
+            'discriminant':              float (= c² - 4k)
+            'mode':                      'real_distinct' / 'real_double' / 'complex_conjugate'
+            'stability':                 'schur_stable' / 'unstable' / 'critical'
+            'classification':            8-class label (见上方)
+            'schur_stable':              bool
+            'distance_to_unit_circle':   float (= 1 - ρ;正值=稳定,负值=发散)
+            'in_wedge':                  bool(在楔形 k<c<2+k/2 内,k>0 时)
+    """
+    A = np.array([[1.0, 1.0], [-float(k), 1.0 - float(c)]])
+    trace_val = 2.0 - c              # tr(A)
+    det_val = 1.0 - c + k            # det(A)
+    disc = c * c - 4.0 * k           # 判别式
+
+    # 特征值
+    if disc > tol:                   # D > 0: 相异实根
+        sqrt_disc = float(np.sqrt(disc))
+        lam1 = complex((trace_val + sqrt_disc) / 2.0, 0.0)
+        lam2 = complex((trace_val - sqrt_disc) / 2.0, 0.0)
+        mode = 'real_distinct'
+    elif disc < -tol:                # D < 0: 共轭复根
+        real_part = trace_val / 2.0
+        imag_part = float(np.sqrt(-disc)) / 2.0
+        lam1 = complex(real_part, +imag_part)
+        lam2 = complex(real_part, -imag_part)
+        mode = 'complex_conjugate'
+    else:                            # |D| ≤ tol: 重实根
+        lam1 = lam2 = complex(trace_val / 2.0, 0.0)
+        mode = 'real_double'
+
+    spectral_radius = max(abs(lam1), abs(lam2))
+    distance_to_unit_circle = 1.0 - spectral_radius
+
+    # ---------- 边界与稳定判定 ----------
+    is_k0 = abs(k) < tol
+    is_c_eq_k = abs(c - k) < tol
+    is_c_eq_2pk_half = abs(c - (2.0 + k / 2.0)) < tol
+    in_wedge = (k > tol) and (c > k + tol) and (c < 2.0 + k / 2.0 - tol)
+
+    classification = None
+    schur_stable = False
+    stability = 'unstable'
+
+    # 路径 1:Schur 稳定楔形内
+    if in_wedge:
+        schur_stable = True
+        stability = 'schur_stable'
+        if disc < -tol:
+            classification = 'stable_oscillatory'
+        elif disc > tol:
+            classification = 'stable_overdamped'
+        else:
+            classification = 'stable_critical_damping'
+
+    # 路径 2:k=0 退化(Jury 条件 1 失败)
+    elif is_k0 and is_c_eq_k:
+        # k=0 AND c=0 → A = [[1,1],[0,1]] Jordan 块
+        classification = 'jordan_drift'
+        stability = 'critical'
+    elif is_k0:
+        # k=0, c>0 → λ₁=1, λ₂=1-c, 可对角化,有界 + 衰减
+        classification = 'marginal_const'
+        stability = 'critical'
+
+    # 路径 3:反回复 (k<0):λ₁·λ₂ = 1-c+k,若 k<0 必发散
+    elif k < -tol:
+        classification = 'anti_restoring'
+        stability = 'unstable'
+
+    # 路径 4:临界边界 c=k(乘积=1; |λ|=1 周期 / 实根 1)
+    elif is_c_eq_k:
+        stability = 'critical'
+        if disc < -tol:
+            classification = 'critical_periodic'       # 复根,|λ|=1
+        elif disc > tol:
+            classification = 'critical_real_unit'      # 实根,乘积=1
+        else:
+            # c=k AND c=2+k/2 → 唯一交点 k=4,c=4,λ=-1(双重)
+            classification = 'critical_period2'
+
+    # 路径 5:临界边界 c=2+k/2 (λ=-1)
+    elif is_c_eq_2pk_half:
+        classification = 'critical_period2'
+        stability = 'critical'
+
+    # 路径 6:楔形外(k>0,c<k 或 c>2+k/2)
+    else:
+        stability = 'unstable'
+        if disc < -tol:
+            classification = 'oscillatory_divergent'
+        else:
+            classification = 'monotonic_divergent'
+
+    return {
+        'k': float(k),
+        'c': float(c),
+        'A': A,
+        'eigenvalues': [lam1, lam2],
+        'spectral_radius': float(spectral_radius),
+        'trace': float(trace_val),
+        'determinant': float(det_val),
+        'discriminant': float(disc),
+        'mode': mode,
+        'stability': stability,
+        'classification': classification,
+        'schur_stable': bool(schur_stable),
+        'distance_to_unit_circle': float(distance_to_unit_circle),
+        'in_wedge': bool(in_wedge),
     }
 
 
@@ -584,6 +755,13 @@ def build_simulation_df(sim: dict, dates, index_tag: str, stock_tag: str) -> pd.
         # 调试用 — k / c 末行对齐(标量)
         'Sim_k_restore': [sim['k_restore']] * N_plus_1,
         'Sim_c_damp': [sim['c_damp']] * N_plus_1,
+        # v4:动力系统特征值(2026-08-17)— (k, c) 常数,λ₁/λ₂/ρ 整段模拟一样
+        'Sim_Lambda1_Real': [float(sim['eigenvalues'][0].real)] * N_plus_1,
+        'Sim_Lambda1_Imag': [float(sim['eigenvalues'][0].imag)] * N_plus_1,
+        'Sim_Lambda2_Real': [float(sim['eigenvalues'][1].real)] * N_plus_1,
+        'Sim_Lambda2_Imag': [float(sim['eigenvalues'][1].imag)] * N_plus_1,
+        'Sim_SpectralRadius': [float(sim['spectral_radius'])] * N_plus_1,
+        'Sim_DynamicClass': [sim['dynamic_class']] * N_plus_1,
     })
 
 
@@ -602,6 +780,7 @@ __all__ = [
     'predict_next_state',
     'simulate_trajectory',
     'build_simulation_df',
+    'analyze_eigenvalues',
     # F_self 预测器
     'make_rolling_mean_f_self_predictor',
     'make_constant_f_self_predictor',
