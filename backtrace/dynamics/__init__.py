@@ -29,6 +29,7 @@ from ._dynamics_core import (
     # F_self 预测器
     make_rolling_mean_f_self_predictor,
     make_constant_f_self_predictor,
+    make_ar1_f_self_predictor,
     # Forecast 模式
     forecast_v_M_random_walk,
     forecast_v_M_last_value,
@@ -51,6 +52,7 @@ __all__ = [
     'build_simulation_df',
     'make_rolling_mean_f_self_predictor',
     'make_constant_f_self_predictor',
+    'make_ar1_f_self_predictor',
     'forecast_v_M_random_walk',
     'forecast_v_M_last_value',
     'forecast_beta_last_value',

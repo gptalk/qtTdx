@@ -11,7 +11,7 @@
 dynamics/
 ├── _dynamics_core.py       数学 re-export + 5 个新增 API
 │                           (predict_next_state / simulate_trajectory / build_simulation_df
-│                            + F_self 预测器 ×2 + forecast helper ×5)
+│                            + F_self 预测器 ×3 + forecast helper ×5)
 ├── dynamics_system.py      单股端到端 CLI (load → describe → simulate → HTML/CSV)
 ├── dynamics_batch.py       批量 CLI (读 stocks.csv → 全跑 → manifest)
 ├── dynamics_1step_oos.py   OOS 1 步预测(纯动力学基线,F_self 滚动均值)
@@ -29,7 +29,7 @@ dynamics/
 | **力模型** | `projection._projection_core.compute_forces` | F_market / F_restore / F_damp / F_self |
 | **预测(新)** | `dynamics._dynamics_core.predict_next_state` | 1 步: a_pred = β·a_M - k·d - c·u + F_self |
 | **模拟(新)** | `dynamics._dynamics_core.simulate_trajectory` | N 步前向积分 v_{t+1} = v_t + a_t |
-| **F_self 预测器(新)** | `make_rolling_mean_f_self_predictor` / `make_constant_f_self_predictor` | 把残差外推从"末日瞬时值"升级到"滚动均值" |
+| **F_self 预测器(新)** | `make_rolling_mean_f_self_predictor` / `make_constant_f_self_predictor` / `make_ar1_f_self_predictor` | 把残差外推从"末日瞬时值"升级到"滚动均值" / "AR(1) 自回归" |
 | **Forecast 模式(新)** | `forecast_v_M_random_walk` / `forecast_v_M_last_value` / `forecast_beta_*` / `forecast_q_t_constant` | 无未来大盘观测时,合成 v_M_seq / beta_seq / q_t_seq |
 | **OOS 1 步预测 CLI(新)** | `dynamics_1step_oos.py` | 用 `predict_next_state` 跑 1 步 OOS,产预测 CSV + summary |
 | **状态分组 + vbt 回测 CLI(新)** | `dynamics_state_backtest.py` | 按 dominant_state 分组 + basket 回测 + IC |
@@ -54,6 +54,12 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_system.py \
 PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_system.py --k-from-fit --c-from-fit
 # 从 data/projection/kc_estimates.csv 自动加载 OLS 拟合的 k̂/ĉ
 ```
+
+**F_self 模式选择**(全部 CLI 都支持):
+- `rolling`(默认)— 末日滚动均值,常数预测器;`--f-self-window N` 控制窗口
+- `constant` — 末日瞬时值,常数预测器
+- `oracle` — 末日观测残差恒定外推(N 次复制)— 调试 / description 验证用
+- `ar1`(2026-08-17 新)— **AR(1) 自回归**,每步 `F_self(t) = μ + ρ^t · (F_self(0) - μ)`;ρ/μ 估自历史残差(per-dim);数据不足(< `--f-self-window`)自动退化到常数
 
 **输出**(单股):
 - `backtrace/outputs/dynsys_simulation.html` — 5 子图(实际 v_S → 模拟 v_S / 能量 / R+θ / 状态 / 力分解)
@@ -102,6 +108,7 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_1step_oos.py --k 0.5 -
 
 **重要陷阱**:默认 F_self 用 `a_S_now` 在 k=c=0 下会退化成恒等式(命中率虚高 100%),
 本脚本已用 `--f-self-window` 滚动均值兜底;设 `--f-self-window 0` 会触发警告。
+**`--f-self-mode ar1`** 让 F_self 按 AR(1) 自回归外推,比 rolling 更进一步(捕捉残差自相关)。
 
 ### 3.4 状态分组 + vbt basket 回测 + IC
 
@@ -246,6 +253,34 @@ sim = simulate_trajectory(
 5. `d_seq` 递推差一(实现 `d[t+1]=d[t]+u[t+1]`、spec `d[t+1]=d[t]+u[t]`)→ 改回 spec 写法
 6. `F_restore[0]` 的 `hasattr(k * d_init, '__len__')` 死分支 → 改用 `np.linalg.norm(k * d_init)`
 7. `forecast_v_M_random_walk` docstring 噪声索引不准 → 改 `noise[t-1]`
+
+## 6.5 F_self 自回归预测器(2026-08-17)
+
+新增 `make_ar1_f_self_predictor(F_self_history, min_history=10)` — 把"末日残差复制 N 次"升级到"AR(1) 自回归外推"。
+
+**模型**(per-dim):
+```
+F_self_d(t+1) = μ_d + ρ_d · (F_self_d(t) - μ_d)
+⇒ 闭式:    F_self_d(t) = μ_d + ρ_d^t · (F_self_d(0) - μ_d)
+```
+
+**ρ/μ 估计**(OLS on history):
+```
+μ_d = mean(F_self_d[:])
+ρ_d = Σ (F_d[t]-μ_d)(F_d[t-1]-μ_d) / Σ (F_d[t-1]-μ_d)²
+```
+ρ 截断到 [-1, 1] 避免数值发散。
+
+**退化路径**:
+- 无有效样本 → 零预测器
+- 有效样本 < `min_history` → 常数预测器(用 μ)
+- ρ 估不出来(分母 ≈ 0) → ρ = 0,等同于常数预测器
+
+**实证**:在 000001.SZ 残差序列上,`ρ ≈ -0.07 / +0.005`(基本无自相关)— AR(1) 退化为均值常数预测。这与"动力学方程残差近似白噪声"的假设一致,意味着动力学模型已经吸收了残差里大部分系统结构。
+
+**API**:与现有 `predictor(t, hist=None) -> (2,)` 完全兼容,直接替换 rolling/constant 预测器即可。
+
+**CLI**:`--f-self-mode ar1`(`dynamics_system.py` / `dynamics_batch.py` / `dynamics_1step_oos.py`),`--f-self-window N` 控制 `min_history`。
 
 ## 6.6 时间轴彻底重构(2026-08-17 v2)
 

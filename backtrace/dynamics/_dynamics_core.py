@@ -146,6 +146,75 @@ def make_constant_f_self_predictor(F_self_const: np.ndarray) -> 'callable':
     return predictor
 
 
+def make_ar1_f_self_predictor(
+    F_self_history: np.ndarray,
+    min_history: int = 10,
+) -> 'callable':
+    """构造「AR(1) 自回归 F_self 预测器」(per-dim)。
+
+    模型(各分量独立):
+        F_self_d(t+1) = μ_d + ρ_d · (F_self_d(t) - μ_d)
+    ⇒ 闭式:    F_self_d(t) = μ_d + ρ_d^t · (F_self_d(0) - μ_d)
+
+    ρ_d 估自历史残差序列的一阶自相关系数:
+        ρ_d = Σ_t (F_d[t]-μ_d)(F_d[t-1]-μ_d) / Σ_t (F_d[t-1]-μ_d)²
+    μ_d = mean(F_d[:])
+    ρ_d 截断到 [-1, 1] 避免数值误差导致发散。
+
+    退化(有效样本 < min_history 或 ρ 估不出来):回退到「常数预测器(用 μ)」。
+    退化(完全没有有效样本):回退到「零预测器」。
+
+    比 `rolling_mean` / `constant` 更进一步:每步的 F_self(t) 由历史 AR 系数决定,
+    而非机械复制末值/均值。能捕捉「残差自相关」结构(如持续动量或反向回归)。
+
+    Args:
+        F_self_history: (T_hist, 2) 历史 F_self 序列(只取 NaN-free 段)
+        min_history:    最少需要多少个有效点才启用 AR(1);默认 10
+
+    Returns:
+        predictor(t, hist=None) -> ndarray (2,)。hist 预留接口(本预测器不用)
+    """
+    arr = np.asarray(F_self_history, dtype=float)
+    if arr.ndim != 2 or arr.shape[1] != 2:
+        raise ValueError(f"F_self_history 应为 (T, 2),收到 {arr.shape}")
+    valid_mask = np.isfinite(arr).all(axis=1)
+    arr_valid = arr[valid_mask]
+
+    # 退化路径 1:无有效样本 → 零预测器
+    if len(arr_valid) == 0:
+        return make_constant_f_self_predictor(np.zeros(2))
+
+    # 退化路径 2:样本太少 → 用全历史均值作为常数预测
+    if len(arr_valid) < min_history:
+        mu = arr_valid.mean(axis=0)
+        return make_constant_f_self_predictor(mu)
+
+    # 主路径:per-dim AR(1) 估计
+    mu = arr_valid.mean(axis=0)               # (2,)
+    centered = arr_valid - mu                  # (T, 2)
+    rho = np.zeros(2, dtype=float)
+    for d in range(2):
+        num = float(np.dot(centered[:-1, d], centered[1:, d]))
+        den = float(np.dot(centered[:-1, d], centered[:-1, d]))
+        rho[d] = (num / den) if den > 1e-12 else 0.0
+    rho = np.clip(rho, -1.0, 1.0)             # 数值防发散
+
+    initial = arr_valid[-1].copy()             # F_self(0) = 末日观测
+    init_centered = initial - mu               # ρ^t · (F_self(0) - μ)
+
+    def predictor(t, hist=None):
+        # 闭式预测:F_self(t) = μ + ρ^t · (F_self(0) - μ)
+        decay = rho ** int(t)
+        return mu + decay * init_centered
+
+    predictor.__doc__ = (
+        f'AR(1) F_self predictor (rho=({rho[0]:+.4f}, {rho[1]:+.4f}), '
+        f'mu=({mu[0]:+.3e}, {mu[1]:+.3e}), '
+        f'F_self(0)=({initial[0]:+.3e}, {initial[1]:+.3e}))'
+    )
+    return predictor
+
+
 # === Forecast 模式:预生成 v_M_seq / beta_seq / q_t_seq(用户 Task 4) ===========
 def forecast_v_M_random_walk(
     v_M_init: np.ndarray,         # (2,) 起点 v_M(取末日真实 v_M)

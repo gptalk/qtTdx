@@ -49,6 +49,7 @@ from projection._projection_core import (
 from dynamics import (
     build_simulation_df, simulate_trajectory,
     make_rolling_mean_f_self_predictor, make_constant_f_self_predictor,
+    make_ar1_f_self_predictor,
 )
 
 
@@ -76,10 +77,12 @@ def parse_args():
     )
     p.add_argument('--k-from-fit', action='store_true', help='从 kc_estimates.csv 加载 k̂')
     p.add_argument('--c-from-fit', action='store_true', help='从 kc_estimates.csv 加载 ĉ')
-    p.add_argument('--f-self-mode', default='rolling', choices=['rolling', 'constant', 'oracle'],
-                   help='F_self 预测:rolling=末日滚动均值(default)/constant=末日瞬时值/oracle=末日观测外推')
+    p.add_argument('--f-self-mode', default='rolling',
+                   choices=['rolling', 'constant', 'oracle', 'ar1'],
+                   help='F_self 预测:rolling=末日滚动均值(default)/constant=末日瞬时值/'
+                        'oracle=末日观测外推/ar1=AR(1) 自回归(per-dim 估 ρ/μ)')
     p.add_argument('--f-self-window', type=int, default=10,
-                   help='F_self 滚动均值窗口(天),仅 rolling 模式有效。默认 10')
+                   help='F_self 窗口(rolling=滚动均值天数;ar1=AR(1) 最少有效样本数)。默认 10')
     return p.parse_args()
 
 
@@ -231,11 +234,17 @@ def main():
     elif args.f_self_mode == 'constant':
         F_self_predictor = make_constant_f_self_predictor(F_self_last)
         F_self_seq = None
+    elif args.f_self_mode == 'ar1':
+        # AR(1) 自回归:per-dim 估 ρ/μ;数据不足自动退化
+        F_self_predictor = make_ar1_f_self_predictor(
+            F_self_full, min_history=args.f_self_window,
+        )
+        F_self_seq = None
     else:  # oracle — 末日观测残差恒定外推(旧默认)
         F_self_predictor = None
         F_self_seq = np.tile(F_self_last, (args.horizon, 1))
     print(f'[sim] F_self 模式: {args.f_self_mode}'
-          + (f' W={args.f_self_window}' if args.f_self_mode == 'rolling' else ''))
+          + (f' W={args.f_self_window}' if args.f_self_mode in ('rolling', 'ar1') else ''))
     # q_t 序列:末日往回数
     q_t_seq = dyn['q_t'][-args.horizon:]
 
