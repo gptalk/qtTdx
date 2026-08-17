@@ -210,11 +210,13 @@ def write_text_summary(
     l1_threshold: int,
     agg_ex: pd.DataFrame,
     path: str,
+    sw2_members_path: str = 'data/sw2/members.csv',
 ) -> None:
     """写 dynsys_eigen_summary.txt 纯文本汇总(UTF-8)。
 
     行业 label 增强:agg_l1.groupby key 是 industry_l1(sector_code),
     这里再读 sw2/members.csv 把 sector_name 拼过来,显示更可读。
+    sw2_members_path 由 caller 经 --sw2-members 传入,默认即仓库内 data/sw2/members.csv。
     """
     import datetime as _dt
     N = len(summary_df)
@@ -230,7 +232,7 @@ def write_text_summary(
     # 行业 label 增强:industry_l1(sector_code) → industry_l2(sector_name)
     sb = pd.DataFrame()
     try:
-        sb = pd.read_csv('data/sw2/members.csv', dtype={'sector_code': str})
+        sb = pd.read_csv(sw2_members_path, dtype={'sector_code': str})
         if 'sector_code' in sb.columns and 'sector_name' in sb.columns:
             name_lookup = sb.drop_duplicates('sector_code').set_index('sector_code')['sector_name'].to_dict()
         else:
@@ -635,6 +637,7 @@ def main():
     # 文本汇总(便于 grep / CI)
     write_text_summary(
         summary_df, cls_count, agg_l1, l1_threshold, agg_ex, DEFAULT_TXT_OUTPUT,
+        sw2_members_path=args.sw2_members,
     )
 
 
