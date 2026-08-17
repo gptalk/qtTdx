@@ -709,7 +709,10 @@ def test_rolling_time_basic_shape():
     proj_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         'backtrace', 'projection')
-    if proj_dir not in sys.path:
+    # 记录原始 sys.path 位置,结束后还原,避免污染 pytest 进程级 path。
+    original_path = list(sys.path)
+    path_added = proj_dir not in sys.path
+    if path_added:
         sys.path.insert(0, proj_dir)
     # parameter_fit 顶层 import common.tsfresh_pipeline(依赖 tsfresh)。
     # 本测试只验纯 pandas 的 _month_ends,故环境缺 tsfresh 时打桩,避免无关依赖。
@@ -724,11 +727,17 @@ def test_rolling_time_basic_shape():
                 'common.tsfresh_pipeline')
         from parameter_fit import _month_ends
     finally:
+        # 还原 sys.modules(防止 common.* stub 污染后续测试)
         for k, v in saved.items():
             if v is None:
                 sys.modules.pop(k, None)
             else:
                 sys.modules[k] = v
+        # 还原 sys.path 到进入本测试前的状态
+        if path_added and proj_dir in sys.path:
+            sys.path.remove(proj_dir)
+        # 防御:即使调用前已在 sys.path 里,也按原顺序恢复以避免相对位置漂移
+        sys.path[:] = original_path
 
     dates = pd.to_datetime([
         '2024-01-15', '2024-01-31', '2024-02-29', '2024-03-31', '2024-04-30',

@@ -386,7 +386,12 @@ def list_movement_csvs(input_csv: str | None):
         # 没有 manifest 时只能从 tag 推 code
         suf = stock_tag[:6]   # 6 位数字,粗略区分 SH / SZ — 不准,只是占位
         code_guess = stock_tag + ('.SH' if suf.startswith(('6', '9', '5')) else '.SZ')
-        out.append((code_guess, None, mv_csv, index_tag, stock_tag, index_tag + '.SH'))
+        # 大盘 index_code 后缀按指数 tag 区分:SH 指数(000001/881xxx)→ .SH,
+        # SZ 指数(399001/399xxx)→ .SZ。hardcode '.SH' 会让所有 SZ 指数变成假键,
+        # 致下游按 (code, index_code) groupby 时整条 series 被丢弃。
+        index_suffix = '.SZ' if index_tag.startswith(('399', '39')) else '.SH'
+        index_code = index_tag + index_suffix
+        out.append((code_guess, None, mv_csv, index_tag, stock_tag, index_code))
     return out
 
 
@@ -794,6 +799,12 @@ def main_rolling_time(targets, window: int = 240, clip_extreme: float = 10.0):
         df, delta_u, delta_v, beta = loaded
         u_vec, d_vec, a_u_vec, a_v_vec = _build_kinematics(delta_u, delta_v, beta)
         dates = pd.to_datetime(df['Date'])
+        # 防御性 assert:rolling 取末 window 行的前提是 Date 单调递增。
+        # 若 movement CSV 异常(混序)→ 直接报而不是悄悄用错位置当 OLS 输入。
+        assert dates.is_monotonic_increasing, (
+            f'{mv_csv}: Date 非单调递增,rolling-time 模式不安全;'
+            f'请先校验 movement CSV 生成逻辑。'
+        )
         month_ends = _month_ends(dates)
         print(f'{len(month_ends)} asof_dates', end=' ', flush=True)
         for asof in month_ends:
@@ -806,7 +817,8 @@ def main_rolling_time(targets, window: int = 240, clip_extreme: float = 10.0):
                     'index_code': index_code,
                     'index_tag': index_tag, 'stock_tag': stock_tag,
                     'k_hat': np.nan, 'c_hat': np.nan,
-                    'f_self_loss': np.nan, 'n_valid_days': 0,
+                    'f_self_loss': np.nan,
+                    'n_valid_days': n_avail,   # 真实可用天数,不埋进 status 字符串
                     'status': f'too_few_days ({n_avail})',
                 })
                 continue
