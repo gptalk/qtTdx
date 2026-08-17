@@ -6,8 +6,12 @@
   - v4.1 关键边界修正:c=2+k/2 在 k>4 时 **不是** critical_period2;c=k 在 k>4 时 **不是** critical_real_unit
   - v4.2 wedge distance 字段(distance_lower / upper / to_wedge)
   - Gram-Schmidt 能量恒等式(via simulate_trajectory 的 energy_error 字段)
+  - v4.3:行业聚合 (ρ 中位数 + 阈值降级 + 降序排)
+  - v4.3:交易所拆分 (n_stocks + p25/p75)
+  - v4.3:HTML 2x4 + 文本汇总 + 2 个聚合 CSV
 """
 import numpy as np
+import pandas as pd
 import pytest
 import sys, os
 
@@ -15,6 +19,7 @@ BACKTRACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '
 if BACKTRACE_DIR not in sys.path:
     sys.path.insert(0, BACKTRACE_DIR)
 from dynamics import analyze_eigenvalues, simulate_trajectory, build_simulation_df
+from dynamics import dynamics_eigen_analysis as EA
 
 
 # === 11 分类全分支 ===
@@ -253,3 +258,171 @@ def test_build_simulation_df_v4_columns():
         'Sim_EnergyError',
     ]:
         assert col in df.columns, f'Missing column: {col}'
+
+
+# === v4.3:行业聚合 ρ 中位数 ===
+
+def test_industry_aggregation_rho_median():
+    """构造 100 只票 / 3 个行业的 dummy DataFrame,验证 groupby median + 阈值降级 + 降序排。
+
+    阈值降级:min_stocks=20 / fallback_min=10,3 个行业都 n>=20,但 aggregate_by_industry
+    要求 len(agg) >= 5 才锁定阈值,只有 3 个行业时退到 fallback_min=10。
+    """
+    rng = np.random.default_rng(42)
+    rows = []
+    # industry_A 50 只 ρ∈[0.5, 1.0]
+    for i in range(50):
+        rho = rng.uniform(0.5, 1.0)
+        rows.append({'code': f'A{i:03d}', 'industry_l1': '881001.SH',
+                     'spectral_radius': rho, 'k_hat': 0.1, 'c_hat': 1.0,
+                     'schur_stable': rho < 1.0, 'in_wedge': True,
+                     'distance_to_wedge': 0.1})
+    # industry_B 30 只 ρ∈[1.0, 2.0]
+    for i in range(30):
+        rho = rng.uniform(1.0, 2.0)
+        rows.append({'code': f'B{i:03d}', 'industry_l1': '881002.SH',
+                     'spectral_radius': rho, 'k_hat': 0.0, 'c_hat': 2.0,
+                     'schur_stable': False, 'in_wedge': False,
+                     'distance_to_wedge': -0.5})
+    # industry_C 20 只 ρ∈[2.0, 5.0]
+    for i in range(20):
+        rho = rng.uniform(2.0, 5.0)
+        rows.append({'code': f'C{i:03d}', 'industry_l1': '881003.SH',
+                     'spectral_radius': rho, 'k_hat': -0.1, 'c_hat': 5.0,
+                     'schur_stable': False, 'in_wedge': False,
+                     'distance_to_wedge': -2.0})
+    df = pd.DataFrame(rows)
+
+    agg, threshold = EA.aggregate_by_industry(df, min_stocks=20, fallback_min=10)
+    # 3 个行业(< len>=5 阈值),实际退到 fallback_min=10
+    assert threshold == 10
+    assert len(agg) == 3
+    # A ρ 中位数 ~0.75, B ~1.5, C ~3.5
+    rho_med_by_industry = dict(zip(agg['industry_l1'], agg['rho_median']))
+    assert 0.6 < rho_med_by_industry['881001.SH'] < 0.9
+    assert 1.2 < rho_med_by_industry['881002.SH'] < 1.8
+    assert 2.8 < rho_med_by_industry['881003.SH'] < 4.2
+    # n_stocks 正确
+    n_by_industry = dict(zip(agg['industry_l1'], agg['n_stocks']))
+    assert n_by_industry['881001.SH'] == 50
+    assert n_by_industry['881002.SH'] == 30
+    assert n_by_industry['881003.SH'] == 20
+    # 降序排
+    assert agg['rho_median'].is_monotonic_decreasing
+
+
+# === v4.3:交易所拆分 + 误差棒 ===
+
+def test_exchange_split_correctness():
+    """SH/SZ 各 50 只,验证 n_stocks=50/50,p25/p75 正确,median 落在 [p25, p75]。"""
+    rng = np.random.default_rng(7)
+    rows = []
+    for i in range(50):
+        rows.append({'code': f'SH{i:03d}', 'exchange': 'SH',
+                     'spectral_radius': rng.uniform(0.8, 1.5),
+                     'k_hat': 0.0, 'c_hat': 1.2, 'schur_stable': False,
+                     'in_wedge': False, 'distance_to_wedge': -0.1})
+    for i in range(50):
+        rows.append({'code': f'SZ{i:03d}', 'exchange': 'SZ',
+                     'spectral_radius': rng.uniform(1.0, 2.0),
+                     'k_hat': 0.0, 'c_hat': 1.5, 'schur_stable': False,
+                     'in_wedge': False, 'distance_to_wedge': -0.2})
+    df = pd.DataFrame(rows)
+
+    agg = EA.aggregate_by_exchange(df)
+    assert set(agg['exchange']) == {'SH', 'SZ'}
+    n_by_ex = dict(zip(agg['exchange'], agg['n_stocks']))
+    assert n_by_ex['SH'] == 50
+    assert n_by_ex['SZ'] == 50
+    # SH ρ 中位数 ~1.15, SZ ~1.5
+    rho_by_ex = dict(zip(agg['exchange'], agg['rho_median']))
+    assert 1.0 < rho_by_ex['SH'] < 1.3
+    assert 1.3 < rho_by_ex['SZ'] < 1.7
+    # p25 <= median <= p75
+    for _, r in agg.iterrows():
+        assert r['rho_p25'] <= r['rho_median'] <= r['rho_p75']
+
+
+# === v4.3:HTML 2x4 + 文本输出(端到端) ===
+
+def test_html_2x4_layout_and_text_summary(tmp_path, monkeypatch):
+    """构造 dummy kc_estimates + dummy stock_basic + dummy sw2/members,
+    跑 main(临时改路径),验证 8 子图 HTML + 文本汇总 + 2 个聚合 CSV。"""
+    rng = np.random.default_rng(123)
+
+    # --- 1. 构造 dummy kc_estimates(50 只,30 SH + 20 SZ)— 注意:load_kc_estimates 要求 'status' 列
+    rows = []
+    for i in range(50):
+        k = rng.uniform(-0.5, 0.5)
+        c = rng.uniform(0.5, 3.0)
+        eig = EA.analyze_eigenvalues(k, c)
+        rows.append({
+            'code': f'{i:06d}.SH' if i < 30 else f'{i:06d}.SZ',
+            'name': f'Test{i}',
+            'index_tag': '000',
+            'stock_tag': f'{i:06d}',
+            'status': 'ok',  # ← load_kc_estimates 要求此列(status_filter='ok')
+            'k_hat': k,
+            'c_hat': c,
+            'lam1_real': float(eig['eigenvalues'][0].real),
+            'lam1_imag': float(eig['eigenvalues'][0].imag),
+            'lam2_real': float(eig['eigenvalues'][1].real),
+            'lam2_imag': float(eig['eigenvalues'][1].imag),
+            'spectral_radius': eig['spectral_radius'],
+            'classification': eig['classification'],
+            'stability': eig['stability'],
+            'schur_stable': eig['schur_stable'],
+            'in_wedge': eig['in_wedge'],
+            'distance_lower_boundary': eig['distance_lower_boundary'],
+            'distance_upper_boundary': eig['distance_upper_boundary'],
+            'distance_to_wedge': eig['distance_to_wedge'],
+        })
+    df = pd.DataFrame(rows)
+    csv_in = tmp_path / 'kc_estimates.csv'
+    df.to_csv(csv_in, index=False)
+
+    # --- 2. 构造 dummy stock_basic.csv(code, market, name, status)
+    sb_rows = [{'code': rows[i]['code'], 'market': 'SH' if i < 30 else 'SZ',
+                'name': f'Test{i}', 'status': 'active'} for i in range(50)]
+    sb_path = tmp_path / 'stock_basic.csv'
+    pd.DataFrame(sb_rows).to_csv(sb_path, index=False)
+
+    # --- 3. 构造 dummy sw2/members.csv(sector_code, sector_name, member_code)
+    sw2_rows = []
+    for i in range(30):
+        sw2_rows.append({'sector_code': '881001.SH', 'sector_name': 'A组',
+                         'member_code': rows[i]['code']})
+    for i in range(30, 50):
+        sw2_rows.append({'sector_code': '881002.SH', 'sector_name': 'B组',
+                         'member_code': rows[i]['code']})
+    sw2_path = tmp_path / 'sw2_members.csv'
+    pd.DataFrame(sw2_rows).to_csv(sw2_path, index=False)
+
+    # --- 4. 输出路径
+    html_out = tmp_path / 'dynsys_eigen.html'
+    txt_out = tmp_path / 'dynsys_eigen_summary.txt'
+
+    # --- 5. monkeypatch + 跑 main
+    monkeypatch.setattr(EA, 'CSV_OUT_DIR', str(tmp_path))
+    monkeypatch.setattr(EA, 'AGG_INDUSTRY_CSV', str(tmp_path / 'v43_eigen_top_industries.csv'))
+    monkeypatch.setattr(EA, 'AGG_EXCHANGE_CSV', str(tmp_path / 'v43_eigen_by_exchange.csv'))
+    monkeypatch.setattr(EA, 'DEFAULT_TXT_OUTPUT', str(txt_out))
+
+    sys.argv = ['dynamics_eigen_analysis',
+                '--input', str(csv_in),
+                '--output', str(html_out),
+                '--stock-basic', str(sb_path),
+                '--sw2-members', str(sw2_path),
+                '--limit', '0']
+    EA.main()
+
+    # --- 6. 验收
+    assert html_out.exists() and html_out.stat().st_size > 50_000
+    assert txt_out.exists()
+    txt_content = txt_out.read_text(encoding='utf-8')
+    assert '=== v4.3 全市场' in txt_content
+    assert '--- 11 类分布 ---' in txt_content
+    assert '--- 行业 ρ 中位数 top10' in txt_content
+    assert '--- 交易所 ---' in txt_content
+    assert (tmp_path / 'v43_eigen_top_industries.csv').exists()
+    assert (tmp_path / 'v43_eigen_by_exchange.csv').exists()
