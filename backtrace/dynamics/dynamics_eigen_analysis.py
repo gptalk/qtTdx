@@ -963,16 +963,16 @@ def main():
     )
 
     # ---------- 4.5 v4.7 行业稳定性指数 SI ----------
-    from pathlib import Path
     print(f'[eigen] 计算行业稳定性指数 SI ...')
     si_name_lookup = _industry_name_lookup(args.sw2_members)
     df_si = compute_sector_stability(summary_df, name_lookup=si_name_lookup)
     si_csv = os.path.join(CSV_OUT_DIR, 'sector_si.csv')
     df_si.to_csv(si_csv, index=False, encoding='utf-8-sig')
     print(f'[eigen] SI CSV: {si_csv}({len(df_si)} 行业)')
-    out_path = Path(args.output)
-    si_html = str(out_path.with_name(out_path.stem + '_sector_si' + out_path.suffix))
-    si_txt = str(out_path.with_name(out_path.stem + '_sector_si_summary.txt'))
+    # SI HTML / TXT 路径按 spec §4.2 锁定(dynsys_sector_si.*,不绑定 args.output)
+    out_dir = os.path.dirname(os.path.abspath(args.output)) or '.'
+    si_html = os.path.join(out_dir, 'dynsys_sector_si.html')
+    si_txt = os.path.join(out_dir, 'dynsys_sector_si_summary.txt')
     build_sector_si_html(df_si, si_html)
     print(f'[eigen] SI HTML: {si_html}')
     write_sector_si_summary(df_si, si_txt)
