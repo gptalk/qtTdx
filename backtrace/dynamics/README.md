@@ -606,7 +606,7 @@ sim['in_wedge']      # True
   - `2026-08-16-market-stock-dynamics-design.md` — 描述层 spec(本目录的上游)
   - `2026-08-16-dynamics-system-design.md` — 本目录 spec(N 步模拟增量)
 
-### 3.4 全市场经验分布 (v4.3, 2026-08-17)
+### 3.5 全市场经验分布 (v4.3, 2026-08-17)
 
 把 `kc_estimates.csv` 从 4 只 smoke-test 扩张到全 A 股 (~5000 只),回答经验问题:
 "动力系统参数 (k̂, ĉ) 在全市场到底呈什么分布?"
