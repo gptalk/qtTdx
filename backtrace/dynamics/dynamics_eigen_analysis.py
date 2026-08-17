@@ -37,6 +37,9 @@ from dynamics import analyze_eigenvalues
 CSV_OUT_DIR = 'data/dynamics'
 DEFAULT_INPUT = 'data/projection/kc_estimates.csv'
 DEFAULT_OUTPUT_HTML = 'backtrace/outputs/dynsys_eigen.html'
+DEFAULT_STOCK_BASIC = 'data/stock_basic.csv'
+DEFAULT_SW2_MEMBERS = 'data/sw2/members.csv'
+DEFAULT_TXT_OUTPUT = 'backtrace/outputs/dynsys_eigen_summary.txt'
 
 # 8 类标签(分类配色)
 CLASS_COLORS = {
@@ -68,23 +71,89 @@ CLASS_LABEL_CN = {
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description='(k̂, ĉ) → 特征值 + 8 类稳定性分类 + HTML 报告')
+    p = argparse.ArgumentParser(description='(k̂, ĉ) → 特征值 + 11 类稳定性分类 + HTML 报告 (v4.3)')
     p.add_argument('--input', default=DEFAULT_INPUT,
                    help=f'kc_estimates CSV。默认 {DEFAULT_INPUT}')
     p.add_argument('--output', default=DEFAULT_OUTPUT_HTML,
                    help=f'HTML 输出路径。默认 {DEFAULT_OUTPUT_HTML}')
     p.add_argument('--limit', type=int, default=0, help='最多处理多少只;0=全部')
     p.add_argument('--status-filter', default='ok', help='只分析 status 以此前缀开头的行;默认 "ok"')
+    p.add_argument('--stock-basic', default='data/stock_basic.csv',
+                   help='stock_basic CSV 路径(反查 exchange);默认 data/stock_basic.csv')
+    p.add_argument('--sw2-members', default='data/sw2/members.csv',
+                   help='sw2/members CSV 路径(反查 industry_l1/l2);默认 data/sw2/members.csv')
     return p.parse_args()
 
 
-def load_kc_estimates(path: str, status_filter: str = 'ok', limit: int = 0) -> pd.DataFrame:
-    """读 kc_estimates.csv,返回有效行(DataFrame)。"""
-    df = pd.read_csv(path)
+def load_kc_estimates(
+    path: str, status_filter: str = 'ok', limit: int = 0,
+    stock_basic_path: str = 'data/stock_basic.csv',
+    sw2_members_path: str = 'data/sw2/members.csv',
+) -> pd.DataFrame:
+    """读 kc_estimates.csv,反查 stock_basic(exchange)+ sw2/members(industry_l1/l2)。"""
+    df = pd.read_csv(path, dtype={'code': str})
     if status_filter:
         df = df[df['status'].astype(str).str.startswith(status_filter)].copy()
     if limit and len(df) > limit:
         df = df.head(limit).copy()
+    # merge 前 drop 同名列(避免 _x / _y 后缀污染)
+    for col in ['industry_l1', 'industry_l2', 'exchange']:
+        if col in df.columns:
+            df = df.drop(columns=[col])
+    ex_lookup = load_exchange_lookup(stock_basic_path)
+    df = df.merge(ex_lookup, on='code', how='left')
+    ind_lookup = load_industry_lookup(sw2_members_path)
+    df = df.merge(ind_lookup, on='code', how='left')
+    for col in ['industry_l1', 'industry_l2', 'exchange']:
+        if col not in df.columns:
+            df[col] = ''
+        df[col] = df[col].fillna('').astype(str)
+    return df
+
+
+def load_exchange_lookup(path: str = 'data/stock_basic.csv') -> pd.DataFrame:
+    """读 stock_basic.csv,返回 code → exchange 反查表。
+
+    stock_basic 列: code, market, name, status。`market` 即交易所(SH/SZ/BJ)。
+    缺文件 / 缺列 → 返回空表,eigen_analysis 不致命(行业列留空)。
+    """
+    if not os.path.exists(path):
+        print(f'[eigen] ⚠ stock_basic 不存在: {path},exchange 列将留空')
+        return pd.DataFrame(columns=['code', 'exchange'])
+    df = pd.read_csv(path, dtype={'code': str})
+    if 'market' not in df.columns:
+        print(f'[eigen] ⚠ stock_basic 缺 market 列: {path},exchange 列将留空')
+        return pd.DataFrame(columns=['code', 'exchange'])
+    df['exchange'] = df['market'].fillna('').astype(str).str.strip()
+    df.loc[df['exchange'].isin(['-', 'nan', 'None']), 'exchange'] = ''
+    return df[['code', 'exchange']]
+
+
+def load_industry_lookup(path: str = 'data/sw2/members.csv') -> pd.DataFrame:
+    """读 sw2/members.csv,返回 code → {industry_l1, industry_l2} 反查表。
+
+    sw2/members 列: sector_code, sector_name, member_code。
+    - `sector_code`(881xxx.SH) → industry_l1
+    - `sector_name`(中文,例如"银行") → industry_l2
+    - `member_code` → code(join key)
+
+    注意:同 code 可能属于多个 industry_l1(同一只票同时是"银行"和"金融")。
+    默认取首条(`.drop_duplicates('code', keep='first')`)。
+    """
+    if not os.path.exists(path):
+        print(f'[eigen] ⚠ sw2/members 不存在: {path},industry 列将留空')
+        return pd.DataFrame(columns=['code', 'industry_l1', 'industry_l2'])
+    df = pd.read_csv(path, dtype={'member_code': str})
+    if 'member_code' not in df.columns or 'sector_name' not in df.columns:
+        print(f'[eigen] ⚠ sw2/members 缺关键列: {path}')
+        return pd.DataFrame(columns=['code', 'industry_l1', 'industry_l2'])
+    df['industry_l1'] = df['sector_code'].fillna('').astype(str).str.strip() if 'sector_code' in df.columns else ''
+    df['industry_l2'] = df['sector_name'].fillna('').astype(str).str.strip()
+    df['code'] = df['member_code']
+    df = df[['code', 'industry_l1', 'industry_l2']].copy()
+    df = df.drop_duplicates('code', keep='first')
+    for col in ['industry_l1', 'industry_l2']:
+        df.loc[df[col].isin(['-', 'nan', 'None']), col] = ''
     return df
 
 
@@ -95,12 +164,17 @@ def main():
         print('  请先跑 backtrace/projection/parameter_fit.py 生成 kc_estimates.csv')
         sys.exit(1)
 
-    df = load_kc_estimates(args.input, args.status_filter, args.limit)
+    df = load_kc_estimates(
+        args.input, args.status_filter, args.limit,
+        stock_basic_path=args.stock_basic,
+        sw2_members_path=args.sw2_members,
+    )
     if len(df) == 0:
         print(f'[eigen] ✗ 过滤后 0 行(status_filter={args.status_filter!r})')
         sys.exit(1)
 
     print(f'[eigen] 输入: {args.input} ({len(df)} 行,status 前缀 {args.status_filter!r})')
+    print(f'[eigen] 行业来源: {args.sw2_members} | 交易所来源: {args.stock_basic} — v4.3')
 
     # ---------- 1. 每行算 analyze_eigenvalues ----------
     rows = []
@@ -127,6 +201,10 @@ def main():
             'distance_lower_boundary': eig['distance_lower_boundary'],
             'distance_upper_boundary': eig['distance_upper_boundary'],
             'distance_to_wedge': eig['distance_to_wedge'],
+            # v4.3:行业 + 交易所(via stock_basic + sw2/members)
+            'industry_l1': row.get('industry_l1', ''),
+            'industry_l2': row.get('industry_l2', ''),
+            'exchange': row.get('exchange', ''),
         })
     summary_df = pd.DataFrame(rows)
     out_csv = os.path.join(CSV_OUT_DIR, 'eigen_summary.csv')
