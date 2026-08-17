@@ -37,7 +37,7 @@ if BACKTRACE_DIR not in sys.path:
     sys.path.insert(0, BACKTRACE_DIR)
 from common import tsfresh_pipeline as P
 from projection._projection_core import (
-    load_pair, compute_movement_projection,
+    load_pair, compute_movement_projection, compute_dynamics,
 )
 from dynamics import predict_next_state
 
@@ -107,6 +107,9 @@ def predict_one(stock_code, days, prefer_industry, index_code,
     delta_v = mv['index_move']              # (T-1, 2) — v_M
     beta = mv['proj_coeff']                 # (T-1,)
     T = len(delta_u)
+    # 锚定强度 q_t 序列(与 simulate_trajectory 共享):从 description 层拿
+    dyn = compute_dynamics(mv, lambda_q=None)
+    q_t_seq = dyn['q_t']                    # (T-1,)
 
     # 加速度:末行 NaN(np.diff 丢一行)
     a_u = np.full_like(delta_u, np.nan)     # a_S
@@ -148,7 +151,7 @@ def predict_one(stock_code, days, prefer_industry, index_code,
         actual = delta_u[t + 1]
         if not np.isfinite(actual).all():
             continue
-        a_pred, v_pred, dS_pred = predict_next_state(
+        a_pred, v_pred = predict_next_state(
             v_S_now=delta_u[t],
             a_M_now=a_v[t],
             beta_now=beta[t],
@@ -156,6 +159,7 @@ def predict_one(stock_code, days, prefer_industry, index_code,
             u_now=u_vec[t],
             F_self_now=F_self_pred,
             k=k, c=c,
+            q_now=float(q_t_seq[t]),
         )
         if not np.isfinite(v_pred).all():
             continue

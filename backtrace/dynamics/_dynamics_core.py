@@ -48,36 +48,42 @@ def predict_next_state(
     a_S_now: np.ndarray | None = None,     # (2,) 当前个股加速度(F_self=None 时必传)
     k: float = 0.0,
     c: float = 0.0,
+    q_now: float = 1.0,         # 锚定强度 q_t;默认 1.0 = 无阻尼(向后兼容旧 caller)
 ) -> tuple:
-    """1 步预测下一个交易日的个股加速度 / 速度 / 位置增量。
+    """1 步预测下一个交易日的个股加速度 / 速度。
 
-    模型(用户 prompt §14-19):
-        a_pred = β·a_M - k·d - c·u + F_self
+    模型(用户 prompt §14-19,**统一版**;与 simulate_trajectory 共享同一方程):
+        a_pred = q_now * β·a_M - k·d - c·u + F_self
         v_pred = v_S + a_pred          (Δt = 1)
-        ΔS_pred = v_pred               (速度直接 = 下日 ΔS,因为 v ≡ ΔS/Δt, Δt=1)
+
+    旧版本仅返 (a_pred, v_pred, delta_S_pred) — 但 delta_S_pred ≡ v_pred(纯冗余),
+    现已删除第 3 个返回值。旧 caller 若解构 3 元组会报 too many values to unpack。
+
+    时间轴约定(全篇):见 simulate_trajectory 顶部 docstring。
 
     Args:
         v_S_now:  当前 v_S(2-D 向量,ΔVol/ΔAmt 量纲)
-        a_M_now:  当前 a_M(2-D 向量)
+        a_M_now:  当前 a_M(2-D 向量,代表"从 step t 到 step t+1 的市场速度变化")
         beta_now: 当前 β
         d_now:    当前 d(2-D 位置偏离累积)
         u_now:    当前 u(2-D 速度偏离)
-        F_self_now: (可选)外部给定的残差;若 None 则由 a_S_now 推 F_self = a_S - β·a_M + k·d + c·u
+        F_self_now: (可选)外部给定的残差;若 None 则由 a_S_now 推 F_self = a_S - q·β·a_M + k·d + c·u
         a_S_now:   (F_self_now=None 时必传)当前 a_S
         k: 恢复系数
         c: 阻尼系数
+        q_now: 锚定强度(与 simulate_trajectory 的 q_t_seq[t] 同语义);
+               默认 1.0 表示无阻尼。description 层用 q = ‖ΔM‖/(‖ΔM‖+λ_q) ∈ [0,1]。
 
     Returns:
-        (a_pred, v_pred, delta_S_pred),都是 (2,) ndarray
+        (a_pred, v_pred),都是 (2,) ndarray
     """
     if F_self_now is None:
         if a_S_now is None:
             raise ValueError("F_self_now=None 时必须传 a_S_now 才能推残差")
-        F_self_now = a_S_now - beta_now * a_M_now + k * d_now + c * u_now
-    a_pred = beta_now * a_M_now - k * d_now - c * u_now + F_self_now
+        F_self_now = a_S_now - q_now * beta_now * a_M_now + k * d_now + c * u_now
+    a_pred = q_now * beta_now * a_M_now - k * d_now - c * u_now + F_self_now
     v_pred = v_S_now + a_pred                  # Δt = 1
-    delta_S_pred = v_pred                      # 下日 ΔS 预测 = 下日 v_S 预测(Δt=1)
-    return a_pred, v_pred, delta_S_pred
+    return a_pred, v_pred
 
 
 # === F_self 预测器(用户 prompt §14-19 中"残差外推"的扩展) ===================
@@ -150,7 +156,9 @@ def forecast_v_M_random_walk(
     """随机游走生成 v_M_seq = (n_steps, 2)。
 
     v_M(t=0) = v_M_init
-    v_M(t)   = v_M(t-1) + noise,noise ~ N(0, sigma²)
+    v_M(t)   = v_M(t-1) + noise[t-1],noise[t-1] ~ N(0, sigma²)
+    (noise 是 (n_steps, 2),索引 0..N-1 对应 step t=1..N)
+    即 v_M(t) = v_M_init + Σ_{τ=0..t-1} noise[τ]
 
     用于 simulate_trajectory 的 forecast 模式:模拟起点之后没有真实大盘,
     用历史观测到的 sigma 来外推未来 N 步。σ 推荐 = 历史 diff 的 std。
@@ -222,26 +230,38 @@ def simulate_trajectory(
 ) -> dict:
     """N 步前向模拟。
 
+    时间轴约定(全篇):
+        v_M_seq[t]   第 t 步的大盘速度(2-D 向量,ΔVol/ΔAmt 量纲)
+        a_M_seq[t]   = v_M_seq[t+1] - v_M_seq[t],代表"从 step t 到 step t+1 发生的市场速度变化"
+                      (前向差;末步 t=N-1 留 NaN,因无 v_M_seq[N] 可作下一差)
+        v_S_seq[t]   个股速度;t=0 = v_S_init(末日观测);t=1..N 由递推产生
+        a_S_seq[t]   = v_S_seq[t+1] - v_S_seq[t],递推产出(末行 NaN)
+        u_seq[t]     = v_S_seq[t] - β_seq[t] * v_M_seq[t],t 时刻速度偏离
+        d_seq[t+1]   = d_seq[t] + u_seq[t](递推:在 step t 内加 step t 的 u,与 spec 写法一致)
+        F_self(t)    = F_self_seq[t] 或 F_self_predictor(t),step t 的特异力
+
+    动力学方程(用户 prompt §14-19,**统一版**;与 predict_next_state 共享):
+        a_t = q_seq[t] * β_seq[t] * a_M_seq[t] - k * d_seq[t] - c * u_seq[t] + F_self(t)
+        v_seq[t+1] = v_seq[t] + a_t
+
+    注:本函数采用「**沿 v_M(t) 方向的真正正交分解**」(Gram-Schmidt)计算 E_market /
+    E_self / R,与 description 层 `compute_dynamics` 的 `v_proj = q·β·v_M` 不同——
+    description 层用「β 回归投影」(设计选择:β 是回归斜率,语义独立),simulation 层
+    用「严格正交」(与 v_M 严格正交,R ∈ [0, 1] 不需 clip)。
+
     模式 1 — Oracle(已知未来大盘/β/残差):
         传 F_self_seq = (N, 2),走"末日观测残差恒定外推"。适合调试 / 描述层验证。
     模式 2 — Forecast(残差用预测器):
         传 F_self_predictor = callable(t) -> (2,)。推荐 make_rolling_mean_f_self_predictor
         或 make_constant_f_self_predictor。
 
-    链(对应用户 prompt §19):
-        for t in range(N):
-            a_M(t) = v_M_seq[t+1] - v_M_seq[t]      # 末步 NaN
-            a_t = β_t·a_M(t) - k·d_t - c·u_t + F_self(t)   (q_t 阻尼 a_M)
-            v_{t+1} = v_t + a_t
-            u_{t+1} = v_{t+1} - β_{t+1}·v_M_seq[t+1]  (用下日 β;末步用 β_t 兜底)
-            d_{t+1} = d_t + u_{t+1}              (位置偏离累计)
-        返回 v_seq / a_seq / d_seq / u_seq / E_* / R / θ / state
-
     Args:
         v_S_init: (2,) 起点速度(末日真实 v_S)
         v_M_seq:  (N, 2) 未来 N 天大盘速度
         beta_seq: (N,)   未来 N 天 β
-        d_init / u_init: (2,) 起点状态
+        d_init / u_init: (2,) 起点状态。**注意**:若希望 d_seq[t+1] = d_seq[t] + u_seq[t] 时
+                       模拟起点处 d_seq[1] 与 description 层 d_full[-1] 一致,需要
+                       d_init = d_full[-1] - u_full[-1]("前推一格"以消去累积 u)。
         k / c: 力模型系数
         q_t_seq: (N,) 锚定强度,None 时默认全 1(无阻尼);与 description 层 λ_q 同语义
         classify_thresholds: 4 元组,与 classify_states 同
@@ -296,7 +316,7 @@ def simulate_trajectory(
         else:
             F_self_0 = F_self_seq[0]
         F_market[0] = abs(q_t_seq[0] * beta_seq[0] * 0.0)  # 无前一步 → 0
-        F_restore[0] = abs(k * d_init[0]) if hasattr(k * d_init, '__len__') else abs(k * np.linalg.norm(d_init))
+        F_restore[0] = float(np.linalg.norm(k * d_init))
         F_damp[0] = abs(c * np.linalg.norm(u_init))
         F_self[0] = float(np.linalg.norm(F_self_0))
 
@@ -342,28 +362,43 @@ def simulate_trajectory(
         beta_next = beta_seq[t + 1] if t + 1 < N else beta_seq[t]
         v_M_next = v_M_seq[t + 1] if t + 1 < N else v_M_seq[t]
         u_seq[t + 1] = v_seq[t + 1] - beta_next * v_M_next
-        d_seq[t + 1] = d_t + u_seq[t + 1]
+        # 位置偏离递推(spec 写法):d[t+1] = d[t] + u[t]
+        # 注:此式要求 caller 传 d_init = d_full[-1] - u_full[-1],
+        # 使 d_seq[1] 与 description 层 d_full[-1] 一致(详见 docstring)
+        d_seq[t + 1] = d_t + u_seq[t]
 
     # 末步 (t=N) 力的"回声":用末态估算
     F_restore[N] = float(np.linalg.norm(k * d_seq[N]))
     F_damp[N] = float(np.linalg.norm(c * u_seq[N]))
 
     # 派生量:R / θ / E / state
+    # 真正正交分解(沿 v_M(t) 方向 Gram-Schmidt 投影):
+    #   v_proj(t) = (v_S(t) · v_M(t) / |v_M(t)|²) · v_M(t)
+    #   v_res(t)  = v_S(t) - v_proj(t)        ← 严格 ⊥ v_M(t)
+    # 这样 R = |v_res|² / |v_S|² ∈ [0, 1] 严格成立(无需 clip)。
+    # 与 description 层 v_proj = q·β·v_M 不同(description 用 β 回归投影,语义独立)。
     v_S_mag = np.linalg.norm(v_seq, axis=1)
-    v_resi = u_seq                                  # 残差 = 速度偏离(物理上 = v_S - β·v_M)
-    v_resi_mag = np.linalg.norm(v_resi, axis=1)
-    # 数值上更稳的拆分:正交分量模长平方相减
-    v_proj_mag_sq = np.maximum(v_S_mag ** 2 - v_resi_mag ** 2, 0.0)
+    v_proj_mag_sq = np.full(N + 1, np.nan, dtype=float)
+    v_resi_mag = np.full(N + 1, np.nan, dtype=float)
+    for t in range(N):
+        v_M_t = v_M_seq[t]
+        v_M_mag_sq_t = float(np.dot(v_M_t, v_M_t))
+        if v_M_mag_sq_t > 1e-12:
+            coeff = float(np.dot(v_seq[t], v_M_t)) / v_M_mag_sq_t
+            v_proj = coeff * v_M_t
+            v_res = v_seq[t] - v_proj
+            v_proj_mag_sq[t] = float(np.dot(v_proj, v_proj))
+            v_resi_mag[t] = float(np.linalg.norm(v_res))
     E_market = 0.5 * v_proj_mag_sq
     E_self = 0.5 * v_resi_mag ** 2
+    # E_total = 0.5 * |v_S|²(只与 v_S 自身有关,与正交分解无关)
     E_total = 0.5 * v_S_mag ** 2
-    # R = ‖v_resi‖² / ‖v_S‖² ∈ [0, 1];变 β 下正交分解退化,clip 防 > 1
-    R_raw = np.divide(
+    # R = ‖v_res‖² / ‖v_S‖²(真正交保证 ≤ 1,不需 clip)
+    R = np.divide(
         v_resi_mag ** 2, v_S_mag ** 2,
         out=np.zeros_like(v_resi_mag),
-        where=(v_S_mag ** 2 > 1e-12) & np.isfinite(v_S_mag ** 2),
+        where=(v_S_mag ** 2 > 1e-12) & np.isfinite(v_resi_mag ** 2),
     )
-    R = np.clip(R_raw, 0.0, 1.0)
     # θ — t=0..N-2 用 (v_t, v_M_t),t=N-1 无 v_M_N → NaN,t=N 不算(末行)
     v_M_mag = np.linalg.norm(v_M_seq, axis=1)
     cos_theta = np.full(N + 1, np.nan, dtype=float)

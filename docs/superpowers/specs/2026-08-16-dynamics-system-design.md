@@ -61,15 +61,26 @@ def predict_next_state(
     beta_now: float,        # 当前 β
     d_now: np.ndarray,      # (2,) 当前位置偏离
     u_now: np.ndarray,      # (2,) 当前速度偏离
-    F_self_now: np.ndarray, # (2,) 当前残差(默认 = a_S - β·a_M)
+    F_self_now: np.ndarray | None = None,  # (2,) 当前残差;None 时按 F_self = a_S - q·β·a_M + k·d + c·u 推
+    a_S_now: np.ndarray | None = None,     # (2,) 当前个股加速度(F_self_now=None 时必传)
     k: float = 0.0,         # 恢复系数
     c: float = 0.0,         # 阻尼系数
-) -> np.ndarray:
-    """a_pred = β·a_M - k·d - c·u + F_self,返回 a_pred(2-D 向量)。"""
+    q_now: float = 1.0,     # 锚定强度 q_t;默认 1.0(无阻尼)
+) -> tuple[np.ndarray, np.ndarray]:
+    """a_pred = q_now · β · a_M - k · d - c · u + F_self
+       v_pred = v_S + a_pred
+       返回 (a_pred, v_pred),都是 (2,) ndarray。
+    """
 ```
 
-**注**:用当前观测的 a_S 算 F_self = a_S - β·a_M + k·d + c·u,这就是
-"残差项";然后预测下日 a。如果 k=c=0,F_self 完全吸收模型误差。
+**注**:用当前观测的 a_S 算 F_self = a_S - q·β·a_M + k·d + c·u,这就是
+"残差项";然后预测下日 a。如果 k=c=0 且 F_self=None,F_self 完全吸收模型误差。
+
+**2026-08-17 变化**:
+- 新增 `q_now` 参数(默认 1.0,向后兼容)
+- 删除返回值的第 3 个元素 `delta_S_pred`(冗余 ≡ v_pred);现返 2 元组
+- 旧 caller 若解构 3 元组会 `ValueError: too many values to unpack`
+- 与 `simulate_trajectory` 共享同一方程 `a = q·β·a_M - k·d - c·u + F_self`
 
 ### 3.2 `simulate_trajectory`
 
@@ -83,16 +94,39 @@ def simulate_trajectory(
     F_self_seq: np.ndarray,         # (N+1, 2) 残差序列(0..N);末日残差外推
     k: float = 0.0,
     c: float = 0.0,
+    q_t_seq: np.ndarray | None = None,   # (N,) 锚定强度;None = 默认 1(无阻尼)
 ) -> dict:
     """N 步前向模拟(Oracle 模式:未来大盘已知)。
 
+    时间轴约定(全篇):
+      v_M(t)     第 t 步的大盘速度
+      a_M(t)     = v_M(t+1) - v_M(t),代表"step t→t+1 发生的市场速度变化"(前向差)
+      v_S(t)     个股速度
+      u(t)       = v_S(t) - β(t)·v_M(t)
+      d(t+1)     = d(t) + u(t)(递推:在 step t 内加 step t 的 u)
+
     链:
       for t in range(N):
-        a_t = β_t · a_M(t+1) - k · d_t - c · u_t + F_self(t)
-        v_{t+1} = v_S_init + Σ_{j=0}^{t} a_j          (累计)
-        # u_t 和 d_t 在模拟过程中更新:
-        u_t = v_t - β_t · v_M(t+1)                   (速度偏离)
-        d_{t+1} = d_t + u_t                          (位置偏离累计)
+        a_M(t) = v_M(t+1) - v_M(t)                 # 市场变化,前向差(末步 NaN)
+        a_t = q_t · β_t · a_M(t) - k · d_t - c · u_t + F_self(t)
+        v_{t+1} = v_t + a_t
+        u_{t+1} = v_{t+1} - β_{t+1} · v_M(t+1)     # 速度偏离
+        d_{t+1} = d_t + u_t                         # 位置偏离累计(用 step t 的 u)
+
+    能量分解(沿 v_M(t) 方向的真正 Gram-Schmidt 投影):
+      v_proj(t) = (v_S(t) · v_M(t) / |v_M(t)|²) · v_M(t)
+      v_res(t)  = v_S(t) - v_proj(t)               ← 严格 ⊥ v_M(t)
+      E_market(t) = 0.5 · |v_proj(t)|²
+      E_self(t)   = 0.5 · |v_res(t)|²
+      E_total(t)  = 0.5 · |v_S(t)|²
+      R(t)        = |v_res|² / |v_S|²  ∈ [0, 1] 严格成立(不需 clip)
+      θ(t)        = arccos( v_S(t) · v_M(t) / (|v_S|·|v_M|) )
+
+    注:本 spec 模拟层用「沿 v_M(t) 方向的严格正交」与 description 层 `compute_dynamics` 的
+    「v_proj = q·β·v_M」不同——后者是 β 回归投影(设计选择),前者是 Gram-Schmidt 正交。
+
+    d_init 取值约定:要使 d_seq[1] 与 description 层 d_full[-1] 一致,
+    需 d_init = d_full[-1] - u_full[-1](「前推一格」消去累积 u)。
 
     Returns:
         dict with keys:

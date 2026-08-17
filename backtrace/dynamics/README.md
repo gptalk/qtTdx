@@ -160,11 +160,14 @@ beta_now = mv['proj_coeff'][-1]
 u_full = mv['stock_move'] - mv['proj_coeff'][:, None] * mv['index_move']
 d_full = np.zeros_like(mv['stock_move'])
 d_full[1:] = np.cumsum(u_full[:-1], axis=0)
-a_pred, v_pred, dS_pred = predict_next_state(
+# q_t 锚定强度:从 description 层拿(2026-08-17 时间轴重构新增)
+q_now = float(dyn['q_t'][-1])
+a_pred, v_pred = predict_next_state(
     v_S_now, a_M_now, beta_now, d_full[-1], u_full[-1],
-    a_S_now=a_S_recent, k=0.0, c=0.0,
+    a_S_now=a_S_recent, k=0.0, c=0.0, q_now=q_now,
 )
 # 1 步预测: 下日个股 ΔS = v_pred
+# 注:predict_next_state 现在只返 (a_pred, v_pred);原 3 元组的第 3 个 delta_S_pred 已删除(冗余)
 
 # 3. N 步模拟(Oracle 模式:已知未来大盘)
 N = 5
@@ -175,7 +178,8 @@ F_self_seq = np.tile(np.array([0.0, 0.0]), (N, 1))  # 假设无残差(或用末�
 sim = simulate_trajectory(
     v_S_init=v_S_init,
     v_M_seq=v_M_seq, beta_seq=beta_seq, F_self_seq=F_self_seq,
-    d_init=d_full[-1], u_init=u_full[-1],
+    d_init=d_full[-1] - u_full[-1],  # NEW(2026-08-17):d[t+1]=d[t]+u[t] 递推,前推一格
+    u_init=u_full[-1],
     k=0.0, c=0.0,
 )
 sim_df = build_simulation_df(sim, dates=None, index_tag='399001', stock_tag='002475')
@@ -198,7 +202,8 @@ F_self_pred = make_rolling_mean_f_self_predictor(F_self_full, window=10)
 sim = simulate_trajectory(
     v_S_init=v_S_init, v_M_seq=v_M_seq, beta_seq=beta_seq,
     F_self_predictor=F_self_pred,
-    d_init=d_full[-1], u_init=u_full[-1],
+    d_init=d_full[-1] - u_full[-1],  # NEW(2026-08-17):前推一格
+    u_init=u_full[-1],
     k=0.0, c=0.0, q_t_seq=q_t_seq,
 )
 # 注意:sim['F_self_predictor_used'] 会回放这个 predictor
@@ -219,11 +224,31 @@ sim = simulate_trajectory(
 
 | 现象 | 原因 | 解决 |
 |---|---|---|
-| `R = 1.0` 全程 | 变 β 下 v_resi ≥ v_S(正交分解退化) | 已 clip [0, 1];真要解决需用动态 Gram-Schmidt |
-| `E_market = 0` | 同上,v_resi² ≥ v_S² | 同上 |
+| `R = 1.0` 全程 | **2026-08-17 时间轴重构后已修复**:改用沿 v_M(t) 方向的 Gram-Schmidt 真正交投影,R 严格 ∈ [0, 1] 不需 clip | n/a |
+| `E_market = 0` | 同上 | n/a |
 | 模拟 F_self 巨大 | F_self 末日残差本身就大(变 β + 原始量纲) | 用 4-D lag 向量 / 走归一化空间 |
 | `state=none` 频繁 | 前 2 步斜率不够;或 θ NaN(末行) | 设 `--horizon ≥ 3` |
 | 批量速度慢(单只 ≈ 0.3s) | `compute_movement_projection` 在描述层 + 模拟层各跑一次 | 后续可缓存 mv dict |
+| **predict_next_state 现在返 2 元组不是 3** | delta_S_pred 已被删除(冗余 ≡ v_pred) | 旧 caller 改成 `a, v = predict_next_state(...)` |
+| **d_init 必须 = `d_full[-1] - u_full[-1]`** | `simulate_trajectory` 改用 `d[t+1]=d[t]+u[t]`,要使 d_seq[1] 与 description 层 d_full[-1] 一致需前推一格 | 已自动在 batch/system 脚本里改好;手动调用时注意 |
+
+## 6.5 时间轴重构(2026-08-17)
+
+为消除以下 7 处一致性问题:
+
+1. `predict_next_state` 与 `simulate_trajectory` 不共享同一动力学方程 → 现统一为 `a = q·β·a_M - k·d - c·u + F_self`
+2. `predict_next_state` 不应用 q_t → 现新增 `q_now` 参数(默认 1.0,向后兼容)
+3. `predict_next_state` 多返冗余 `delta_S_pred` → 现返 2 元组
+4. `simulate_trajectory` 的 `E_market` 不是真正交 → 改用沿 v_M(t) 的 Gram-Schmidt 投影
+5. `d_seq` 递推差一(实现 `d[t+1]=d[t]+u[t+1]`、spec `d[t+1]=d[t]+u[t]`)→ 改回 spec 写法
+6. `F_restore[0]` 的 `hasattr(k * d_init, '__len__')` 死分支 → 改用 `np.linalg.norm(k * d_init)`
+7. `forecast_v_M_random_walk` docstring 噪声索引不准 → 改 `noise[t-1]`
+
+CSV schema / sim dict keys / manifest 字段全部向后兼容;旧 batch CSV 列数与列名不变。
+**数值会偏移**(d_init 改、真正交改)— 旧 simulation_*.csv 与新结果不会逐行相等。
+
+`compute_dynamics` / `compute_forces`(description 层)保留原 `v_proj = q·β·v_M` 投影不动 —
+那个 β 是回归斜率,语义独立,与 simulate 层的"严格正交"是两件事。
 
 ## 7. 与其他目录的关系
 

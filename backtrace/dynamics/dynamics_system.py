@@ -193,7 +193,10 @@ def main():
     d_full = np.zeros_like(mv['stock_move'])
     if len(u_full) >= 2:
         d_full[1:] = np.cumsum(u_full[:-1], axis=0)
-    d_init = d_full[-1]
+    # NEW(2026-08-17 时间轴重构):simulate_trajectory 改为 d[t+1]=d[t]+u[t],
+    # 要让 d_seq[1] 与 description 层 d_full[-1] 一致,需要 d_init 前推一格:
+    #   d_seq[1] = d_init + u_init = d_full[-1] - u_full[-1] + u_full[-1] = d_full[-1]
+    d_init = d_full[-1] - u_full[-1]
     u_init = u_full[-1]
     # F_self 残差:末日 F_self = a_S - β·a_M + k·d + c·u;长度 N 时复制末值
     a_u_vec = np.full_like(mv['stock_move'], np.nan)
