@@ -752,7 +752,10 @@ def main():
 
     # ---------- 5. (可选) (k,c) phase plot ----------
     if args.phase_plot:
-        phase_path = args.output.replace('dynsys_eigen.html', 'dynsys_eigen_phase.html')
+        # 用 stem 派生,避免 --output 自定义路径时 replace no-op 覆盖 2x4 HTML
+        from pathlib import Path
+        output_p = Path(args.output)
+        phase_path = str(output_p.with_name(output_p.stem + '_phase' + output_p.suffix))
         build_phase_plot_html(summary_df, phase_path)
         print(f'[eigen] ✓ phase plot: {phase_path}')
 
