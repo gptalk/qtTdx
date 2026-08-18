@@ -35,7 +35,7 @@ v5.11 让 `k_used` / `c_used` 从 placeholder (0.0) 变成真实拟合值,业务
 def classify_regime(k: float, c: float, threshold: float = 0.1) -> str:
     """按 |k| / |c| 比例分 3 个 regime。
 
-    threshold = 相对差异容忍度:|k| / |c| 在 [1-threshold, 1+threshold] 内视为平衡。
+    threshold = 相对差异容忍度:|k| / |c| 在 [1/(1+threshold), 1+threshold] 内视为平衡。
     防止 1.05/0.95 这种微小差异被分成两类的"伪边界"问题。
 
     Returns:
@@ -49,7 +49,7 @@ def classify_regime(k: float, c: float, threshold: float = 0.1) -> str:
 |---|---|---|---|
 | `k=0.5, c=0.1, threshold=0.1` | `k_dominant` | 红 `#e74c3c` | 共振风险 |
 | `k=0.1, c=0.5, threshold=0.1` | `c_dominant` | 蓝 `#3498db` | 过阻尼稳定 |
-| `k=0.5, c=0.45, threshold=0.1` | `balanced` | 绿 `#2ecc71` | 平衡 |
+| `k=0.5, c=0.49, threshold=0.1` | `balanced` | 绿 `#2ecc71` | 平衡 |
 | `k=0.0, c=0.0` | `balanced` (ratio=1) | 绿 | v5.11 placeholder 状态 — 视觉上"无信息" |
 | `k=-0.5, c=0.1` | `k_dominant` (|k|=0.5 > |c|*1.1) | 红 | 负 k 也是共振(anti-restoring) |
 
@@ -137,7 +137,7 @@ def test_classify_regime():
     assert classify_regime(0.1, 0.5, 0.1) == 'c_dominant'
 
     # 3. 平衡 (|k|/|c| 在 [1/1.1, 1.1])
-    assert classify_regime(0.5, 0.45, 0.1) == 'balanced'
+    assert classify_regime(0.5, 0.49, 0.1) == 'balanced'
 
     # 4. 占位符 (k=c=0) → balanced
     assert classify_regime(0.0, 0.0, 0.1) == 'balanced'

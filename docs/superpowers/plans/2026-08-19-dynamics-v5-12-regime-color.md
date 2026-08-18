@@ -277,7 +277,7 @@ def test_classify_regime():
     assert classify_regime(0.1, 0.5, 0.1) == 'c_dominant'
 
     # 3. 平衡 (|k|/|c|=1.11 在 [1/1.1, 1.1] 内)
-    assert classify_regime(0.5, 0.45, 0.1) == 'balanced'
+    assert classify_regime(0.5, 0.49, 0.1) == 'balanced'
 
     # 4. 占位符 (k=c=0) → balanced
     assert classify_regime(0.0, 0.0, 0.1) == 'balanced'
