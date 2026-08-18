@@ -1359,3 +1359,45 @@ def test_cli_from_kc_estimates_mode(tmp_path):
     # by_n_stocks top-2: 801010 + 801020
     assert "801010" in pairs_content
     assert "801020" in pairs_content
+
+
+# === v5.3 SI Frequency Response — load_kc_time_series helper ===
+
+def test_load_kc_time_series_filters_failed(tmp_path):
+    """load_kc_time_series 过滤 status != 'ok' 行 + n_valid_days < 192 (ramp-up)"""
+    rows = [
+        # (code, index_code, asof_date, k_hat, c_hat, status, n_valid_days)
+        ('000001.SZ', '801010', '2024-09-30', 0.50, 2.00, 'ok',  250),  # 保留
+        ('000002.SZ', '801010', '2024-09-30', 0.55, 2.10, 'ok',  100),  # 过滤 (ramp-up)
+        ('000003.SZ', '801010', '2024-09-30', 0.60, 1.90, 'fail', 250), # 过滤 (status)
+        ('000004.SZ', '801010', '2024-09-30', 0.70, 1.80, 'ok',  300),  # 保留
+        ('000005.SZ', '801010', '2024-09-30', 0.80, 1.70, 'ok',  192),  # 保留 (边界)
+        ('000006.SZ', '801010', '2024-09-30', 0.90, 1.60, 'ok',  191),  # 过滤 (ramp-up 边界外)
+    ]
+    df = pd.DataFrame(rows, columns=[
+        'code', 'index_code', 'asof_date', 'k_hat', 'c_hat', 'status', 'n_valid_days',
+    ])
+    csv_path = tmp_path / 'kc_estimates_time.csv'
+    df.to_csv(csv_path, index=False)
+
+    from backtrace.dynamics.dynamics_si_freq_response import load_kc_time_series
+    result = load_kc_time_series(str(csv_path))
+
+    assert len(result) == 3  # 只保留 250/300/192 三行
+    assert result['code'].tolist() == ['000001.SZ', '000004.SZ', '000005.SZ']
+    assert (result['status'] == 'ok').all()
+    assert (result['n_valid_days'] >= 192).all()
+
+
+def test_load_kc_time_series_validates_columns(tmp_path):
+    """缺必需列 → ValueError,错误信息列出缺失列名"""
+    rows = [
+        ('000001.SZ', '801010', '2024-09-30', 0.5, 2.0, 'ok'),  # 缺 n_valid_days
+    ]
+    df = pd.DataFrame(rows, columns=['code', 'index_code', 'asof_date', 'k_hat', 'c_hat', 'status'])
+    csv_path = tmp_path / 'bad.csv'
+    df.to_csv(csv_path, index=False)
+
+    from backtrace.dynamics.dynamics_si_freq_response import load_kc_time_series
+    with pytest.raises(ValueError, match='n_valid_days'):
+        load_kc_time_series(str(csv_path))
