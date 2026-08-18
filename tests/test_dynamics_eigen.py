@@ -13,6 +13,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+import subprocess
 import sys, os
 
 BACKTRACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backtrace')
@@ -1470,3 +1471,79 @@ def test_select_top_n_per_date():
     assert d2[1][1:] == (4.0, 0.4, 'Industry 801080')
     # 按 date 排序
     assert [p[0] for p in pairs] == ['2024-09-30', '2024-09-30', '2024-10-31', '2024-10-31']
+
+
+def test_cli_si_freq_response_mode(tmp_path):
+    """CLI 时序动画模式:合成 12 行 CSV → 跑 CLI → 验证 HTML + TXT + CSV 3 个输出"""
+    # 合成 3 dates × 2 ind × 2 stocks = 12 行
+    rows = [
+        # Date 1 (2024-09-30)
+        ('000001.SZ', '801010', '2024-09-30', 0.50, 2.00, 'ok', 250),
+        ('000002.SZ', '801010', '2024-09-30', 0.55, 2.10, 'ok', 250),
+        ('600001.SH', '801080', '2024-09-30', 3.50, 0.50, 'ok', 250),
+        ('600002.SH', '801080', '2024-09-30', 3.60, 0.45, 'ok', 250),
+        # Date 2 (2024-10-31)
+        ('000001.SZ', '801010', '2024-10-31', 0.60, 1.90, 'ok', 250),
+        ('000002.SZ', '801010', '2024-10-31', 0.65, 1.95, 'ok', 250),
+        ('600001.SH', '801080', '2024-10-31', 4.00, 0.40, 'ok', 250),
+        ('600002.SH', '801080', '2024-10-31', 3.90, 0.42, 'ok', 250),
+        # Date 3 (2024-11-30)
+        ('000001.SZ', '801010', '2024-11-30', 0.70, 1.80, 'ok', 250),
+        ('000002.SZ', '801010', '2024-11-30', 0.72, 1.82, 'ok', 250),
+        ('600001.SH', '801080', '2024-11-30', 3.00, 0.60, 'ok', 250),
+        ('600002.SH', '801080', '2024-11-30', 2.95, 0.58, 'ok', 250),
+    ]
+    df = pd.DataFrame(rows, columns=[
+        'code', 'index_code', 'asof_date', 'k_hat', 'c_hat', 'status', 'n_valid_days',
+    ])
+    csv_path = tmp_path / 'kc_estimates_time.csv'
+    df.to_csv(csv_path, index=False)
+
+    html_path = tmp_path / 'si_freq_response.html'
+    summary_path = tmp_path / 'si_freq_response_summary.txt'
+    pairs_path = tmp_path / 'si_freq_response_pairs.csv'
+
+    _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    cli_script = os.path.join(_PROJECT_ROOT, 'backtrace', 'dynamics', 'dynamics_si_freq_response.py')
+
+    env = os.environ.copy()
+    env['PYTHONIOENCODING'] = 'utf-8'
+    result = subprocess.run(
+        [
+            sys.executable,
+            cli_script,
+            '--kc-time-csv', str(csv_path),
+            '--top-n-industries', '2',
+            '--industry-selection', 'by_n_stocks',
+            '--max-dates', '3',
+            '--html-output', str(html_path),
+            '--summary-output', str(summary_path),
+            '--pairs-csv-output', str(pairs_path),
+        ],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    assert result.returncode == 0, f'stderr: {result.stderr}'
+
+    # 3 输出文件都存在
+    assert html_path.exists() and html_path.stat().st_size > 1000
+    assert summary_path.exists()
+    assert pairs_path.exists()
+
+    # HTML 含 plotly animation_frame + frames + 3 个日期
+    html_text = html_path.read_text(encoding='utf-8')
+    assert 'plotly' in html_text.lower()
+    # plotly v3.x 输出 addFrames(驼峰),不是 frames/小写,放宽到 addFrames 或 Plotly.animate
+    assert 'addFrames' in html_text or 'Plotly.animate' in html_text or 'animation_frame' in html_text or 'frames' in html_text
+    assert '2024-09-30' in html_text and '2024-10-31' in html_text and '2024-11-30' in html_text
+
+    # Summary TXT 含 3 日期 + 中文
+    summary_text = summary_path.read_text(encoding='utf-8')
+    assert '2024-09-30' in summary_text and '2024-10-31' in summary_text and '2024-11-30' in summary_text
+    # 中文字符串(业务解读 / 时序动画 / 过阻尼 / 欠阻尼 任一即可)
+    assert any(cn in summary_text for cn in ('行业', '业务解读', '时序动画', '过阻尼', '欠阻尼'))
+
+    # Pairs CSV: 3 dates × 2 industries = 6 行 + header
+    pairs_df = pd.read_csv(pairs_path)
+    assert len(pairs_df) == 6
+    assert set(pairs_df.columns) >= {'asof_date', 'index_code', 'k_hat', 'c_hat'}
+    assert set(pairs_df['asof_date'].unique()) == {'2024-09-30', '2024-10-31', '2024-11-30'}
