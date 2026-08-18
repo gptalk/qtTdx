@@ -301,6 +301,64 @@ def write_summary(omega_grid, k_grid, c_grid, k, c, output_path):
     return text
 
 
+def bode_overlay(omega_grid, k_c_pairs, output_path, title="Industry G(ω) Frequency Response Comparison"):
+    """多对 (k, c) Bode plot 叠加对比。
+
+    Args:
+        omega_grid: 角频率数组,shape (N,),共享
+        k_c_pairs: [(k, c, label), ...] 列表
+        output_path: HTML 输出路径
+        title: 图表标题
+
+    行为:
+        - 2 子图:上幅频 |H(jω)| vs ω,下相频 arg H(jω) vs ω
+        - 每对一条曲线,共享 omega_grid,不同颜色 + 实线
+        - legend 显示 label(带 (k, c) 数值)
+        - HTML 通过 plotly CDN 渲染(include_plotlyjs='cdn')
+
+    Raises:
+        ValueError: 空列表 / k <= 0 / c <= 0 / label 重复
+    """
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    if not k_c_pairs:
+        raise ValueError("k_c_pairs 不能为空")
+    labels = [p[2] for p in k_c_pairs]
+    if len(set(labels)) != len(labels):
+        raise ValueError(f"label 重复: {labels}")
+    for k, c, _ in k_c_pairs:
+        if k <= 0 or c <= 0:
+            raise ValueError(f"k 和 c 必须 > 0,得 (k={k}, c={c})")
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
+                        subplot_titles=("|H(jω)|", "arg H(jω) (degrees)"),
+                        vertical_spacing=0.12)
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+              '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+    for idx, (k, c, label) in enumerate(k_c_pairs):
+        H = transfer_function(omega_grid, k, c)
+        mag, phase = magnitude_phase(omega_grid, k, c)
+        color = colors[idx % len(colors)]
+        legend_name = f'{label} (k={k}, c={c})'
+        fig.add_trace(go.Scatter(x=omega_grid, y=mag, mode='lines',
+                                 name=legend_name, line=dict(color=color, width=2),
+                                 legendgroup=label), row=1, col=1)
+        fig.add_trace(go.Scatter(x=omega_grid, y=np.degrees(phase), mode='lines',
+                                 name=legend_name, line=dict(color=color, width=2),
+                                 legendgroup=label, showlegend=False), row=2, col=1)
+
+    fig.update_xaxes(title_text='ω (角频率,rad/sample)', row=2, col=1)
+    fig.update_yaxes(title_text='|H(jω)|', row=1, col=1)
+    fig.update_yaxes(title_text='相位 (degrees)', row=2, col=1)
+    fig.update_layout(title=title, height=800, width=1000,
+                      hovermode='x unified', legend=dict(orientation='v',
+                                                          xanchor='left', yanchor='top',
+                                                          x=1.02, y=1.0))
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
+    fig.write_html(output_path, include_plotlyjs='cdn')
+
+
 def main():
     args = parse_args()
     omega_grid = DEFAULT_OMEGA_GRID

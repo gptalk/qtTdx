@@ -1106,3 +1106,25 @@ def test_classify_response_type():
     assert classify_response_type(4.0, 4.0) == 'critical'     # k=c 边界
     assert classify_response_type(4.0, 0.5) == 'underdamped'  # k>c → 不稳定
     assert classify_response_type(-1.0, 0.5) == 'anti_damped' # k<0
+
+
+# === v5.1 — 多对 (k, c) Bode plot 叠加 (2026-08-18) ===
+
+def test_bode_overlay_creates_html(tmp_path):
+    """bode_overlay 调用产生 HTML 文件 + 文件非空。"""
+    from backtrace.dynamics import dynamics_forced_response as DFR
+    omega = np.linspace(0.01, np.pi, 50)
+    pairs = [(0.5, 2.0, "Strong"), (2.0, 1.5, "Mild")]
+    out = tmp_path / "overlay.html"
+    DFR.bode_overlay(omega, pairs, str(out))
+    assert out.exists()
+    assert out.stat().st_size > 1000
+
+
+def test_bode_overlay_validates_empty_list(tmp_path):
+    """空 k_c_pairs → ValueError。"""
+    from backtrace.dynamics import dynamics_forced_response as DFR
+    omega = np.linspace(0.01, np.pi, 50)
+    out = tmp_path / "overlay.html"
+    with pytest.raises(ValueError, match="k_c_pairs 不能为空"):
+        DFR.bode_overlay(omega, [], str(out))
