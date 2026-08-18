@@ -228,10 +228,15 @@ def lookup_kc_for_code(
     契约:返回 None = 查不到(caller 继续 fallback)。不抛异常。
 
     Returns:
-        (k_hat, c_hat) if found AND status == 'ok'
+        (k_hat, c_hat) if found AND status startswith 'ok'
         None if file missing, code not found, status != 'ok', or 必需列缺失
 
     必需列:code, k_hat, c_hat, status
+
+    注(v5.11.1 schema fix):parameter_fit.py 的 status 是 verbose 形式,如
+    'ok (anti-restoring, damping)' / 'ok (anti-damping)' / 'extreme (|k| or |c| > 10)' /
+    'too_few_days (3 < 20)'。判断条件用 status.str.startswith('ok', na=False),不
+    是 status == 'ok'(后者永远不命中)。详细见 spec §3.3。
     """
     import os
     REQUIRED = ['code', 'k_hat', 'c_hat', 'status']
@@ -248,7 +253,10 @@ def lookup_kc_for_code(
         log.warning(f"[v5.11] kc_estimates 缺必需列: {missing}")
         return None
     rows = df[df['code'] == stock_code]
-    rows = rows[rows['status'] == 'ok']
+    # parameter_fit.py 的 status 是 verbose 形式,如 "ok (anti-restoring, damping)" /
+    # "ok (anti-damping)" / "extreme (|k| or |c| > 10)" / "too_few_days (3 < 20)"。
+    # 简单 == 'ok' 永远不命中,正确判断是 startswith('ok')。
+    rows = rows[rows['status'].str.startswith('ok', na=False)]
     if len(rows) == 0:
         return None
     row = rows.iloc[0]

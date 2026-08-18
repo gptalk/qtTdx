@@ -105,6 +105,12 @@ def lookup_kc_for_code(
         (k_hat, c_hat) if found and status='ok'
         None if not found OR status != 'ok' OR 必需列缺失 OR 文件不存在
 
+**注:v5.11.1 schema fix** — 真实 `kc_estimates.csv` 的 `status` 列是 verbose 形式:
+- `"ok (anti-restoring, damping)"` / `"ok (anti-damping)"` — 成功
+- `"extreme (|k| or |c| > 10)"` / `"too_few_days (3 < 20)"` — 失败
+
+判断条件用 `status.str.startswith('ok', na=False)`,**不**是 `status == 'ok'`(后者永远不命中)。v5.11 Task 1 漏了这点,v5.11.1 fix。
+
     注:
         - 不抛异常(契约:None = "查不到,继续 fallback")
         - 只匹配 `code == stock_code AND status == 'ok'` 的行
