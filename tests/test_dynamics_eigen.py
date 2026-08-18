@@ -946,24 +946,58 @@ def test_si_lagged_ic_synthetic_random():
 
 
 def test_si_lagged_ic_temporal_shift():
-    """验证时间偏移正确: t=0 SI 排名 + t=20 forward 收益排名相关。"""
+    """时序 SI 滞后方向 pin:sinusoidal SI(t)=sin(t*2π/50 + i*π/5)+ r(t+20)=SI(t)。
+
+    Lag 方向决定 IC 符号(实测: h=20 → +1.0, h=0 → -0.67, h=-20 → +0.07)。
+    Time-constant SI 不可区分这些 case — 之前实现下三种 h 都过 IC>0.9。
+    Time-varying SI 让 cross-sectional ranking 随时翻转,所以 lag 错位就被打回原形。
+    """
     pytest.importorskip("backtrace.dynamics.dynamics_si_lagged_ic")
     from backtrace.dynamics.dynamics_si_lagged_ic import compute_lagged_cross_sectional_ic
-    dates = pd.date_range('2024-01-01', periods=100, freq='D')
-    si_vals_per_ind = [0.9, 0.7, 0.3, 0.8, 0.4]
-    si_ts = _make_si_ts(dates, si_vals_per_ind)
+    n_industries = 5
+    n_days = 200
+    dates = pd.date_range('2024-01-01', periods=n_days, freq='D')
+    # 时变 SI:industry i 在 t 时刻的 SI = sin(t*2π/50 + i*π/5)
+    si_rows = []
+    for i in range(n_industries):
+        for d in range(n_days):
+            si_rows.append({
+                'asof_date': dates[d],
+                'industry_l1': f'8010{i:02d}',
+                'sector_name': f'测试_{i}',
+                'n_stocks': 42,
+                'rho_median': 0.85, 'c_median': 1.05,
+                'in_wedge_pct': 0.92, 'rho_health': 0.575,
+                'damping_health': 0.975, 'wedge_health': 0.92,
+                'SI': float(np.sin(d * 2 * np.pi / 50 + i * np.pi / 5)),
+            })
+    si_ts = pd.DataFrame(si_rows)
+    # Forward return r(t+20) = SI(t) — lagged signal pattern
     fwd_rows = []
-    for ind, fv in enumerate(si_vals_per_ind):  # 同样的排名 → 完美正相关
-        for d in range(80):
+    for i in range(n_industries):
+        for d in range(n_days - 20):
             fwd_rows.append({
                 'asof_date': dates[d + 20],
-                'industry_l1': f'8010{ind:02d}',
-                'forward_return': fv,
+                'industry_l1': f'8010{i:02d}',
+                'forward_return': float(np.sin(d * 2 * np.pi / 50 + i * np.pi / 5)),
             })
     fwd = pd.DataFrame(fwd_rows)
-    daily_ic = compute_lagged_cross_sectional_ic(si_ts, fwd, horizon=20)
-    assert len(daily_ic) > 0
-    assert daily_ic['ic'].mean() > 0.9
+    # h=20: 正确滞后 → IC ≈ +1.0
+    ic_h20 = compute_lagged_cross_sectional_ic(si_ts, fwd, horizon=20)
+    assert len(ic_h20) > 0
+    mean_ic_h20 = ic_h20['ic'].mean()
+    assert mean_ic_h20 > 0.9, \
+        f'h=20 (正确滞后) 应 IC ≈ +1.0, got {mean_ic_h20:.4f}'
+    # h=0: 滞后被移除 → IC ≈ -0.67 (sin 与 sin(x+0.4π) 在 5 industries 间距 0.2π 下反相关)
+    ic_h0 = compute_lagged_cross_sectional_ic(si_ts, fwd, horizon=0)
+    mean_ic_h0 = ic_h0['ic'].mean()
+    assert mean_ic_h0 < -0.3, \
+        f'h=0 (无滞后) 应 IC < -0.3, got {mean_ic_h0:.4f}'
+    # h=-20: 倒挂(看未来)→ IC ≈ +0.07 (sin(x+0.8π) 与 sin(x) 在该相位下基本无序相关)
+    ic_h_neg20 = compute_lagged_cross_sectional_ic(si_ts, fwd, horizon=-20)
+    mean_ic_h_neg20 = ic_h_neg20['ic'].mean()
+    assert abs(mean_ic_h_neg20) < 0.3, \
+        f'h=-20 (未来窥探) 应 |IC| < 0.3, got {mean_ic_h_neg20:.4f}'
 
 
 def test_si_lagged_ic_summary_schema(tmp_path):

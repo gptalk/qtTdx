@@ -126,6 +126,38 @@ def load_industry_membership(kc_path: str, sw2_path: str) -> dict:
     )
 
 
+def _collect_trading_dates(daily_dir: str, members_by_industry: dict) -> pd.DatetimeIndex:
+    """收集所有行业成员日线的 date 列并集,按 step=5 降采样以控制运行时。
+
+    v4.10 spec §8: forward return 在每个交易日都可算,SI 在每月 asof_date。
+    eval_dates 应该是日线网格(不是月度 asof_date),配合
+    compute_lagged_cross_sectional_ic 内部的 `asof_date <= t - h` ffill 对齐。
+
+    实现: 遍历每个 industry 的所有成员 daily CSV,收集 date 列,排序去重,
+    然后按 step=5 降采样(给 ~500 天缓存留 ~100 eval_dates,
+    rolling 60/step 20 仍有 ≥ 3 个窗口,显著优于 0)。
+
+    返回: pd.DatetimeIndex(已排序, 已按 step=5 降采样)
+    """
+    all_dates = set()
+    for _ind, codes in members_by_industry.items():
+        for code in codes:
+            csv = os.path.join(daily_dir, f'{code}.csv')
+            if not os.path.exists(csv):
+                continue
+            try:
+                df = pd.read_csv(csv, encoding='utf-8')
+            except Exception:
+                continue
+            if 'date' not in df.columns:
+                continue
+            all_dates.update(pd.to_datetime(df['date']).tolist())
+    if not all_dates:
+        return pd.DatetimeIndex([])
+    sorted_dates = pd.DatetimeIndex(sorted(all_dates))
+    return sorted_dates[::5]
+
+
 def compute_industry_forward_returns(
     members_by_industry: dict,    # {industry_l1: [code1, code2, ...]}
     daily_dir: str,
@@ -133,6 +165,11 @@ def compute_industry_forward_returns(
     horizon: int,
 ) -> pd.DataFrame:
     """对每个行业在每个 eval_date 算 forward horizon 日收益(中位数收盘价法)。
+
+    eval_dates 期望是每日交易日网格(由 _collect_trading_dates 构造),
+    不是月度 SI asof_date。这样 rolling 窗口才能正确表达 "60 交易日"
+    (spec §3.3),而不是 "60 个月"。每个 eval_date 内部用
+    `get_indexer(method='ffill')` 对齐到成员日线最近一个交易日。
 
     Returns:
         DataFrame with columns: asof_date, industry_l1, forward_return
@@ -469,8 +506,10 @@ def main():
     keep = set(si_ts['industry_l1'].unique())
     members_by_ind = {ind: codes for ind, codes in members_by_ind.items() if ind in keep}
     print(f'[lagged-ic] 行业成员表: {len(members_by_ind)} 行业')
-    # 3. eval_dates:SI 时序中所有 asof_date
-    eval_dates = pd.DatetimeIndex(sorted(pd.to_datetime(si_ts['asof_date'].unique())))
+    # 3. eval_dates: 每日交易日网格(不是月度 SI asof_date),
+    # 这样 --window 60 真的代表 60 交易日(spec §3.3 + §8),
+    # 否则 window 是 60 行 monthly asof_date ≈ 5 年,无法跑出窗口。
+    eval_dates = _collect_trading_dates(args.daily_dir, members_by_ind)
     # 4. 对每个 horizon 算 daily lagged IC + rolling
     all_ts = []
     for h in horizons:
