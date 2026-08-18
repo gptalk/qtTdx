@@ -1182,4 +1182,32 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_oos_batch.py \
 
 **Caveat:** `k_used` / `c_used` returned by `compute_oos_metrics` are always 0.0 — actual values require explicit `parameter_fit.py` integration (deferred to v5.11+).
 
+### 4.1.10 v5.11 — `load_oos_predictions` × parameter_fit integration
+
+**Files:** `backtrace/dynamics/dynamics_oos_viz.py` (extended), `backtrace/dynamics/dynamics_oos_batch.py` (extended)
+
+**Goal:** Close §4.1.9 caveat (`k_used`/`c_used`=0). When `--kc-estimates-csv PATH` is provided, `load_oos_predictions` looks up real (k̂, ĉ) from `parameter_fit`'s output CSV and uses them for 1-step prediction.
+
+**New helper:** `lookup_kc_for_code(kc_csv_path, stock_code) -> tuple[float, float] | None`
+- Returns None (no exception) on file missing, code not found, status not startswith 'ok', or 必需列缺失.
+
+**Lookup priority** (spec §3.2):
+1. Explicit `--k`/`--c` (caller override)
+2. `--kc-estimates-csv` hit (real (k̂, ĉ))
+3. 0.0 fallback (existing behavior)
+
+**v5.11.1 schema fix:** `parameter_fit.py` writes verbose status like `"ok (anti-restoring, damping)"` — Task 1 originally used `status == 'ok'` which never matched. Fix uses `status.str.startswith('ok', na=False)`.
+
+**CLI:**
+```bash
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_oos_viz.py \
+    --code 601609.SH --days 60 \
+    --kc-estimates-csv data/projection/kc_estimates.csv \
+    --output backtrace/outputs/dynsys_oos_601609.html
+```
+
+**v5.10 propagation:** `dynamics_oos_batch.py::compute_oos_metrics` accepts `kc_estimates_path: str | None = None` + new CLI flag `--kc-estimates-csv`. All stocks in batch get real (k̂, ĉ) when CSV provided.
+
+**Test:** `tests/test_dynamics_eigen.py::test_lookup_kc_for_code` (6 cases incl. verbose status format).
+
 **Test:** `tests/test_dynamics_eigen.py::test_cli_oos_batch_mode` (F3 inverted tolerance: skips only on documented failures).
