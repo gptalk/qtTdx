@@ -200,12 +200,6 @@ def classify_regime(k: float, c: float, threshold: float = 0.1) -> str:
     if threshold < 0:
         raise ValueError(f'threshold must be >= 0, got {threshold}')
 
-    # v5.12: clip large threshold (e.g. caller 探索时传 100)→ 1.0,
-    # 否则 upper=101, ratio=5.0 仍在 [0.0099, 101] 内 → 全 balanced,
-    # 失去分类意义(spec §3.1 提到 "clip 到 10" 但 10 仍过大;实际 cap 在 1.0)。
-    if threshold > 1.0:
-        threshold = 1.0
-
     abs_k, abs_c = abs(float(k)), abs(float(c))
 
     # 占位符或零参数 → balanced (不区分,免得"无信息"被错分)
