@@ -379,3 +379,148 @@ __all__ = [
     'DEFAULTS',
     'DEFAULT_OUTPUT',
 ]
+
+
+# === CLI: stock-code loader ===============================================
+def _load_stock_codes(limit: int) -> list[str]:
+    """Load stock codes from data/manifest.json (TQ本地缓存)。
+
+    Falls back to scanning data/stocks/*.csv if manifest missing.
+    """
+    manifest_path = 'data/manifest.json'
+    if os.path.exists(manifest_path):
+        import json
+        with open(manifest_path, encoding='utf-8') as fh:
+            manifest = json.load(fh)
+        # manifest has nested `entries` keyed by code; each entry has
+        # `kind` ('stocks'|'sectors'|'indices') + `status` ('ok'|'failed').
+        entries = manifest.get('entries', manifest) if isinstance(manifest, dict) else {}
+        codes = [
+            c for c, info in entries.items()
+            if isinstance(info, dict)
+            and info.get('kind', 'stocks') == 'stocks'
+            and info.get('status', 'ok') != 'failed'
+            and info.get('rows', 0) > 0
+        ]
+        codes.sort()
+        if limit > 0:
+            codes = codes[:limit]
+        return codes
+
+    # Fallback: scan directory
+    stock_dir = 'data/stocks'
+    if not os.path.isdir(stock_dir):
+        raise FileNotFoundError(f'No manifest.json or data/stocks/ dir found')
+    files = [f for f in os.listdir(stock_dir) if f.endswith('.csv')]
+    files.sort()
+    codes = [f.replace('.csv', '') for f in files]
+    if limit > 0:
+        codes = codes[:limit]
+    return codes
+
+
+# === CLI: main() =========================================================
+def main():
+    p = argparse.ArgumentParser(
+        description='v5.10 — Full-market OOS prediction quality distribution',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument('--days', type=int, default=DEFAULTS['days'], help='trading days per stock')
+    p.add_argument('--limit', type=int, default=DEFAULTS['limit'],
+                   help='0 = all stocks in local cache, else first N')
+    p.add_argument('--prefer-industry', dest='prefer_industry',
+                   action='store_true', default=DEFAULTS['prefer_industry'])
+    p.add_argument('--no-prefer-industry', dest='prefer_industry',
+                   action='store_false')
+    p.add_argument('--top-n', dest='top_n', type=int, default=DEFAULTS['top_n'],
+                   help='number of top stocks to render as small multiples')
+    p.add_argument('--codes-file', dest='codes_file', type=str, default=None,
+                   help='optional file with one stock code per line')
+    p.add_argument('--output', type=str, default=DEFAULT_OUTPUT,
+                   help='output HTML path')
+    args = p.parse_args()
+
+    # 1. Load stock codes
+    if args.codes_file and os.path.exists(args.codes_file):
+        with open(args.codes_file) as fh:
+            codes = [line.strip() for line in fh if line.strip()]
+        log.info(f"[v5.10] loaded {len(codes)} codes from {args.codes_file}")
+    else:
+        codes = _load_stock_codes(args.limit)
+        log.info(f"[v5.10] loaded {len(codes)} codes from manifest/cache")
+
+    if not codes:
+        raise ValueError('No stock codes found')
+
+    log.info(f"[v5.10] days={args.days} prefer_industry={args.prefer_industry} top_n={args.top_n}")
+
+    # 2. Compute per-stock metrics
+    metrics_list = []
+    per_stock_lookup = {}  # for top-N small multiples
+    for idx, code in enumerate(codes, start=1):
+        try:
+            m = compute_oos_metrics(
+                stock_code=code,
+                days=args.days,
+                prefer_industry=args.prefer_industry,
+            )
+            if m['n_oos'] > 0:
+                metrics_list.append(m)
+                per_stock_lookup[code] = m
+                log.info(f"[{idx}/{len(codes)}] {code}: hit={m['hit_rate']:.3f}, RMSE={m['rmse']:.4f}")
+            else:
+                log.warning(f"[{idx}/{len(codes)}] {code}: 0 OOS days, skip")
+        except Exception as e:
+            log.warning(f"[{idx}/{len(codes)}] {code}: ERROR ({type(e).__name__}: {e}), skip")
+            continue
+
+    if not metrics_list:
+        raise ValueError('No valid metrics computed — check data/manifest.json')
+
+    # 3. Aggregate
+    agg = aggregate_oos_metrics(metrics_list)
+    log.info(f"[v5.10] aggregated: N={agg['n_stocks']}, "
+             f"median_hit={agg['median_hit_rate']:.3f}, "
+             f"median_rmse={agg['median_rmse']:.4f}")
+
+    # 4. Render 2×2 distribution dashboard
+    build_full_market_oos_html(
+        metrics_list=metrics_list,
+        output_path=args.output,
+        title=f"Full-Market OOS — {agg['n_stocks']} stocks, {args.days} days",
+    )
+
+    # 5. Render top-N small multiples (separate file)
+    top_n = min(args.top_n, agg['n_stocks'])
+    top_codes = [r['code'] for r in agg['ranked'][:top_n]]
+    top_data = []
+    for code in top_codes:
+        try:
+            d = load_oos_predictions(
+                stock_code=code, days=args.days,
+                prefer_industry=args.prefer_industry,
+            )
+            top_data.append(dict(
+                code=code,
+                common_idx=d['common_idx'],
+                a_pred=d['a_pred'],
+                a_actual=d['a_actual'],
+                hit_rate=per_stock_lookup[code]['hit_rate'],
+                rmse=per_stock_lookup[code]['rmse'],
+            ))
+        except Exception as e:
+            log.warning(f"top-{top_n}: failed to reload {code} for small multiples: {e}")
+
+    if top_data:
+        top5_path = args.output.replace('.html', '_top{}.html'.format(top_n))
+        build_top5_small_multiples(
+            top5_data=top_data,
+            output_path=top5_path,
+            title=f"Top-{top_n} OOS Detail",
+        )
+
+    log.info(f"[v5.10] DONE — wrote {args.output} + top{top_n}-multiples at {top5_path}")
+
+
+if __name__ == '__main__':
+    main()
