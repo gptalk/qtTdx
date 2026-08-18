@@ -21,6 +21,9 @@ warnings.filterwarnings('ignore')
 BACKTRACE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BACKTRACE_DIR not in sys.path:
     sys.path.insert(0, BACKTRACE_DIR)
+REPO_ROOT = os.path.dirname(BACKTRACE_DIR)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')
 
 import numpy as np
