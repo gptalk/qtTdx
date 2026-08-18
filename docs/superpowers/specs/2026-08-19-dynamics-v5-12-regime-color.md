@@ -57,7 +57,7 @@ def classify_regime(k: float, c: float, threshold: float = 0.1) -> str:
 - `k=0` 且 `c=0` → balanced (视为"无信息",不进任何一类)
 - `threshold=0.0` → 严格不等式 (退化情况,等价于 `|k| == |c|` → balanced)
 - `threshold < 0` → ValueError (caller 错)
-- `threshold > 10` → 不拒绝,但警告 (clip 到 10)
+- `threshold > 10` → 不拒绝,但 ratio 区间会膨胀到几乎所有股票进 balanced(失去分类意义),建议 caller 自 cap 到 ≤ 1.0
 
 ### 3.2 Dashboard 改动
 

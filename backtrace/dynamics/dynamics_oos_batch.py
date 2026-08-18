@@ -186,8 +186,8 @@ def classify_regime(k: float, c: float, threshold: float = 0.1) -> str:
         c: 拟合的阻尼系数 (ĉ)
         threshold: 相对差异容忍度,默认 0.1 (= 10%)。
                    |k|/|c| 在 [1/(1+threshold), 1+threshold] 内视为 balanced。
-                   上限 clip 到 1.0 (= 100%) — 超过这个值 "balanced" 区
-                   会膨胀到吞掉几乎所有 ratio,失去分类意义(spec §3.1)。
+                   注意:无上限 clip — 传很大(>1.0)会让 balanced 区膨胀到吞掉
+                   几乎所有 ratio,失去分类意义。caller 自行 cap 到 ≤ 1.0。
 
     Returns:
         'k_dominant' — 共振风险 (|k| > |c| * (1 + threshold))
@@ -476,6 +476,7 @@ __all__ = [
     'aggregate_oos_metrics',
     'build_full_market_oos_html',
     'build_top5_small_multiples',
+    'classify_regime',
     'DEFAULTS',
     'DEFAULT_OUTPUT',
 ]
