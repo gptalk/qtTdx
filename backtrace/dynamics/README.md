@@ -1051,3 +1051,20 @@ v5.4 把 v5.3 的单子图 (|H(jω)| dB) 扩成**双子图 Bode**:
 实现: `build_animated_overlay_html` 内部用 `plotly.subplots.make_subplots(2, 1, shared_xaxes=True)`,每帧 2 × N traces。
 
 CLI/输出/签名 0 变化,只影响 HTML 渲染(从单图 → 双图,size ~400KB)。
+
+### §4.1.4 v5.5 — Regime Color Coding (regime 颜色编码)
+
+v5.5 在 v5.4 双子图基础上**按阻尼 regime 给曲线着色**,业务一眼区分稳定/共振:
+
+| Regime | 颜色 | 业务语义 |
+|---|---|---|
+| overdamped (k<c) | 🟢 绿 `#2ca02c` | Schur 内,稳定 |
+| critical (k≈c) | 🟠 橙 `#ff7f0e` | Schur 边界,临界 |
+| underdamped (k>c) | 🔴 红 `#d62728` | Schur 外,共振风险 |
+| anti_damped (k<0) | 🟣 紫 `#9467bd` | 病态(负恢复系数) |
+
+实现: `build_animated_overlay_html` 内 `_regime_color(k, c)` 闭包 → 复用 v5 `classify_response_type`(`dynamics_forced_response.py:130`)。
+
+**业务可读性升级**: 拖 slider 时同 industry 颜色随 (k̂, ĉ) 漂移变化 — 业务可直观看到"哪些 industry 从绿(稳定)漂到红(共振)"。
+
+CLI/输出/签名 0 变化,只影响 HTML 颜色 + 右上角 inline 颜色 ↔ regime 注释。
