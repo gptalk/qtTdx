@@ -436,6 +436,8 @@ def main():
                    default=DEFAULTS['f_self_window'], help='rolling window for F_self predictor')
     p.add_argument('--output', type=str, default=None,
                    help='output HTML path (default: backtrace/outputs/dynsys_oos_viz_<code>.html)')
+    p.add_argument('--kc-estimates-csv', dest='kc_estimates_csv', type=str, default=None,
+                   help='v5.11: parameter_fit kc_estimates.csv 路径(为 None 则用现有 0.0 fallback)')
     args = p.parse_args()
 
     print(f"[v5.9] code={args.code} days={args.days} "
@@ -450,6 +452,7 @@ def main():
         k=args.k, c=args.c,
         lambda_q=args.lambda_q,
         f_self_window=args.f_self_window,
+        kc_estimates_path=args.kc_estimates_csv,  # v5.11 NEW
     )
 
     # 2. Render
@@ -465,6 +468,8 @@ def main():
         output_path=output_path,
         title=f"{args.code} — OOS 1-step prediction (k̂ vs ĉ)",
     )
+
+    log.info(f"[v5.11/v5.9] {args.code}: k_used={data['k_used']:.4f}, c_used={data['c_used']:.4f}, n_oos={len(data['common_idx'])}")
 
 
 if __name__ == '__main__':
