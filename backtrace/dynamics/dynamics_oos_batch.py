@@ -8,7 +8,7 @@
 # 设计要点:
 #   - 0 重写 projection / dynamics 数学(全部 import)
 #   - 0 新依赖(numpy/pandas 已存在)
-#   - 0 plotly(可视化留给 v5.10 后置 Task)
+#   - plotly 仅用于 build_full_market_oos_html(Task 2,已存在依赖)
 #   - REPO_ROOT sys.path 沿用 v5.9.1 修复模式
 #
 # 已知坑:
@@ -30,6 +30,8 @@ import argparse
 import logging
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from backtrace.dynamics.dynamics_oos_viz import load_oos_predictions
 
@@ -173,9 +175,139 @@ def aggregate_oos_metrics(metrics_list: list[dict]) -> dict:
     }
 
 
+# === Full-market 2x2 dashboard =============================================
+def build_full_market_oos_html(
+    metrics_list: list[dict],
+    output_path: str,
+    title: str = 'Full-Market OOS Prediction Quality Distribution',
+) -> None:
+    """2x2 plotly dashboard of full-market OOS prediction quality (spec 3.4).
+
+    Panels:
+        (1,1) hit-rate histogram + median/p25/p75 vlines
+        (1,2) RMSE histogram + median vline
+        (2,1) hit-rate vs RMSE scatter (Viridis, hover = code)
+        (2,2) hit-rate CDF + median vline
+    """
+    # 1) 空输入 → 明确报错(而不是画空图)
+    if not metrics_list:
+        raise ValueError('metrics_list is empty — nothing to plot')
+
+    # 2) DataFrame
+    df = pd.DataFrame(metrics_list)
+    hit_rates = df['hit_rate'].to_numpy()
+    rmses = df['rmse'].to_numpy()
+
+    # 3) 汇总统计
+    median_hr = float(np.median(hit_rates))
+    p25_hr = float(np.percentile(hit_rates, 25))
+    p75_hr = float(np.percentile(hit_rates, 75))
+    median_rmse = float(np.median(rmses))
+
+    # 4) 2x2 子图骨架
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=(
+            f'Hit-rate distribution (median={median_hr:.3f}, IQR=[{p25_hr:.3f}, {p75_hr:.3f}])',
+            f'RMSE distribution (median={median_rmse:.4f})',
+            'Hit-rate vs RMSE scatter',
+            'Hit-rate CDF',
+        ),
+        vertical_spacing=0.15,
+        horizontal_spacing=0.1,
+    )
+
+    # 5) (1,1) hit-rate 直方图
+    fig.add_trace(
+        go.Histogram(
+            x=hit_rates, nbinsx=40,
+            marker=dict(color='#3498db', line=dict(color='#2c3e50', width=0.5)),
+            name='hit-rate',
+        ),
+        row=1, col=1,
+    )
+    for marker_val, label, color in [(median_hr, 'median', '#e74c3c'),
+                                     (p25_hr, 'p25', '#95a5a6'),
+                                     (p75_hr, 'p75', '#95a5a6')]:
+        fig.add_vline(x=marker_val, line_dash='dash', line_color=color,
+                      annotation_text=label, row=1, col=1)
+
+    # 6) (1,2) RMSE 直方图
+    fig.add_trace(
+        go.Histogram(
+            x=rmses, nbinsx=40,
+            marker=dict(color='#e67e22', line=dict(color='#2c3e50', width=0.5)),
+            name='RMSE',
+        ),
+        row=1, col=2,
+    )
+    fig.add_vline(x=median_rmse, line_dash='dash', line_color='#e74c3c',
+                  annotation_text='median', row=1, col=2)
+
+    # 7) (2,1) hit-rate vs RMSE 散点
+    fig.add_trace(
+        go.Scatter(
+            x=hit_rates, y=rmses,
+            mode='markers',
+            marker=dict(
+                size=6,
+                color=hit_rates,
+                colorscale='Viridis',
+                showscale=True,
+                colorbar=dict(title='hit-rate', x=0.45, len=0.4, y=0.2),
+                line=dict(color='#2c3e50', width=0.5),
+            ),
+            text=df['code'].tolist(),
+            hovertemplate='<b>%{text}</b><br>hit-rate: %{x:.3f}<br>RMSE: %{y:.4f}<extra></extra>',
+            name='stocks',
+        ),
+        row=2, col=1,
+    )
+
+    # 8) (2,2) hit-rate CDF
+    sorted_hr = np.sort(hit_rates)
+    cdf = np.arange(1, len(sorted_hr) + 1) / len(sorted_hr)
+    fig.add_trace(
+        go.Scatter(
+            x=sorted_hr, y=cdf,
+            mode='lines',
+            line=dict(color='#2ecc71', width=2),
+            name='CDF',
+            fill='tozeroy',
+            fillcolor='rgba(46, 204, 113, 0.2)',
+        ),
+        row=2, col=2,
+    )
+    fig.add_vline(x=median_hr, line_dash='dash', line_color='#e74c3c',
+                  annotation_text='median', row=2, col=2)
+
+    # 9) 轴标签
+    fig.update_xaxes(title_text='hit-rate', row=1, col=1)
+    fig.update_xaxes(title_text='RMSE', row=1, col=2)
+    fig.update_xaxes(title_text='hit-rate', row=2, col=1)
+    fig.update_xaxes(title_text='hit-rate', row=2, col=2)
+    fig.update_yaxes(title_text='count', row=1, col=1)
+    fig.update_yaxes(title_text='count', row=1, col=2)
+    fig.update_yaxes(title_text='RMSE', row=2, col=1)
+    fig.update_yaxes(title_text='CDF', row=2, col=2)
+
+    # 10) layout + 落盘
+    n_stocks = len(metrics_list)
+    fig.update_layout(
+        title=f"{title} — N={n_stocks}",
+        height=800, showlegend=False,
+        template='plotly_white',
+    )
+
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    fig.write_html(output_path, include_plotlyjs='cdn', full_html=True)
+    log.info(f"[v5.10] wrote {output_path} ({n_stocks} stocks, median hit-rate={median_hr:.3f})")
+
+
 __all__ = [
     'compute_oos_metrics',
     'aggregate_oos_metrics',
+    'build_full_market_oos_html',
     'DEFAULTS',
     'DEFAULT_OUTPUT',
 ]
