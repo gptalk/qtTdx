@@ -33,6 +33,8 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # === 公共 pipeline(给 load_pair 喂数据) ===
 from common import tsfresh_pipeline as P
@@ -208,7 +210,152 @@ def _label_from_a(a: np.ndarray) -> str:
 __all__ = [
     'load_oos_predictions',
     '_label_from_a',
+    'build_oos_prediction_html',
     'DEFAULTS',
     'THRESHOLDS',
     'DEFAULT_OUTPUT',
 ]
+
+
+# === plotly 4-row 可视化(spec §3.5) ========================================
+def build_oos_prediction_html(
+    common_idx: pd.DatetimeIndex,
+    a_pred: np.ndarray,
+    a_actual: np.ndarray,
+    state_pred: list[str],
+    state_actual: list[str],
+    k_used: float,
+    c_used: float,
+    output_path: str,
+    title: str = 'OOS 1-Step Prediction vs Actual',
+) -> None:
+    """Render OOS 1-step prediction diagnostics as a 4-row plotly HTML.
+
+    Layout(spec §3.5):
+        Row 1 — predicted (blue) vs actual (orange) |a_S| magnitude
+        Row 2 — per-day error, color-coded by σ-band:
+                    green  (< 0.5σ)
+                    yellow (0.5σ – 1σ)
+                    red    (> 1σ)
+        Row 3 — 20-day rolling RMSE of error(purple)
+        Row 4 — state hit rate(1 = pred matches actual, 0 = miss)
+
+    Title contains UTF-8 `k̂` (k̂ = U+006B + U+0302) and `ĉ` (ĉ = U+0109);
+    using literal escape sequences to avoid U+FFFD replacement in
+    some terminal codecs.
+    """
+    # 1) Convert to 1-D magnitude
+    a_pred_mag = np.linalg.norm(a_pred, axis=1)     # (T,)
+    a_actual_mag = np.linalg.norm(a_actual, axis=1) # (T,)
+    error = a_pred_mag - a_actual_mag
+    T = len(common_idx)
+
+    # 2) Error σ-band coloring
+    abs_err = np.abs(error)
+    sigma = float(np.nanstd(abs_err)) if T > 1 else 0.0
+    if sigma == 0.0:
+        sigma = 1e-9
+    band_low = 0.5 * sigma
+    band_high = 1.0 * sigma
+    err_colors = np.where(
+        abs_err < band_low, '#2ecc71',                    # green
+        np.where(abs_err < band_high, '#f39c12', '#e74c3c')  # yellow / red
+    )
+
+    # 3) Rolling RMSE
+    win = 20
+    rolling_rmse = pd.Series(error).pow(2).rolling(win).mean().pow(0.5).to_numpy()
+
+    # 4) State hit rate
+    hit = np.array([1.0 if p == a else 0.0 for p, a in zip(state_pred, state_actual)])
+
+    # 5) Figure layout (4 rows, shared_xaxes)
+    fig = make_subplots(
+        rows=4, cols=1,
+        shared_xaxes=True,
+        row_heights=[0.35, 0.25, 0.2, 0.2],
+        vertical_spacing=0.05,
+        subplot_titles=(
+            'Row 1 — |a_S| predicted (blue) vs actual (orange)',
+            'Row 2 — error (color: <0.5σ green / 0.5–1σ yellow / >1σ red)',
+            f'Row 3 — {win}-day rolling RMSE of error',
+            'Row 4 — state hit rate (1 = pred==actual)',
+        ),
+    )
+
+    # 6) Row 1 — predicted vs actual magnitude
+    fig.add_trace(
+        go.Scatter(
+            x=common_idx, y=a_pred_mag, name='predicted |a_S|',
+            mode='lines', line=dict(color='#3498db', width=1.5),
+            legendgroup='series',
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=common_idx, y=a_actual_mag, name='actual |a_S|',
+            mode='lines+markers', line=dict(color='#e67e22', width=1.5),
+            marker=dict(size=4),
+            legendgroup='series',
+        ),
+        row=1, col=1,
+    )
+
+    # 7) Row 2 — error bars (colored by σ band)
+    fig.add_trace(
+        go.Bar(
+            x=common_idx, y=error, name='error',
+            marker=dict(color=err_colors.tolist()),
+            showlegend=False,
+            legendgroup='series',
+        ),
+        row=2, col=1,
+    )
+
+    # 8) Row 3 — rolling RMSE
+    fig.add_trace(
+        go.Scatter(
+            x=common_idx, y=rolling_rmse, name=f'{win}-d rolling RMSE',
+            mode='lines', line=dict(color='#9b59b6', width=2),
+            legendgroup='series',
+        ),
+        row=3, col=1,
+    )
+
+    # 9) Row 4 — state hit rate
+    fig.add_trace(
+        go.Bar(
+            x=common_idx, y=hit, name='state hit (1=yes, 0=no)',
+            marker=dict(color=hit, colorscale=[[0, '#e74c3c'], [1, '#2ecc71']]),
+            showlegend=False,
+            legendgroup='series',
+        ),
+        row=4, col=1,
+    )
+
+    # 10) Layout
+    k_str = f"{k_used:.4f}" if k_used is not None else 'auto'
+    c_str = f"{c_used:.4f}" if c_used is not None else 'auto'
+    # k̂ = k̂ (k + combining circumflex U+0302)
+    # ĉ = č (c with caron U+0109)
+    # Use literal Unicode escapes per brief to avoid U+FFFD replacement.
+    KC_KHAT = 'k\u0302'
+    KC_CHAT = '\u0109'
+    fig.update_layout(
+        title=f"{title} ({KC_KHAT}={k_str}, {KC_CHAT}={c_str})",
+        height=900,
+        showlegend=True,
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        template='plotly_white',
+    )
+    fig.update_yaxes(title_text='|a_S| magnitude', row=1, col=1)
+    fig.update_yaxes(title_text='error', row=2, col=1)
+    fig.update_yaxes(title_text='RMSE', row=3, col=1)
+    fig.update_yaxes(title_text='hit rate', row=4, col=1, range=[-0.05, 1.05])
+    fig.update_xaxes(title_text='date', row=4, col=1)
+
+    # 11) Output
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    fig.write_html(output_path, include_plotlyjs='cdn', full_html=True)
+    print(f"[v5.9] wrote {output_path} ({T} OOS days, {KC_KHAT}={k_str}, {KC_CHAT}={c_str})")
