@@ -1083,3 +1083,19 @@ v5.6 给同一份数据加**静态 PNG 导出** — 业务写报告 / 嵌 PDF �
 - v5.5 HTML: 交互, 浏览器拖 slider
 - v5.6 PNG: 静态, 嵌 PDF / PPT
 - 两者共用 `magnitude_phase` + `classify_response_type` + REGIME_COLORS → 0 重复, 0 不一致
+
+### §4.1.6 v5.7 — Regime Stability Heatmap (matplotlib cells)
+
+v5.7 给同一份数据加 **dashboard 视图** — 业务写周报 / 复盘用:
+
+- 函数: `build_regime_heatmap(pairs_per_date, output_path, dpi=100)`
+- 布局: 2D 网格 (rows = unique asof_date, cols = industry)
+- 每个 cell: 背景色 = regime color, 中心文字 = 4 字 abbreviation (over/crit/under/anti)
+- 0 新依赖 (matplotlib 3.10.6 已在 v5.6 引入)
+- CLI: `--heatmap-output PATH` (默认 `backtrace/outputs/dynsys_regime_heatmap.png`)
+
+**v5.5 / v5.6 / v5.7 关系**:
+- v5.5 HTML: 交互曲线, 浏览器拖 slider
+- v5.6 PNG: 静态曲线, 嵌 PDF / PPT
+- v5.7 PNG: **静态 cells, dashboard 执行摘要**
+- 三者共用 `classify_response_type` + REGIME_COLORS → 0 重复, 0 不一致
