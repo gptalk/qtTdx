@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # dynamics_oos_batch.py — v5.10 Task 1: scaffold + per-stock metrics + aggregator
+#              v5.11 Task 3: --kc-estimates-csv 透传 load_oos_predictions(读真实 k̂, ĉ)
 #
 # 本模块给 v5.10 「全市场 OOS 分布」分析打地基:
 #   1. compute_oos_metrics — 单股调用 load_oos_predictions(v5.9) → 算 hit/rmse/mae/dir_acc
@@ -56,6 +57,7 @@ def compute_oos_metrics(
     k: float | None = None,
     c: float | None = None,
     f_self_window: int = 10,
+    kc_estimates_path: str | None = None,  # v5.11 NEW:透传给 load_oos_predictions
 ) -> dict:
     """Per-stock OOS prediction quality metrics.
 
@@ -77,6 +79,7 @@ def compute_oos_metrics(
         k=k,
         c=c,
         f_self_window=f_self_window,
+        kc_estimates_path=kc_estimates_path,  # v5.11 NEW
     )
 
     common_idx = oos['common_idx']
@@ -438,6 +441,8 @@ def main():
                    help='optional file with one stock code per line')
     p.add_argument('--output', type=str, default=DEFAULT_OUTPUT,
                    help='output HTML path')
+    p.add_argument('--kc-estimates-csv', dest='kc_estimates_csv', type=str, default=None,
+                   help='v5.11: 透传给 compute_oos_metrics → load_oos_predictions')
     args = p.parse_args()
 
     # 1. Load stock codes
@@ -463,11 +468,13 @@ def main():
                 stock_code=code,
                 days=args.days,
                 prefer_industry=args.prefer_industry,
+                kc_estimates_path=args.kc_estimates_csv,  # v5.11 NEW
             )
             if m['n_oos'] > 0:
                 metrics_list.append(m)
                 per_stock_lookup[code] = m
-                log.info(f"[{idx}/{len(codes)}] {code}: hit={m['hit_rate']:.3f}, RMSE={m['rmse']:.4f}")
+                log.info(f"[{idx}/{len(codes)}] {code}: hit={m['hit_rate']:.3f}, RMSE={m['rmse']:.4f}, "
+                         f"k̂={m['k_used']:.4f}, ĉ={m['c_used']:.4f}")  # v5.11 NEW: ĉ 字段
             else:
                 log.warning(f"[{idx}/{len(codes)}] {code}: 0 OOS days, skip")
         except Exception as e:
