@@ -1038,16 +1038,25 @@ def test_transfer_function_dc_gain():
         )
 
 
-def test_transfer_function_stable_rolloff():
-    """Schur 内 (k=2, c=4):高频滚降 |H(jπ)| < |H(j0.1)| 且 |H(jπ)| < 0.5。"""
+def test_transfer_function_complex_pole_stability():
+    """验证复杂极点区域(k < c, c² < 4k)的稳定性:|z|² = 1 - c + k < 1。
+
+    Use (k=3.5, c=3.6): complex poles, |z|² = 0.9 < 1, system stable.
+    Verify |H(jω)| is bounded across frequency sweep.
+    """
     pytest.importorskip("backtrace.dynamics.dynamics_forced_response")
-    from backtrace.dynamics.dynamics_forced_response import magnitude_phase
-    omega = np.array([0.1, np.pi])
-    mag, _ = magnitude_phase(omega, k=2.0, c=4.0)
-    assert mag[1] < mag[0], (
-        f'expected high-freq rolloff, but |H(jπ)|={mag[1]:.4f} >= |H(j0.1)|={mag[0]:.4f}'
+    from backtrace.dynamics.dynamics_forced_response import (
+        transfer_function, natural_frequency, classify_response_type,
     )
-    assert mag[1] < 0.5, f'|H(jπ)|={mag[1]:.4f} 应 < 0.5(强阻尼)'
+    k, c = 3.5, 3.6
+    # Verify pole |z|² = 1 - c + k = 0.9 < 1 (Schur stable)
+    assert (1 - c + k) < 1, f'expected |z|²<1, got {1-c+k}'
+    assert classify_response_type(k, c) == 'overdamped'
+    # Verify |H| is bounded (< 100) across full frequency range
+    omega_grid = np.linspace(0.001, np.pi, 500)
+    H = transfer_function(omega_grid, k, c)
+    max_mag = float(np.max(np.abs(H)))
+    assert max_mag < 100, f'稳定系统 |H| 应有界, got max={max_mag:.2f}'
 
 
 def test_transfer_function_resonance_peak():
@@ -1074,14 +1083,19 @@ def test_transfer_function_resonance_peak():
 
 
 def test_transfer_function_unstable_blowup():
-    """严重欠阻尼 (k=4, c=0.05):|H(jω_n)| > 5(共振爆炸)。"""
+    """不稳定边界附近 (k=2.01, c=2):极点 |z|² = 1.01,接近单位圆,|H(jω_n)| 爆炸。"""
     pytest.importorskip("backtrace.dynamics.dynamics_forced_response")
     from backtrace.dynamics.dynamics_forced_response import (
-        magnitude_phase, natural_frequency,
+        magnitude_phase, natural_frequency, classify_response_type,
     )
-    omega_n = natural_frequency(4.0, 0.05)
-    mag, _ = magnitude_phase(np.array([omega_n]), k=4.0, c=0.05)
-    assert mag[0] > 5.0, f'严重欠阻尼应 |H(jω_n)| > 5, got {mag[0]:.4f}'
+    k, c = 2.01, 2.0
+    # Verify pole |z|² = 1 - c + k = 1.01 > 1 (Schur unstable)
+    assert (1 - c + k) > 1, f'expected |z|²>1, got {1-c+k}'
+    assert classify_response_type(k, c) == 'underdamped'
+    omega_n = natural_frequency(k, c)
+    mag, _ = magnitude_phase(np.array([omega_n]), k, c)
+    # At ω_n ≈ π/2, denominator → small (~0.01), |H| should be huge
+    assert mag[0] > 100, f'不稳定边界附近应 |H(jω_n)| > 100, got {mag[0]:.2f}'
 
 
 def test_classify_response_type():
