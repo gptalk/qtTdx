@@ -172,7 +172,7 @@ def build_animated_overlay_html(
         return magnitude_phase(omega_grid * 1j, p[1], p[2])[0].tolist()
 
     def _phase_deg(p):
-        return magnitude_phase(omega_grid * 1j, p[1], p[2])[1].tolist()
+        return np.degrees(magnitude_phase(omega_grid * 1j, p[1], p[2])[1]).tolist()
 
     # Initial-state traces (first date)
     for p in (p_ for p_ in pairs_per_date if p_[0] == initial_date):

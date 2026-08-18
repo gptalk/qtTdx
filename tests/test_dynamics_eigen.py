@@ -1541,6 +1541,24 @@ def test_cli_si_freq_response_mode(tmp_path):
     # phase subplot 关键词(plotly JSON-escape Unicode: ∠ → ∠, ω → ω,所以同时支持字面 + 转义 + yaxis2)
     assert any(kw in html_text for kw in ('∠H', 'phase', 'arg H', '相角', '\\u2220', 'yaxis2')), 'v5.4: phase 子图存在'
 
+    # F1 fix: phase y-axis must be in degrees (not radians).
+    # y-axis title is '∠H(jω) deg'; data is wrapped with np.degrees() in the closure.
+    # If the fix is missing, the y-arrays in the embedded plotly JSON would be in radians (|y| <= π ≈ 3.14).
+    # Parse the plotly JSON embedded in the HTML; the initial-state phase traces are the
+    # last 2 traces per industry-pair in the data array. Use a robust heuristic: scan the first
+    # ~20 "y": [...] arrays and confirm at least one has values whose absolute magnitudes exceed 10
+    # (i.e. is in degrees, not radians).
+    import re
+    y_arrays = re.findall(r'"y":\s*\[[^\]]*\]', html_text)
+    has_degrees_range = False
+    for y_str in y_arrays[:20]:
+        nums = re.findall(r'-?\d+\.?\d*', y_str)
+        values = [float(n) for n in nums if n]
+        if values and max(abs(v) for v in values) > 10:
+            has_degrees_range = True
+            break
+    assert has_degrees_range, 'v5.4 F1: phase y-data must be in degrees (|y| > 10), not radians (≤ π ≈ 3.14)'
+
     # Summary TXT 含 3 日期 + 中文
     summary_text = summary_path.read_text(encoding='utf-8')
     assert '2024-09-30' in summary_text and '2024-10-31' in summary_text and '2024-11-30' in summary_text
