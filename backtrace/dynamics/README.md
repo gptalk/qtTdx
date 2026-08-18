@@ -872,3 +872,65 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_forced_response.py --k
 | v4.9 | `f2178a3` | SI 时序 + 漂移检测 | 时序 + z-score |
 | v4.10 | `d002a0e` | 时序 SI 的 lagged IC 评估 | Lagged Spearman IC |
 | **v5** | **(本版)** | **受迫系统 + G(ω) 频率响应** | **z 域 H(jω)** |
+
+### §4.1 v5.1 — Industry G(ω) Frequency Response Comparison
+
+**多对 (k, c) Bode plot 叠加对比**,回答业务问题"哪个行业对 β 强迫最敏感 / 哪个是低通过滤器 / 哪个危险"。
+
+#### 新增 CLI flag
+
+| flag | 类型 | 说明 |
+|---|---|---|
+| `--overlay` | str | 多对 (k, c) 字符串:`"k1,c1,label1; k2,c2,label2; ..."` |
+| `--overlay-html` | path | overlay HTML 输出(默认 `backtrace/outputs/dynsys_bode_overlay.html`) |
+| `--overlay-summary-txt` | path | overlay UTF-8 汇总(默认 `backtrace/outputs/dynsys_bode_overlay_summary.txt`) |
+
+**触发条件**:传 `--overlay` 时进入 overlay-only 模式,跳过单对 main() 逻辑,**不写** 单对 `grid_csv` / `stability_csv` / `bode_html` / `heatmap_html` / `summary_txt`。不传 `--overlay` 时与 v5 单对模式完全一致(向后兼容)。
+
+#### 端到端示例
+
+```bash
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_forced_response.py \
+    --overlay "0.5,2.0,Strong damping; 2.0,1.5,Mild damping; 2.01,2.0,Near boundary; 4.0,0.5,Weak damping"
+# 期待:
+  - backtrace/outputs/dynsys_bode_overlay.html (4 条曲线叠加 + 每对 ω_n 标记)
+  - backtrace/outputs/dynsys_bode_overlay_summary.txt (4 对业务解读)
+```
+
+#### 输出(overlay-only 模式)
+
+| 路径 | 内容 |
+|---|---|
+| `backtrace/outputs/dynsys_bode_overlay.html` | 2 子图:上 |H(jω)| dB + 下 arg H(jω) degrees。每对 (k, c) 一条曲线 + ω_n 处 × marker(只在 ω_n 有限时)|
+| `backtrace/outputs/dynsys_bode_overlay_summary.txt` | UTF-8 中文汇总,每对一行 + 业务解读 |
+
+#### 中文汇总字段(每对一行)
+
+- 响应类型(`overdamped` / `critical` / `underdamped` / `anti_damped`,从 `classify_response_type(k, c)`)
+- Schur 楔形内/外(`is_in_schur_wedge(k, c)`)
+- ω_n + |H(jω_n)|(若有)
+- |H(j0)| DC 增益 + |H(jπ)| Nyquist
+- 业务解读:
+  - 共振风险高(楔形外):β 强迫会在 ω_n 处放大 N 倍
+  - 低通过滤器(过阻尼 + 楔形内):β 强迫不会引发共振,稳定
+  - 临界阻尼:边界 case
+  - 标准响应(其他)
+
+#### 解析规则(`parse_overlay_pairs`)
+
+- 分号 `;` 分隔不同对
+- 逗号 `,` 分隔 k / c / label(只 split 前 2 个逗号,label 可含逗号)
+- label 可含空格(trim 后)
+- 错误格式 → `ValueError`("格式错误" / "k 必须" / "c 必须" / "overlay 字符串为空")
+
+推荐 ≤ 10 对(plotly 默认 10 色),> 10 对 label 需手动分组。
+
+#### 与 v5 的关系
+
+v5.1 是 v5 的**纯可视化层扩展**,不动数学层(`transfer_function` / `natural_frequency` / `magnitude_phase` 0 修改)。v5.2 候选:与 `parameter_fit` 集成,自动从历史 (k̂, ĉ) 序列选 top-N 行业画 overlay。
+
+#### 已知陷阱
+
+- 单对模式 `main()` 函数体**一行未动**,仅在最开头加 `if args.overlay: ... return` 分支
+- 现有 53 v5 测试 + 8 v5.1 测试 = 61 tests pass,所有 v5 单对模式行为向后兼容
+- 边界:复极点区域 (k<c) 才有有限 ω_n;实极点区域 (k>>c) ω_n 不显示 marker
