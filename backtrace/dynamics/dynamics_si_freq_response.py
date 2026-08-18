@@ -375,7 +375,7 @@ def build_regime_heatmap(
     """Render regime for each (date, industry) as a 2D heatmap.
 
     Args:
-        pairs_per_date: [(asof_date, k̂, �, label), ...] from select_top_n_per_date
+        pairs_per_date: [(asof_date, k̂, ĉ, label), ...] from select_top_n_per_date
         output_path: PNG 输出路径
         title: figure 标题
         dpi: PNG 分辨率(默认 100)
