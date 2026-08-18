@@ -773,3 +773,43 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_si_timeseries.py --win
   (= 240 × 0.8) 会在 `main()` 入口剔除 `n_valid_days < 192` 的行,使其从 SI 时序消失,
   漂移检测不会被 ramp-up artifact 污染。`detect_si_drift` 还内置 0.01 noise floor + 二次防御层
   (若 si_ts 含 `n_valid_days_min` 列,跳过低于阈值的历史点)
+
+### 3.10 v4.10 — 时序 SI 的 lagged IC 评估
+
+v4.8 contemporaneous IC ≈ 0 揭示 SI 不是预测性指标。v4.10 闭环:用 lagged IC(时序 SI(t) vs future forward return)测"今日 SI 能否预测未来收益排名"。
+
+**关键差异(vs v4.8)**:
+- v4.8 contemporaneous:`Spearman(SI_i(t), r_i(t, h))` 同时点 SI vs forward return — 描述性
+- v4.10 lagged:`Spearman(SI_i(t), r_i(t+h, h))` 不同时点 — 真正预测性测试
+
+**数据流**:
+1. 输入: `data/dynamics/sector_si_timeseries.csv` (v4.9 产出,11 列 long format)
+2. 输入: `data/daily/<code>.csv` 算各行业 forward return(同 v4.8 中位数法)
+3. lagged 对齐:对每个 eval_date t,取 SI 在 (t - horizon) 的排名,forward return 在 t 的排名
+4. 跨截面 Spearman + 60 日 rolling window / 20 日 step
+5. 输出 4 个文件(全 gitignored)
+
+**输出**:
+- `data/dynamics/si_lagged_ic_summary.csv` — 跨期汇总 2 horizons × 6 列
+- `data/dynamics/si_lagged_ic_timeseries.csv` — per-window detail
+- `backtrace/outputs/dynsys_si_lagged_ic.html` — 3 子图 plotly
+  - (1,1) Lagged IC 时序 + IC=0 红虚线
+  - (1,2) v4.10 lagged vs v4.8 contemporaneous 对比(若 v4.8 CSV 存在)
+  - (2,1) IC 统计汇总表
+- `backtrace/outputs/dynsys_si_lagged_ic_summary.txt` — UTF-8 中文汇总
+
+**CLI**:
+```bash
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_si_lagged_ic.py
+# 默认: window=60, step=20, horizons=20,60
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_si_lagged_ic.py --window 30 --step 10
+# 短窗口实验
+```
+
+**已知陷阱**:
+- SI 时序是月度 asof_date,horizon=20/60 日可能不对齐 — 用 `asof_date <= t - horizon` 的最新 SI
+- 行业 member 数 < 5 → 该 eval_date 跳过
+- v4.8 CSV 缺失时,对比子图 (1,2) 退化为 annotation 提示
+- 截面行业数太少(< 10)时 Spearman 抽样噪声本身就有 E|IC| ≈ 0.3,别把它当信号
+- 若 lagged IC ≈ 0 → 行业层**纯描述性**,SI 用于报告 / 风险标签,不作选股信号(确认 v4.8 结论)
+- 若 lagged IC > 0.05 显著 → 行业 SI(t) 是预测性指标,v4.12 行业轮动策略有基础
