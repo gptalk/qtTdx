@@ -994,3 +994,52 @@ v5.2 是 v5.1 的**数据接入层** — v5.1 提供"对比框架",v5.2 提供"�
 - 必需列缺失 → ValueError(列出缺失列名)
 - `--from-kc-estimates` 与 `--overlay` 互斥,不能同时传
 - `select_top_n_industries` 只取实际存在的行业数,如果少于 `--top-n` 会 print 警告
+
+### §4.1.2 v5.3 — Real SI Frequency Response (时序动画)
+
+**动机**:v5.2 数据驱动 overlay 只画**单帧**(一个 asof_date 的行业 G(ω) 对比)。v5.3 把这层补上:**多 asof_date 的 Bode overlay 通过 plotly 动画 slider 联动**,业务可拖时间轴看行业频率响应如何漂移。
+
+**新文件**:`backtrace/dynamics/dynamics_si_freq_response.py`(独立文件,不动 `dynamics_forced_response.py`)
+
+**端到端示例**:
+```bash
+# 前置:v4.9 parameter_fit --rolling-time 已跑过,data/projection/kc_estimates_time.csv 存在
+PYTHONIOENCODING=utf-8 /c/ProgramData/anaconda3/python.exe backtrace/dynamics/dynamics_si_freq_response.py
+# 期待:3 个 gitignored 输出
+#   backtrace/outputs/dynsys_si_freq_response.html (plotly 动画 slider)
+#   backtrace/outputs/dynsys_si_freq_response_summary.txt (中文业务解读)
+#   data/dynamics/si_freq_response_pairs.csv (审计)
+```
+
+**CLI flags**:
+
+| Flag | 默认 | 说明 |
+|---|---|---|
+| `--kc-time-csv PATH` | `data/projection/kc_estimates_time.csv` | v4.9 rolling 时序输出 |
+| `--top-n-industries N` | 5 | 每个 asof_date 选 top-N industries |
+| `--industry-selection` | `by_n_stocks` | `by_n_stocks` / `by_c_over_k` / `by_k_over_c` |
+| `--max-dates N` | 12 | 最多取最近 N 个 asof_date(避免动画过慢) |
+| `--html-output PATH` | `backtrace/outputs/dynsys_si_freq_response.html` | |
+| `--summary-output PATH` | `backtrace/outputs/dynsys_si_freq_response_summary.txt` | |
+| `--pairs-csv-output PATH` | `data/dynamics/si_freq_response_pairs.csv` | |
+
+**与 v5 / v5.1 / v5.2 / v4.9 的关系**:
+
+| 版 | commit | 主题 |
+|---|---|---|
+| v5 | `0ce3014` | 受迫系统 + G(ω) 单对频率响应 |
+| v5.1 | `e990fb3` | 多对 (k, c) overlay 对比 |
+| v5.2 | `fce9532` | 数据驱动 overlay(单帧) |
+| v4.9 | `f2178a3` | SI(t) 时序 + 漂移检测 |
+| **v5.3** | **(本次)** | **时序动画 G(ω)(t) overlay** |
+
+v5.3 是**时序维度**的扩展:v5 单对 → v5.1 多对 overlay → v5.2 行业 overlay → v5.3 时序动画 overlay。
+
+**已知陷阱**:
+
+- `kc_estimates_time.csv` 不存在(v4.9 没跑过)→ `load_kc_time_series` raise `FileNotFoundError`,CLI 给清晰错误提示用户跑 `parameter_fit.py --rolling-time`
+- asof_date 数 > `--max-dates` 12 → 自动截断到最近 N 个,print 警告
+- 同行业在某 asof_date 整段 fail(无 `status='ok'`)→ 该 date 该行业跳过,top-N 不足时按实际数
+- 动画 HTML 大 → plotly CDN 渲染,数据 ≤ 12 帧 × 5 industries × 200 ω points = 12k 点(~200KB)
+
+### §4.1.3 (Reserved — v5.4+)
