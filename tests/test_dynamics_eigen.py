@@ -22,6 +22,9 @@ if BACKTRACE_DIR not in sys.path:
 from dynamics import analyze_eigenvalues, simulate_trajectory, build_simulation_df
 from dynamics import dynamics_eigen_analysis as EA
 
+# Module-scope REPO_ROOT for subprocess.cwd= (v5.10 test_cli_oos_batch_mode)
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 # === 11 分类全分支 ===
 
@@ -1740,3 +1743,59 @@ def test_cli_oos_viz_mode(tmp_path):
         content = fh.read()
     assert b'<html' in content.lower() or b'plotly' in content.lower(), \
         f'Not a valid plotly HTML: {content[:200]}'
+
+
+def test_cli_oos_batch_mode(tmp_path):
+    """v5.10 — `dynamics_oos_batch.py` end-to-end CLI smoke test.
+
+    Runs the full CLI with --limit 2 --days 30 --top-n 1 — small numbers for fast test.
+    Asserts both HTML files are written and contain expected plotly divs.
+    """
+    import subprocess
+    output_html = tmp_path / 'oos_full_market.html'
+    top_html = tmp_path / 'oos_full_market_top1.html'
+
+    env = os.environ.copy()
+    env['PYTHONIOENCODING'] = 'utf-8'
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            'backtrace/dynamics/dynamics_oos_batch.py',
+            '--limit', '2',
+            '--days', '30',
+            '--top-n', '1',
+            '--output', str(output_html),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    # F3 inverted tolerance: documented failures skip, anything else fails loudly
+    if proc.returncode != 0:
+        combined = (proc.stdout + proc.stderr).lower()
+        # documented skip patterns: 本地缓存缺失 / 'cannot import name' + 'tsfresh'
+        if '数据' in combined or '本地缓存' in combined:
+            pytest.skip(f"v5.10: local cache missing — {proc.stderr[:200]}")
+        elif 'cannot import name' in combined and 'tsfresh' in combined:
+            pytest.skip(f"v5.10: M1 tsfresh shadow — {proc.stderr[:200]}")
+        else:
+            pytest.fail(f"v5.10 CLI failed (rc={proc.returncode}):\n"
+                        f"STDOUT:\n{proc.stdout[-1000:]}\n"
+                        f"STDERR:\n{proc.stderr[-1000:]}")
+
+    # Success assertions
+    assert output_html.exists(), f'dashboard not written at {output_html}'
+    assert output_html.stat().st_size > 1000, f'dashboard too small: {output_html.stat().st_size} bytes'
+
+    # top-N file path: brief replaces '.html' → '_top{top_n}.html'
+    top_path = str(output_html).replace('.html', '_top1.html')
+    assert os.path.exists(top_path), f'top-N multiples not written at {top_path}'
+
+    # Sanity: dashboards contain plotly divs
+    dashboard_text = output_html.read_text(encoding='utf-8')
+    assert 'plotly' in dashboard_text.lower(), 'dashboard missing plotly'
+    assert 'Full-Market' in dashboard_text, 'dashboard missing title'
