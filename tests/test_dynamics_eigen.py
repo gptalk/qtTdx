@@ -1578,3 +1578,47 @@ def test_cli_si_freq_response_mode(tmp_path):
     assert len(pairs_df) == 6
     assert set(pairs_df.columns) >= {'asof_date', 'index_code', 'k_hat', 'c_hat'}
     assert set(pairs_df['asof_date'].unique()) == {'2024-09-30', '2024-10-31', '2024-11-30'}
+
+
+# === v5.6 — static 2D grid PNG export (2026-08-18) ===
+
+def test_cli_static_grid_mode(tmp_path):
+    """v5.6: CLI static PNG export mode — 验证 build_static_bode_grid 输出 PNG."""
+    pytest.importorskip("matplotlib")
+
+    import subprocess
+    import sys
+    import os
+
+    # 合成 3 dates × 2 industries CSV (复用 v5.3 fixture 模式)
+    csv_path = tmp_path / 'kc_time.csv'
+    rows = []
+    for date_str in ['2024-09-30', '2024-10-31', '2024-11-30']:
+        for code, k, c in [('AAA', 0.5, 2.0), ('BBB', 3.5, 0.5)]:
+            rows.append({
+                'code': code, 'index_code': f'Industry_{code}',
+                'asof_date': date_str, 'k_hat': k, 'c_hat': c,
+                'status': 'ok', 'n_valid_days': 200,
+            })
+    pd.DataFrame(rows).to_csv(csv_path, index=False, encoding='utf-8-sig')
+
+    static_png = tmp_path / 'static.png'
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    cli_script = os.path.join(repo_root, 'backtrace', 'dynamics', 'dynamics_si_freq_response.py')
+    cmd = [
+        sys.executable, cli_script,
+        '--kc-time-csv', str(csv_path),
+        '--top-n-industries', '2',
+        '--static-output', str(static_png),
+    ]
+    env = os.environ.copy()
+    env['PYTHONIOENCODING'] = 'utf-8'
+    result = subprocess.run(cmd, capture_output=True, env=env, timeout=60)
+    assert result.returncode == 0, f'CLI failed: {result.stderr.decode("utf-8", errors="ignore")}'
+
+    # 验证 PNG 存在 + 字节头 + size
+    assert static_png.exists(), f'PNG not created: {static_png}'
+    assert static_png.stat().st_size > 5000, f'PNG too small: {static_png.stat().st_size}'
+    with open(static_png, 'rb') as fh:
+        header = fh.read(8)
+    assert header.startswith(b'\x89PNG'), f'Not a valid PNG: header={header!r}'

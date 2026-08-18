@@ -9,6 +9,19 @@ warnings.filterwarnings('ignore')
 
 import pandas as pd
 
+# v5.6 — matplotlib 静态 PNG 导出(必须在 import pyplot 前 use('Agg'))
+import matplotlib
+matplotlib.use('Agg')  # non-interactive backend (no display required)
+import matplotlib.pyplot as plt
+
+# v5.6 — regime 颜色字典(镜像 v5.5 _regime_color 闭包 dict)
+REGIME_COLORS = {
+    'overdamped':  '#2ca02c',   # 绿, Schur 内稳定
+    'critical':    '#ff7f0e',   # 橙, Schur 边界
+    'underdamped': '#d62728',   # 红, Schur 外共振
+    'anti_damped': '#9467bd',   # 紫, 病态
+}
+
 REQUIRED_COLUMNS = ('code', 'index_code', 'asof_date', 'k_hat', 'c_hat', 'status', 'n_valid_days')
 RAMP_UP_DAYS = 192  # 沿用 v4.9
 
@@ -270,6 +283,70 @@ def build_animated_overlay_html(
     fig.write_html(output_path, include_plotlyjs='cdn')
 
 
+def build_static_bode_grid(
+    pairs_per_date: list,
+    omega_grid: np.ndarray,
+    output_path: str,
+    title: str = 'Industry G(ω) Frequency Response — Static Grid',
+    dpi: int = 100,
+) -> None:
+    """Render all dates' Bode curves as a 2D matplotlib grid (rows = dates, cols = |H| + ∠H).
+
+    Args:
+        pairs_per_date: [(asof_date, k̂, ĉ, label), ...] from select_top_n_per_date
+        omega_grid: 共享 ω 网格
+        output_path: PNG 输出路径
+        title: figure 标题
+        dpi: PNG 分辨率(默认 100)
+
+    Raises:
+        ValueError: pairs_per_date 为空
+    """
+    if not pairs_per_date:
+        raise ValueError('pairs_per_date 为空,无法构建 static grid')
+
+    dates = sorted(set(p[0] for p in pairs_per_date))
+    n_rows = len(dates)
+    fig, axes = plt.subplots(n_rows, 2, figsize=(12, 4 * n_rows), sharex=True, sharey='col')
+    if n_rows == 1:
+        axes = np.array([axes])  # 2D array for indexing
+
+    def _mag_db(p):
+        return magnitude_phase(omega_grid * 1j, p[1], p[2])[0].tolist()
+
+    def _phase_deg(p):
+        return np.degrees(magnitude_phase(omega_grid * 1j, p[1], p[2])[1]).tolist()
+
+    def _color(k, c):
+        return REGIME_COLORS.get(classify_response_type(k, c), '#7f7f7f')
+
+    for i, date in enumerate(dates):
+        ax_mag = axes[i, 0]
+        ax_phase = axes[i, 1]
+        for p in (p_ for p_ in pairs_per_date if p_[0] == date):
+            color = _color(p[1], p[2])
+            ax_mag.plot(omega_grid, _mag_db(p), color=color, label=p[3], linewidth=1.5)
+            ax_phase.plot(omega_grid, _phase_deg(p), color=color, label=p[3], linewidth=1.5)
+        ax_mag.set_ylabel('|H(jω)| dB' if i == 0 else '')
+        ax_phase.set_ylabel('∠H(jω) deg' if i == 0 else '')
+        ax_mag.set_title(f'{date}')
+        ax_mag.grid(True, alpha=0.3)
+        ax_phase.grid(True, alpha=0.3)
+        if i == 0:
+            ax_mag.legend(loc='upper right', fontsize=8)
+
+    # Bottom row xlabel
+    axes[-1, 0].set_xlabel('ω (rad/day)')
+    axes[-1, 1].set_xlabel('ω (rad/day)')
+
+    fig.suptitle(title, fontsize=14)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
+    plt.close(fig)
+
+
 def write_animated_summary_txt(
     pairs_per_date: list,
     dates: list,
@@ -331,6 +408,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--html-output', default=HTML_OUT)
     p.add_argument('--summary-output', default=SUMMARY_OUT)
     p.add_argument('--pairs-csv-output', default=PAIRS_OUT)
+    p.add_argument(
+        '--static-output',
+        type=str,
+        default='backtrace/outputs/dynsys_si_freq_response_static.png',
+        help='PNG 静态网格输出路径',
+    )
     return p.parse_args()
 
 
@@ -365,11 +448,13 @@ def main() -> None:
     build_animated_overlay_html(pairs, omega_grid, args.html_output)
     write_animated_summary_txt(pairs, all_dates, args.summary_output)
     write_animated_pairs_csv(pairs, args.pairs_csv_output)
+    build_static_bode_grid(pairs, omega_grid, args.static_output)
 
     print(f'[v5.3] {len(pairs)} 个 (date, industry) 对已写入:')
     print(f'  - {args.html_output}')
     print(f'  - {args.summary_output}')
     print(f'  - {args.pairs_csv_output}')
+    print(f'[v5.6] 静态 PNG 已写入 {args.static_output}')
 
 
 if __name__ == '__main__':
