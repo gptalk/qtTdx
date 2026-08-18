@@ -1223,3 +1223,35 @@ def test_cli_overlay_mode(tmp_path):
     assert not single_pair_csv.exists(), "单对 CSV 不应被创建(overlay-only 模式)"
     single_pair_html = tmp_path / "backtrace" / "outputs" / "dynsys_forced_response.html"
     assert not single_pair_html.exists(), "单对 HTML 不应被创建(overlay-only 模式)"
+
+
+# === v5.2 load_kc_estimates ===
+
+def test_load_kc_estimates_filters_failed(tmp_path):
+    """load_kc_estimates 过滤 status != 'ok' 的行。"""
+    from backtrace.dynamics import dynamics_forced_response as DFR
+    csv_path = tmp_path / "kc.csv"
+    csv_path.write_text(
+        "code,index_code,k_hat,c_hat,status\n"
+        "600000.SH,801010,0.5,2.0,ok\n"
+        "600001.SH,801010,0.6,1.9,ok\n"
+        "600002.SH,801020,2.0,1.5,ok\n"
+        "600003.SH,801020,2.1,1.4,fail\n",  # ← 应被过滤
+        encoding='utf-8',
+    )
+    df = DFR.load_kc_estimates(str(csv_path))
+    assert len(df) == 3, f"应过滤 fail 行,剩 3 行,得 {len(df)}"
+    assert "600003.SH" not in df['code'].values
+
+
+def test_load_kc_estimates_validates_columns(tmp_path):
+    """缺必需列 → ValueError。"""
+    from backtrace.dynamics import dynamics_forced_response as DFR
+    csv_path = tmp_path / "kc.csv"
+    csv_path.write_text(
+        "code,k_hat,c_hat\n"  # ← 缺 index_code + status
+        "600000.SH,0.5,2.0\n",
+        encoding='utf-8',
+    )
+    with pytest.raises(ValueError, match="index_code"):
+        DFR.load_kc_estimates(str(csv_path))

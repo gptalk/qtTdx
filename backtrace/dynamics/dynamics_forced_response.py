@@ -461,6 +461,33 @@ def parse_overlay_pairs(s):
     return pairs
 
 
+def load_kc_estimates(csv_path):
+    """读 parameter_fit kc_estimates.csv,验证必需列,过滤失败行。
+
+    必需列:code, index_code, k_hat, c_hat, status(其他列可选)
+
+    Returns:
+        DataFrame,只保留 status='ok' 的行(过滤拟合失败的)
+
+    Raises:
+        FileNotFoundError: 文件不存在
+        ValueError: 必需列缺失
+    """
+    import os
+    REQUIRED_COLS = ['code', 'index_code', 'k_hat', 'c_hat', 'status']
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(
+            f"kc_estimates CSV 不存在: {csv_path}\n"
+            f"提示:python backtrace/projection/parameter_fit.py 先跑出 (k̂, ĉ)"
+        )
+    df = pd.read_csv(csv_path, encoding='utf-8-sig')
+    missing = [c for c in REQUIRED_COLS if c not in df.columns]
+    if missing:
+        raise ValueError(f"kc_estimates CSV 缺必需列: {missing}")
+    df = df[df['status'] == 'ok'].reset_index(drop=True)
+    return df
+
+
 def main():
     args = parse_args()
     # v5.1 overlay 分支:有 --overlay 则跳过单对逻辑,只写 overlay 文件
