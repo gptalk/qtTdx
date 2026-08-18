@@ -156,7 +156,7 @@ def test_bode_overlay_mixed_stability(tmp_path):
 ### 4.3 回归保护
 
 - v5 已有 5 个测试 + v4.x 48 个测试,**全部不动**
-- 53 → 53+4 = **57 tests pass**(目标)
+- 53 → 53+8 = **61 tests pass**(实际 — Task 1 加 3 个,Task 2 加 1 个,Task 3 加 3 个,Task 4 加 1 个)
 
 ## 5. 约束兑现
 
@@ -213,5 +213,5 @@ PYTHONIOENCODING=utf-8 /c/ProgramData/anaconda3/python.exe backtrace/dynamics/dy
 - [ ] v5 单对模式 CLI flags 全部兼容
 - [ ] 4 个 v4.x CLI 0 修改
 - [ ] 新增 `dynsys_bode_overlay*` 全部 gitignored
-- [ ] 4 个新测试 + 53 个旧测试 = 57 tests pass
+- [ ] 8 个新测试 + 53 个旧测试 = 61 tests pass
 - [ ] README §4 加 §4.1 v5.1 子节
