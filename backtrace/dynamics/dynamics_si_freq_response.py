@@ -358,6 +358,94 @@ def build_static_bode_grid(
     plt.close(fig)
 
 
+REGIME_ABBREV = {
+    'overdamped':  'over',
+    'critical':    'crit',
+    'underdamped': 'under',
+    'anti_damped': 'anti',
+}
+
+
+def build_regime_heatmap(
+    pairs_per_date: list,
+    output_path: str,
+    title: str = 'Industry Regime Stability — Heatmap',
+    dpi: int = 100,
+) -> None:
+    """Render regime for each (date, industry) as a 2D heatmap.
+
+    Args:
+        pairs_per_date: [(asof_date, k̂, �, label), ...] from select_top_n_per_date
+        output_path: PNG 输出路径
+        title: figure 标题
+        dpi: PNG 分辨率(默认 100)
+
+    Raises:
+        ValueError: pairs_per_date 为空
+    """
+    if not pairs_per_date:
+        raise ValueError('pairs_per_date 为空,无法构建 heatmap')
+
+    dates = sorted(set(p[0] for p in pairs_per_date))
+    industries = sorted(set(p[3] for p in pairs_per_date))
+    n_rows = len(dates)
+    n_cols = len(industries)
+
+    # 索引 (date, industry) → (k̂, ĉ)
+    pair_lookup = {}
+    for p in pairs_per_date:
+        pair_lookup[(p[0], p[3])] = (p[1], p[2])
+
+    fig, ax = plt.subplots(figsize=(max(8, 1.2 * n_cols), max(4, 0.6 * n_rows)))
+
+    # 画 cell
+    for i, date in enumerate(dates):
+        for j, industry in enumerate(industries):
+            k, c = pair_lookup.get((date, industry), (None, None))
+            if k is None:
+                color = '#7f7f7f'  # 灰 (无数据)
+                text = '?'
+            else:
+                regime = classify_response_type(k, c)
+                color = REGIME_COLORS.get(regime, '#7f7f7f')
+                text = REGIME_ABBREV.get(regime, '?')
+
+            rect = mpatches.Rectangle(
+                (j, i), 1, 1,
+                facecolor=color, edgecolor='white', linewidth=1.5,
+            )
+            ax.add_patch(rect)
+            ax.text(j + 0.5, i + 0.5, text,
+                    ha='center', va='center',
+                    fontsize=10, color='black')
+
+    ax.set_xticks(np.arange(n_cols) + 0.5)
+    ax.set_xticklabels(industries, rotation=45, ha='right', fontsize=9)
+    ax.set_yticks(np.arange(n_rows) + 0.5)
+    ax.set_yticklabels(dates, fontsize=9)
+    ax.set_xlim(0, n_cols)
+    ax.set_ylim(0, n_rows)
+    ax.invert_yaxis()  # 日期早的在顶部
+    ax.set_aspect('equal')
+
+    # 顶部 4 色 legend (v5.6 I-1 模式)
+    regime_patches = [
+        mpatches.Patch(color='#2ca02c', label='overdamped (stable)'),
+        mpatches.Patch(color='#ff7f0e', label='critical'),
+        mpatches.Patch(color='#d62728', label='underdamped (resonance)'),
+        mpatches.Patch(color='#9467bd', label='anti_damped'),
+    ]
+    fig.legend(handles=regime_patches, loc='upper center',
+               bbox_to_anchor=(0.5, 0.99), ncol=4, frameon=False, fontsize=9)
+
+    fig.suptitle(title, fontsize=14)
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
+    plt.close(fig)
+
+
 def write_animated_summary_txt(
     pairs_per_date: list,
     dates: list,
@@ -425,6 +513,12 @@ def parse_args() -> argparse.Namespace:
         default='backtrace/outputs/dynsys_si_freq_response_static.png',
         help='PNG 静态网格输出路径',
     )
+    p.add_argument(
+        '--heatmap-output',
+        type=str,
+        default='backtrace/outputs/dynsys_regime_heatmap.png',
+        help='Regime heatmap PNG 输出路径',
+    )
     return p.parse_args()
 
 
@@ -460,6 +554,8 @@ def main() -> None:
     write_animated_summary_txt(pairs, all_dates, args.summary_output)
     write_animated_pairs_csv(pairs, args.pairs_csv_output)
     build_static_bode_grid(pairs, omega_grid, args.static_output)
+    build_regime_heatmap(pairs, args.heatmap_output)
+    print(f'[v5.7] regime heatmap 已写入 {args.heatmap_output}')
 
     print(f'[v5.3] {len(pairs)} 个 (date, industry) 对已写入:')
     print(f'  - {args.html_output}')
