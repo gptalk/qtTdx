@@ -24,8 +24,11 @@ import warnings
 warnings.filterwarnings('ignore')
 import sys, os
 BACKTRACE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = os.path.dirname(BACKTRACE_DIR)
 if BACKTRACE_DIR not in sys.path:
     sys.path.insert(0, BACKTRACE_DIR)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')
 
 import argparse
@@ -359,3 +362,59 @@ def build_oos_prediction_html(
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     fig.write_html(output_path, include_plotlyjs='cdn', full_html=True)
     print(f"[v5.9] wrote {output_path} ({T} OOS days, {KC_KHAT}={k_str}, {KC_CHAT}={c_str})")
+
+
+def main():
+    p = argparse.ArgumentParser(
+        description='v5.9 — OOS 1-step prediction visualization (plotly HTML)',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument('--code', required=True, help='stock code, e.g. 002475.SZ')
+    p.add_argument('--days', type=int, default=DEFAULTS['days'], help='trading days')
+    p.add_argument('--prefer-industry', dest='prefer_industry',
+                   action='store_true', default=DEFAULTS['prefer_industry'])
+    p.add_argument('--no-prefer-industry', dest='prefer_industry',
+                   action='store_false')
+    p.add_argument('--k', type=float, default=DEFAULTS['k'],
+                   help='override k̂ (else estimated from data)')
+    p.add_argument('--c', type=float, default=DEFAULTS['c'],
+                   help='override ĉ (else estimated from data)')
+    p.add_argument('--lambda-q', dest='lambda_q', type=float,
+                   default=DEFAULTS['lambda_q'], help='reserved for future')
+    p.add_argument('--f-self-window', dest='f_self_window', type=int,
+                   default=DEFAULTS['f_self_window'], help='rolling window for F_self predictor')
+    p.add_argument('--output', type=str, default=None,
+                   help='output HTML path (default: backtrace/outputs/dynsys_oos_viz_<code>.html)')
+    args = p.parse_args()
+
+    print(f"[v5.9] code={args.code} days={args.days} "
+          f"prefer_industry={args.prefer_industry} k={args.k} c={args.c} "
+          f"f_self_window={args.f_self_window}")
+
+    # 1. Load + predict
+    data = load_oos_predictions(
+        stock_code=args.code,
+        days=args.days,
+        prefer_industry=args.prefer_industry,
+        k=args.k, c=args.c,
+        lambda_q=args.lambda_q,
+        f_self_window=args.f_self_window,
+    )
+
+    # 2. Render
+    output_path = args.output or DEFAULT_OUTPUT.format(code=args.code.replace('.', '_'))
+    build_oos_prediction_html(
+        common_idx=data['common_idx'],
+        a_pred=data['a_pred'],
+        a_actual=data['a_actual'],
+        state_pred=data['state_pred'],
+        state_actual=data['state_actual'],
+        k_used=data['k_used'],
+        c_used=data['c_used'],
+        output_path=output_path,
+        title=f"{args.code} — OOS 1-step prediction (k̂ vs ĉ)",
+    )
+
+
+if __name__ == '__main__':
+    main()
