@@ -72,6 +72,19 @@ def parse_args():
                    help=f"overlay Bode HTML 输出路径")
     p.add_argument("--overlay-summary-txt", default=os.path.join(HTML_OUT_DIR, "dynsys_bode_overlay_summary.txt"),
                    help="overlay UTF-8 中文汇总输出路径")
+    # v5.2 数据驱动模式 flags
+    p.add_argument("--from-kc-estimates", default="",
+                   help="v5.2 数据驱动:parameter_fit kc_estimates.csv 路径(与 --overlay 互斥)")
+    p.add_argument("--top-n", type=int, default=5,
+                   help="v5.2 选 top-N 行业(默认 5)")
+    p.add_argument("--industry-agg", choices=['median', 'mean'], default='median',
+                   help="v5.2 行业聚合方法(默认 median)")
+    p.add_argument("--select-criterion", choices=['by_n_stocks', 'by_c_over_k', 'by_k_over_c'],
+                   default='by_n_stocks',
+                   help="v5.2 排序标准(默认 by_n_stocks)")
+    p.add_argument("--industry-pairs-csv",
+                   default=os.path.join(HTML_OUT_DIR, "dynsys_industry_overlay_pairs.csv"),
+                   help="v5.2 选中行业 CSV 输出路径")
     return p.parse_args()
 
 
@@ -548,6 +561,34 @@ def select_top_n_industries(df, criterion='by_n_stocks', n=5, group_col='index_c
     return pairs
 
 
+def write_industry_pairs_csv(pairs, agg_df, output_path):
+    """写选中行业的 (k̂, ĉ) + label + 行业股票数到 UTF-8 CSV(审计用)。
+
+    Args:
+        pairs: select_top_n_industries 输出 [(k, c, label), ...]
+        agg_df: aggregate_by_industry 输出 DataFrame
+        output_path: 输出 CSV 路径
+    """
+    import re
+    rows = []
+    for k, c, label in pairs:
+        # 从 label "Industry XXX" 提取行业 code
+        m = re.match(r'Industry\s+(.*)', label)
+        industry_code = m.group(1) if m else label
+        # 从 agg_df 查 n_stocks
+        match = agg_df[agg_df['index_code'] == industry_code]
+        n_stocks = int(match['n_stocks'].iloc[0]) if len(match) > 0 else 0
+        rows.append({
+            'industry_code': industry_code,
+            'k_hat': k,
+            'c_hat': c,
+            'n_stocks': n_stocks,
+        })
+    out_df = pd.DataFrame(rows)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
+    out_df.to_csv(output_path, index=False, encoding='utf-8-sig')
+
+
 def main():
     args = parse_args()
     # v5.1 overlay 分支:有 --overlay 则跳过单对逻辑,只写 overlay 文件
@@ -559,6 +600,26 @@ def main():
         write_overlay_summary(omega_grid_overlay, pairs, args.overlay_summary_txt)
         print(f'[v5.1 overlay] {len(pairs)} 对 (k, c) 已写入 {args.overlay_html}')
         return  # overlay-only 模式,跳过单对 main 后续
+    # v5.2 数据驱动分支
+    if args.from_kc_estimates:
+        kc_df = load_kc_estimates(args.from_kc_estimates)
+        agg_df = aggregate_by_industry(kc_df, group_col='index_code', agg=args.industry_agg)
+        if len(agg_df) == 0:
+            raise RuntimeError(
+                f"kc_estimates.csv 没有 status='ok' 的行。请检查 {args.from_kc_estimates}"
+            )
+        pairs = select_top_n_industries(agg_df, criterion=args.select_criterion,
+                                         n=args.top_n, group_col='index_code')
+        if len(pairs) < args.top_n:
+            print(f'[v5.2] 警告:实际只 {len(pairs)} 个行业(请求 {args.top_n})')
+        omega_grid_overlay = np.linspace(0.001, np.pi, 200)
+        bode_overlay(omega_grid_overlay, pairs, args.overlay_html,
+                     title=f'v5.2 Industry G(ω) — {args.select_criterion} top-{len(pairs)}')
+        write_overlay_summary(omega_grid_overlay, pairs, args.overlay_summary_txt)
+        # 写行业 pairs CSV(审计用)
+        write_industry_pairs_csv(pairs, agg_df, args.industry_pairs_csv)
+        print(f'[v5.2] {len(pairs)} 个行业已写入 {args.overlay_html} + {args.industry_pairs_csv}')
+        return
     # else: 单对模式(v5 既有逻辑,完全不变)
     omega_grid = DEFAULT_OMEGA_GRID
     k_grid = DEFAULT_K_GRID

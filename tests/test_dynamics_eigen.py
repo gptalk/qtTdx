@@ -1314,3 +1314,48 @@ def test_select_top_n_by_c_over_k():
     # A (c/k=4.0) 第一, C (c/k=1.0) 第二
     assert pairs[0][2] == 'Industry A'
     assert pairs[1][2] == 'Industry C'
+
+
+# === v5.2 --from-kc-estimates CLI 集成测试 ===
+
+def test_cli_from_kc_estimates_mode(tmp_path):
+    """CLI --from-kc-estimates 模式读合成 CSV → 选 top-N → 写 overlay + 行业 CSV。"""
+    import subprocess
+    # 用绝对路径解析 script(因为 cwd=tmp_path 时相对路径不可达)
+    _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    _SCRIPT = os.path.join(_PROJECT_ROOT, 'backtrace', 'dynamics', 'dynamics_forced_response.py')
+    cwd = tmp_path
+    csv_path = cwd / "kc_estimates.csv"
+    csv_path.write_text(
+        "code,index_code,k_hat,c_hat,status\n"
+        "600000.SH,801010,0.5,2.0,ok\n"
+        "600001.SH,801010,0.6,1.9,ok\n"
+        "600002.SH,801010,0.7,2.1,ok\n"
+        "600010.SH,801020,2.0,1.5,ok\n"
+        "600011.SH,801020,2.1,1.4,ok\n"
+        "600020.SH,801030,3.5,0.5,ok\n",
+        encoding='utf-8',
+    )
+    out_html = cwd / "overlay.html"
+    out_txt = cwd / "overlay_summary.txt"
+    out_pairs = cwd / "industry_pairs.csv"
+    result = subprocess.run([
+        sys.executable,
+        _SCRIPT,
+        "--from-kc-estimates", str(csv_path),
+        "--top-n", "2",
+        "--industry-agg", "median",
+        "--select-criterion", "by_n_stocks",
+        "--overlay-html", str(out_html),
+        "--overlay-summary-txt", str(out_txt),
+        "--industry-pairs-csv", str(out_pairs),
+    ], capture_output=True, text=True, cwd=str(cwd))
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert out_html.exists()
+    assert out_txt.exists()
+    assert out_pairs.exists()
+    pairs_content = out_pairs.read_text(encoding='utf-8')
+    # 801010 有 3 只股票(最多),801020 有 2 只,801030 有 1 只
+    # by_n_stocks top-2: 801010 + 801020
+    assert "801010" in pairs_content
+    assert "801020" in pairs_content
