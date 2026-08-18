@@ -1703,3 +1703,40 @@ def test_cli_state_timeline_mode(tmp_path):
         content = fh.read()
     assert b'<html' in content.lower() or b'plotly' in content.lower(), \
         f'Not a valid plotly HTML: {content[:200]}'
+
+
+def test_cli_oos_viz_mode(tmp_path):
+    """v5.9: CLI OOS visualization mode — 验证 build_oos_prediction_html 输出 HTML."""
+    pytest.importorskip("plotly")
+
+    import subprocess
+    import sys
+    import os
+
+    html_out = tmp_path / 'oos_viz.html'
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    cli_script = os.path.join(repo_root, 'backtrace', 'dynamics', 'dynamics_oos_viz.py')
+    cmd = [
+        sys.executable, cli_script,
+        '--code', '002475.SZ',
+        '--days', '250',
+        '--output', str(html_out),
+    ]
+    env = os.environ.copy()
+    env['PYTHONIOENCODING'] = 'utf-8'
+    result = subprocess.run(cmd, capture_output=True, env=env, timeout=60)
+
+    # Tolerate documented failures (cache miss OR M1 tsfresh shadow)
+    if result.returncode != 0:
+        stderr = result.stderr.decode('utf-8', errors='ignore')
+        if '本地缓存缺失' in stderr:
+            pytest.skip('002475.SZ not in local cache')
+        if 'cannot import name' in stderr and 'tsfresh' in stderr:
+            pytest.skip('M1 pre-existing tsfresh import shadow')
+        assert False, f'Unexpected CLI failure: {stderr[-800:]}'
+
+    assert html_out.exists(), f'HTML not created: {html_out}'
+    with open(html_out, 'rb') as fh:
+        content = fh.read()
+    assert b'<html' in content.lower() or b'plotly' in content.lower(), \
+        f'Not a valid plotly HTML: {content[:200]}'
