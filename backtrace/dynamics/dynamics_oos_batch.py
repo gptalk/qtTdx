@@ -186,6 +186,8 @@ def classify_regime(k: float, c: float, threshold: float = 0.1) -> str:
         c: 拟合的阻尼系数 (ĉ)
         threshold: 相对差异容忍度,默认 0.1 (= 10%)。
                    |k|/|c| 在 [1/(1+threshold), 1+threshold] 内视为 balanced。
+                   上限 clip 到 1.0 (= 100%) — 超过这个值 "balanced" 区
+                   会膨胀到吞掉几乎所有 ratio,失去分类意义(spec §3.1)。
 
     Returns:
         'k_dominant' — 共振风险 (|k| > |c| * (1 + threshold))
@@ -197,6 +199,12 @@ def classify_regime(k: float, c: float, threshold: float = 0.1) -> str:
     """
     if threshold < 0:
         raise ValueError(f'threshold must be >= 0, got {threshold}')
+
+    # v5.12: clip large threshold (e.g. caller 探索时传 100)→ 1.0,
+    # 否则 upper=101, ratio=5.0 仍在 [0.0099, 101] 内 → 全 balanced,
+    # 失去分类意义(spec §3.1 提到 "clip 到 10" 但 10 仍过大;实际 cap 在 1.0)。
+    if threshold > 1.0:
+        threshold = 1.0
 
     abs_k, abs_c = abs(float(k)), abs(float(c))
 
@@ -538,6 +546,8 @@ def main():
                    help='output HTML path')
     p.add_argument('--kc-estimates-csv', dest='kc_estimates_csv', type=str, default=None,
                    help='v5.11: 透传给 compute_oos_metrics → load_oos_predictions')
+    p.add_argument('--regime-threshold', dest='regime_threshold', type=float, default=0.1,
+                   help='v5.12: |k|/|c| 平衡区相对差异容忍度 — 默认 0.1 即 10pct')
     args = p.parse_args()
 
     # 1. Load stock codes
@@ -590,6 +600,7 @@ def main():
         metrics_list=metrics_list,
         output_path=args.output,
         title=f"Full-Market OOS — {agg['n_stocks']} stocks, {args.days} days",
+        regime_threshold=args.regime_threshold,  # v5.12 NEW
     )
 
     # 5. Render top-N small multiples (separate file)
