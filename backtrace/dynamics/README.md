@@ -813,3 +813,59 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_si_lagged_ic.py --wind
 - 截面行业数太少(< 10)时 Spearman 抽样噪声本身就有 E|IC| ≈ 0.3,别把它当信号
 - 若 lagged IC ≈ 0 → 行业层**纯描述性**,SI 用于报告 / 风险标签,不作选股信号(确认 v4.8 结论)
 - 若 lagged IC > 0.05 显著 → 行业 SI(t) 是预测性指标,v4.12 行业轮动策略有基础
+
+### §4 v5 — 受迫系统 + G(ω) 频率响应
+
+v4.7-v4.10 把 SI 当成被动的"稳定性指标"。v5 扩展到受迫:用 sinusoidal β(t) 主动驱动,测系统的复频响应 H(jω),把 SI 与频域行为耦合。
+
+**核心公式**(离散 z 域):
+```
+H(jω) = [k + c·(z-1)] / [(z-1)² + k]    其中 z = e^(jω)
+```
+
+**关键性质**:
+- **DC gain**:H(j0) = 1(任意 k, c > 0)
+- **共振**:Schur 楔形外(c² < 4k)→ |H| 在 ω_n = arctan(√k) 处爆炸
+- **滚降**:Schur 楔形内(c² > 4k)→ |H| 单调滚降,无峰值
+- **抗阻尼**:k < 0 → 低频 |H| 爆炸,系统无界
+
+**输出**:
+- `data/dynamics/transfer_function_grid.csv` — ω × (|H|, arg H) 200 点
+- `data/dynamics/transfer_function_stability.csv` — 60×60 (k, c) 网格
+- `backtrace/outputs/dynsys_forced_response.html` — Bode 图 2 子图
+  - (1,1) |H(jω)| 半对数 + ω_n 红虚线 + |H|=1 灰虚线
+  - (1,2) arg H(jω) 度数 + -180° 红虚线
+- `backtrace/outputs/dynsys_forced_response_stability.html` — 2D 热图
+  - (1,1) |H(jω_n)| 颜色 + Schur 边界 c = 2√k 黑虚线
+- `backtrace/outputs/dynsys_forced_response_summary.txt` — UTF-8 中文汇总
+
+**CLI**:
+```bash
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_forced_response.py
+# 默认: k=2.0, c=1.5 (Schur 外,有共振)
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_forced_response.py --k 2.0 --c 4.0
+# Schur 内:稳定,无共振
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_forced_response.py --k 4.0 --c 0.5
+# 欠阻尼:共振爆炸
+```
+
+**与现有代码的关系**:
+- 推导基于 `_dynamics_core.predict_next_state` (v3) 但**不调用**
+- 与 `dynamics_1step_oos.py` 互补:时域 OOS vs 频域解析
+- 与 v4.7 SI 计算互补:SI 给出 (k̂, ĉ) → 本 spec 给出该点的频率响应
+
+**已知陷阱**:
+- ω=0 时 `e^(jω)-1 = 0`,但分母 = k ≠ 0(无 DC 奇异);omega_grid 从 0.001 起避免数值噪声
+- |H| 爆炸(超 1e10)时 log-scale 显示,数值上 `np.clip(..., 1e-12, None)`
+- 离散 Bode ≠ 连续 Bode — Nyquist 在 ω=π(不是 ∞)
+- 5 测试用合成 (k, c),非真实数据 — 真实 SI 频率响应是 v5.3 候选
+
+### 与 v4.7-v4.10 的关系
+
+| 版 | commit | 主题 | 数学层 |
+|---|---|---|---|
+| v4.7 | `c63e783` | SI 单一指标(描述性) | Schur 楔形 |
+| v4.8 | `dbd367d` | SI × forward return IC ≈ 0(SI 不是预测性) | Spearman IC |
+| v4.9 | `f2178a3` | SI 时序 + 漂移检测 | 时序 + z-score |
+| v4.10 | `d002a0e` | 时序 SI 的 lagged IC 评估 | Lagged Spearman IC |
+| **v5** | **(本版)** | **受迫系统 + G(ω) 频率响应** | **z 域 H(jω)** |
