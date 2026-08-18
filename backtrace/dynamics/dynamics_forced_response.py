@@ -66,6 +66,12 @@ def parse_args():
                    help=f"稳定性热图 HTML 输出路径")
     p.add_argument("--summary-txt", default=DEFAULT_SUMMARY_TXT,
                    help=f"UTF-8 中文汇总输出路径")
+    p.add_argument("--overlay", default="",
+                   help="多对 (k, c, label) overlay,格式 'k1,c1,label1; k2,c2,label2; ...'")
+    p.add_argument("--overlay-html", default=os.path.join(HTML_OUT_DIR, "dynsys_bode_overlay.html"),
+                   help=f"overlay Bode HTML 输出路径")
+    p.add_argument("--overlay-summary-txt", default=os.path.join(HTML_OUT_DIR, "dynsys_bode_overlay_summary.txt"),
+                   help="overlay UTF-8 中文汇总输出路径")
     return p.parse_args()
 
 
@@ -457,6 +463,16 @@ def parse_overlay_pairs(s):
 
 def main():
     args = parse_args()
+    # v5.1 overlay 分支:有 --overlay 则跳过单对逻辑,只写 overlay 文件
+    if args.overlay:
+        pairs = parse_overlay_pairs(args.overlay)
+        omega_grid_overlay = np.linspace(0.001, np.pi, 200)
+        bode_overlay(omega_grid_overlay, pairs, args.overlay_html,
+                     title=f'v5.1 Industry G(ω) Comparison — {len(pairs)} 对')
+        write_overlay_summary(omega_grid_overlay, pairs, args.overlay_summary_txt)
+        print(f'[v5.1 overlay] {len(pairs)} 对 (k, c) 已写入 {args.overlay_html}')
+        return  # overlay-only 模式,跳过单对 main 后续
+    # else: 单对模式(v5 既有逻辑,完全不变)
     omega_grid = DEFAULT_OMEGA_GRID
     k_grid = DEFAULT_K_GRID
     c_grid = DEFAULT_C_GRID

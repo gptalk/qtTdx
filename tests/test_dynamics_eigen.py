@@ -1193,3 +1193,33 @@ def test_parse_overlay_pairs_invalid_format():
         DFR.parse_overlay_pairs("abc,1.5,Label")
     with pytest.raises(ValueError, match="c 必须"):
         DFR.parse_overlay_pairs("1.0,xyz,Label")
+
+
+def test_cli_overlay_mode(tmp_path):
+    """CLI --overlay 模式产生 overlay HTML + summary TXT,且不写单对输出。"""
+    import subprocess
+    # 用绝对路径解析 script(因为 cwd=tmp_path 时相对路径不可达)
+    _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    _SCRIPT = os.path.join(_PROJECT_ROOT, 'backtrace', 'dynamics', 'dynamics_forced_response.py')
+    overlay_str = "0.5,2.0,Strong; 2.0,1.5,Mild"
+    out_html = tmp_path / "overlay.html"
+    out_txt = tmp_path / "overlay_summary.txt"
+    result = subprocess.run([
+        sys.executable,
+        _SCRIPT,
+        "--overlay", overlay_str,
+        "--overlay-html", str(out_html),
+        "--overlay-summary-txt", str(out_txt),
+    ], capture_output=True, text=True, cwd=str(tmp_path))
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert out_html.exists(), "overlay HTML 应被创建"
+    assert out_html.stat().st_size > 1000, "overlay HTML 文件应 > 1000 bytes"
+    assert out_txt.exists(), "overlay summary TXT 应被创建"
+    txt_content = out_txt.read_text(encoding='utf-8')
+    assert "Strong" in txt_content
+    assert "Mild" in txt_content
+    # 单对模式输出应不被创建(tmp_path 是 cwd)
+    single_pair_csv = tmp_path / "data" / "dynamics" / "transfer_function_grid.csv"
+    assert not single_pair_csv.exists(), "单对 CSV 不应被创建(overlay-only 模式)"
+    single_pair_html = tmp_path / "backtrace" / "outputs" / "dynsys_forced_response.html"
+    assert not single_pair_html.exists(), "单对 HTML 不应被创建(overlay-only 模式)"
