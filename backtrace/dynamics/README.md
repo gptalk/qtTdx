@@ -1180,7 +1180,9 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_oos_batch.py \
 - `{output}` — 2×2 distribution dashboard (N stocks)
 - `{output.replace('.html', '_top{top_n}.html')}` — top-N small multiples
 
-**Caveat:** `k_used` / `c_used` returned by `compute_oos_metrics` are always 0.0 — actual values require explicit `parameter_fit.py` integration (deferred to v5.11+).
+**Caveat (historical):** in v5.10, `k_used` / `c_used` returned by `compute_oos_metrics` were always 0.0. Closed by v5.11 (§4.1.10) — pass `--kc-estimates-csv` to use real (k̂, ĉ) from `parameter_fit.py` output.
+
+**Test:** `tests/test_dynamics_eigen.py::test_cli_oos_batch_mode` (F3 inverted tolerance: skips only on documented failures).
 
 ### 4.1.10 v5.11 — `load_oos_predictions` × parameter_fit integration
 
@@ -1209,5 +1211,3 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_oos_viz.py \
 **v5.10 propagation:** `dynamics_oos_batch.py::compute_oos_metrics` accepts `kc_estimates_path: str | None = None` + new CLI flag `--kc-estimates-csv`. All stocks in batch get real (k̂, ĉ) when CSV provided.
 
 **Test:** `tests/test_dynamics_eigen.py::test_lookup_kc_for_code` (6 cases incl. verbose status format).
-
-**Test:** `tests/test_dynamics_eigen.py::test_cli_oos_batch_mode` (F3 inverted tolerance: skips only on documented failures).
