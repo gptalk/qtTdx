@@ -1116,3 +1116,28 @@ v5.8 闭环 `_projection_core.py` 3 个高级函数 → 业务可读可视化:
 - v5.7 PNG: 静态 regime cells, 物理 dashboard
 - v5.8 HTML: **交互状态时间线 + 4 力分解, 业务可直接读**
 - 四者数据源不同: v5.5-v5.7 用 kc_time.csv, v5.8 用 load_pair → compute_dynamics
+
+### §4.1.8 v5.9 — OOS Prediction Visualization HTML (plotly)
+
+v5.9 闭环 `predict_next_state` (Plan v3 API) → **业务首次看到预测 vs 实际**:
+
+- CLI: `dynamics_oos_viz.py --code 002475.SZ --days 250 --prefer-industry`
+- 复用函数: `load_pair` + `compute_movement_projection` + `compute_dynamics` + `predict_next_state` (Plan v3) + `classify_states`
+- **4 子图**:
+  - Row 1 (35%): |a_S| predicted (蓝 #3498db) vs actual (橙 #e67e22) — 时间序列对齐情况
+  - Row 2 (25%): error bar — 单日误差, 颜色 = σ band (绿 #2ecc71 < 0.5σ / 黄 #f39c12 0.5–1σ / 红 #e74c3c > 1σ)
+  - Row 3 (20%): 20-day rolling RMSE (紫 #9b59b6) — 长期稳定性趋势
+  - Row 4 (20%): state hit rate (1=correct, 0=wrong) — 离散状态预测准确率
+
+**API**:
+- `load_oos_predictions(stock_code, days, *, prefer_industry=True, k=None, c=None, lambda_q=None, f_self_window=10) -> dict`
+  - 返回: common_idx, a_pred, a_actual, state_pred, state_actual, k_used, c_used, mv, dyn
+  - **caveat**: `k_used`/`c_used` 默认 0.0 (因为 `compute_dynamics` 不返回 k̂/ĉ),业务需用 `--k`/`--c` 注入拟合值或后续接入 `parameter_fit.py`
+- `build_oos_prediction_html(common_idx, a_pred, a_actual, state_pred, state_actual, k_used, c_used, output_path, title=...)`
+
+**v5.8 / v5.9 关系**:
+- v5.8: 现在是什么状态 (state timeline, 描述层)
+- v5.9: 明天预测准不准 (prediction vs actual, 评估层)
+- 二者业务互补: v5.8 现状 dashboard + v5.9 预测质量 dashboard
+
+**0 新依赖** (plotly 已装)、**0 修改 11 保护文件**、**76 tests PASS** (含 v5.9.1 修复 v5.8 sys.path bug)
