@@ -1042,4 +1042,12 @@ v5.3 是**时序维度**的扩展:v5 单对 → v5.1 多对 overlay → v5.2 行
 - 同行业在某 asof_date 整段 fail(无 `status='ok'`)→ 该 date 该行业跳过,top-N 不足时按实际数
 - 动画 HTML 大 → plotly CDN 渲染,数据 ≤ 12 帧 × 5 industries × 200 ω points = 12k 点(~200KB)
 
-### §4.1.3 (Reserved — v5.4+)
+### §4.1.3 v5.4 — Dual-Pane Bode (|H(jω)| + ∠H(jω))
+
+v5.4 把 v5.3 的单子图 (|H(jω)| dB) 扩成**双子图 Bode**:
+- 上子图 |H(jω)| dB vs ω
+- 下子图 ∠H(jω) deg vs ω(共享 x 轴)
+
+实现: `build_animated_overlay_html` 内部用 `plotly.subplots.make_subplots(2, 1, shared_xaxes=True)`,每帧 2 × N traces。
+
+CLI/输出/签名 0 变化,只影响 HTML 渲染(从单图 → 双图,size ~400KB)。
