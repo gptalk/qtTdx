@@ -1068,3 +1068,18 @@ v5.5 在 v5.4 双子图基础上**按阻尼 regime 给曲线着色**,业务一�
 **业务可读性升级**: 拖 slider 时同 industry 颜色随 (k̂, ĉ) 漂移变化 — 业务可直观看到"哪些 industry 从绿(稳定)漂到红(共振)"。
 
 CLI/输出/签名 0 变化,只影响 HTML 颜色 + 右上角 inline 颜色 ↔ regime 注释。
+
+### §4.1.5 v5.6 — Static 2D Grid PNG (matplotlib 导出)
+
+v5.6 给同一份数据加**静态 PNG 导出** — 业务写报告 / 嵌 PDF 用:
+
+- 函数: `build_static_bode_grid(pairs_per_date, omega_grid, output_path, dpi=100)`
+- 布局: 2D 网格 (rows = unique asof_date, cols = |H|/∠H)
+- 颜色: 与 v5.5 一致 (4 种 regime hex)
+- 0 新依赖 (matplotlib 3.10.6 已装)
+- CLI: `--static-output PATH` (默认 `backtrace/outputs/dynsys_si_freq_response_static.png`)
+
+**v5.5 vs v5.6 关系**:
+- v5.5 HTML: 交互, 浏览器拖 slider
+- v5.6 PNG: 静态, 嵌 PDF / PPT
+- 两者共用 `magnitude_phase` + `classify_response_type` + REGIME_COLORS → 0 重复, 0 不一致
