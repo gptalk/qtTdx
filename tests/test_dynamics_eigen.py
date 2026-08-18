@@ -1799,3 +1799,43 @@ def test_cli_oos_batch_mode(tmp_path):
     dashboard_text = output_html.read_text(encoding='utf-8')
     assert 'plotly' in dashboard_text.lower(), 'dashboard missing plotly'
     assert 'Full-Market' in dashboard_text, 'dashboard missing title'
+
+
+def test_lookup_kc_for_code(tmp_path):
+    """v5.11 — lookup_kc_for_code 单元测试 (no subprocess, fast).
+
+    覆盖 v5.11.1 schema fix:parameter_fit.py 的 status 是 verbose 形式
+    ("ok (anti-restoring, damping)" / "extreme (...)" / "too_few_days (...)")，
+    不是 bare "ok"。过滤条件用 str.startswith('ok', na=False)。
+    """
+    from backtrace.dynamics.dynamics_oos_viz import lookup_kc_for_code
+
+    # 1. mock kc_estimates.csv (用 REAL status format,不是裸 'ok')
+    csv = tmp_path / 'kc.csv'
+    csv.write_text(
+        'code,index_code,k_hat,c_hat,status\n'
+        '601609.SH,000001.SH,-0.012,5.14,"ok (anti-restoring, damping)"\n'
+        '601610.SH,000001.SH,0.5,0.3,"ok (anti-damping)"\n'
+        '601611.SH,000001.SH,0.1,0.2,"extreme (|k| or |c| > 10)"\n'
+        '601612.SH,000001.SH,,,"too_few_days (3 < 20)"\n',
+        encoding='utf-8',
+    )
+
+    # 2. 命中 (verbose ok × 2)
+    assert lookup_kc_for_code(str(csv), '601609.SH') == (-0.012, 5.14)
+    assert lookup_kc_for_code(str(csv), '601610.SH') == (0.5, 0.3)
+
+    # 3. status 不 startswith('ok') → None
+    assert lookup_kc_for_code(str(csv), '601611.SH') is None  # extreme
+    assert lookup_kc_for_code(str(csv), '601612.SH') is None  # too_few_days
+
+    # 4. code 不存在 → None
+    assert lookup_kc_for_code(str(csv), '000777.SZ') is None
+
+    # 5. 文件不存在 → None(不抛)
+    assert lookup_kc_for_code(str(tmp_path / 'missing.csv'), '601609.SH') is None
+
+    # 6. 缺必需列 → None
+    bad = tmp_path / 'bad.csv'
+    bad.write_text('code,foo,bar\n601609.SH,1,2\n', encoding='utf-8')
+    assert lookup_kc_for_code(str(bad), '601609.SH') is None
