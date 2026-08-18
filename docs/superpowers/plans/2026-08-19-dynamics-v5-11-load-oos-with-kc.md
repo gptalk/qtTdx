@@ -574,4 +574,14 @@ DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED
 
 ## Status: ✅ DONE — 2026-08-19
 
-All 4 tasks + 1 mid-stream fix complete. Pushed to origin/main in commits <push_commit_pending>. See memory file `dynamics-v5-11-load-oos-with-kc.md`.
+All 4 tasks + 1 mid-stream fix complete. Pushed to origin/main in 8 commits `c50b248..5882a4b`:
+- 75fc840 (Task 1): `lookup_kc_for_code` helper + `kc_estimates_path` param
+- 7dd55d1 (Task 2): `--kc-estimates-csv` CLI flag on `dynamics_oos_viz`
+- 0850679 (v5.11.1 fix): status filter for verbose format
+- f6ba836 (Task 3): propagate `kc_estimates_path` through `compute_oos_metrics` + v5.10 CLI
+- 6717d0f (Task 4): `test_lookup_kc_for_code` (6 cases)
+- 33e5b08 (Task 4): README §4.1.10
+- 0ac1730 (Task 4): spec/plan status + memory file
+- 5882a4b (post-review touchup): §4.1.9 caveat update + orphan test line cleanup
+
+Final: 78 PASS + 0 SKIP, 0 modifications to 11 protected files + `dynamics_oos_viz.py` core logic, 0 new dependencies. v5.10 §4.1.9 caveat closed. Opus final review PASS. See memory file `dynamics-v5-11-load-oos-with-kc.md`.
