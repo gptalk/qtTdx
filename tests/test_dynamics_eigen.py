@@ -1687,10 +1687,19 @@ def test_cli_state_timeline_mode(tmp_path):
     env['PYTHONIOENCODING'] = 'utf-8'
     result = subprocess.run(cmd, capture_output=True, env=env, timeout=60)
 
-    # 002475.SZ 可能在 data/stocks/ 缓存(取决于 CI 环境);测试只验证 HTML 结构
-    if html_out.exists():
-        with open(html_out, 'rb') as fh:
-            content = fh.read()
-        assert b'<html' in content.lower() or b'plotly' in content.lower(), \
-            f'Not a valid plotly HTML: {content[:200]}'
-        assert result.returncode == 0, f'CLI failed but HTML exists: {result.stderr.decode("utf-8", errors="ignore")}'
+    # Tolerate only the documented downstream failures (local cache missing
+    # OR pre-existing M1 tsfresh import shadow). Anything else fails loudly.
+    if result.returncode != 0:
+        stderr = result.stderr.decode('utf-8', errors='ignore')
+        if '本地缓存缺失' in stderr:
+            pytest.skip('002475.SZ not in local cache')
+        if 'cannot import name' in stderr and 'tsfresh' in stderr:
+            pytest.skip('M1 pre-existing tsfresh import shadow needs separate fix')
+        assert False, f'Unexpected CLI failure: {stderr[-800:]}'
+
+    # CLI succeeded → HTML must exist and be a valid plotly doc
+    assert html_out.exists(), f'HTML not created: {html_out}'
+    with open(html_out, 'rb') as fh:
+        content = fh.read()
+    assert b'<html' in content.lower() or b'plotly' in content.lower(), \
+        f'Not a valid plotly HTML: {content[:200]}'

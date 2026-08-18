@@ -24,7 +24,6 @@ if BACKTRACE_DIR not in sys.path:
 sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')
 
 import numpy as np
-import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
@@ -104,46 +103,68 @@ def build_state_timeline_html(
     )
 
     # ---- Top: state timeline ----
-    for s in series_per_industry:
+    # 1 gray connector line + 7 marker traces (one per state) per industry
+    # To keep legend tidy, only the first industry emits state legend entries
+    for s_idx, s in enumerate(series_per_industry):
         industry_code = s['industry_code']
         common_idx = s['common_idx']
         states = s['states']
         dyn = s['dyn']
 
+        # 1) Gray connector line (no markers, no legend)
         y_vals = [STATE_Y[st] for st in states]
-        colors = [STATE_COLORS[st] for st in states]
-
         fig.add_trace(
             go.Scatter(
                 x=common_idx,
                 y=y_vals,
-                mode='markers+lines',
-                marker=dict(size=8, color=colors),
+                mode='lines',
                 line=dict(color='lightgray', width=1),
                 name=industry_code,
-                customdata=np.column_stack([
-                    states,
-                    dyn['q_t'],
-                    dyn['R'],
-                    np.degrees(dyn['theta']),
-                    dyn['E_self'],
-                ]),
-                hovertemplate=(
-                    '<b>%{x}</b><br>'
-                    'Industry: ' + industry_code + '<br>'
-                    'State: %{customdata[0]}<br>'
-                    'q_t: %{customdata[1]:.3f}<br>'
-                    'R: %{customdata[2]:.3f}<br>'
-                    'θ: %{customdata[3]:.1f}°<br>'
-                    'E_self: %{customdata[4]:.2e}'
-                ),
+                legendgroup=industry_code,
+                showlegend=False,
+                hoverinfo='skip',
             ),
             row=1, col=1,
         )
 
+        # 2) 7 marker traces (one per state), filtered to its own dates
+        for state in STATE_LABELS:
+            state_mask = [st == state for st in states]
+            if not any(state_mask):
+                continue
+            state_dates = [common_idx[i] for i in range(len(common_idx)) if state_mask[i]]
+            state_y = [y_vals[i] for i in range(len(y_vals)) if state_mask[i]]
+            state_q = [dyn['q_t'][i] for i in range(len(common_idx)) if state_mask[i]]
+            state_R = [dyn['R'][i] for i in range(len(common_idx)) if state_mask[i]]
+            state_theta_deg = [np.degrees(dyn['theta'][i]) for i in range(len(common_idx)) if state_mask[i]]
+            state_E = [dyn['E_self'][i] for i in range(len(common_idx)) if state_mask[i]]
+
+            fig.add_trace(
+                go.Scatter(
+                    x=state_dates,
+                    y=state_y,
+                    mode='markers',
+                    marker=dict(size=8, color=STATE_COLORS[state]),
+                    name=state,
+                    legendgroup='states',
+                    showlegend=(s_idx == 0),  # Only first industry shows state legend
+                    customdata=list(zip(state_q, state_R, state_theta_deg, state_E)),
+                    hovertemplate=(
+                        '<b>%{x}</b><br>'
+                        'Industry: ' + industry_code + '<br>'
+                        'State: ' + state + '<br>'
+                        'q_t: %{customdata[0]:.3f}<br>'
+                        'R: %{customdata[1]:.3f}<br>'
+                        'θ: %{customdata[2]:.1f}°<br>'
+                        'E_self: %{customdata[3]:.2e}'
+                    ),
+                ),
+                row=1, col=1,
+            )
+
     fig.update_yaxes(
         tickmode='array',
-        tickvals=list(range(7)),
+        tickvals=list(range(len(STATE_LABELS))),
         ticktext=STATE_LABELS,
         row=1, col=1,
     )
@@ -160,18 +181,27 @@ def build_state_timeline_html(
         common_idx = s['common_idx']
         frc = s['frc']
 
+        # Drop trailing NaN row (F_market/F_self end-of-series NaN from forward-difference)
+        n = len(common_idx)
+        cut = n
+        for fk in ['F_market', 'F_self']:
+            if n > 0 and np.isnan(frc[fk][n - 1]):
+                cut = n - 1
+                break
+
         for force_name in ['F_market', 'F_restore', 'F_damp', 'F_self']:
             fig.add_trace(
                 go.Scatter(
-                    x=common_idx,
-                    y=frc[force_name],
+                    x=common_idx[:cut],
+                    y=frc[force_name][:cut],
                     mode='lines',
                     stackgroup=f'force_{industry_code}',
                     name=f'{force_name} ({industry_code})',
                     line=dict(width=0.5, color=force_colors[force_name]),
                     fillcolor=force_colors[force_name],
-                    legendgroup=industry_code,
-                    showlegend=(force_name == 'F_market'),
+                    legendgroup=force_name,
+                    showlegend=True,
+                    connectgaps=False,
                 ),
                 row=2, col=1,
             )
