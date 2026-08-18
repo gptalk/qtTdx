@@ -530,6 +530,10 @@ Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 git push origin main  # final push
 ```
 
+## Status: ✅ DONE — 2026-08-19
+
+All 2 tasks + 1 drift fix complete. Pushed to origin/main in commits <push_commit_pending>. See memory file `dynamics-v5-12-regime-color.md`.
+
 ## Report contract
 
 ```

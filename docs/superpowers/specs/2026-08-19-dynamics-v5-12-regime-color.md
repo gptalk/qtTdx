@@ -220,3 +220,12 @@ v5.12 是 v5.11 真实 (k̂, ĉ) 的"视觉化"层 —— 数据已经在,只是
 ## Status: 📝 DRAFT — 2026-08-19
 
 待 plan + implementer。
+
+## Status: ✅ DONE — 2026-08-19
+
+3 commits complete (post-base `ff5f954`):
+- `d1b64bf` (Task 1): `classify_regime` helper + dashboard (2,1) scatter color/legend/hover
+- `a2a49b8` (post-review drift fix): spec/plan threshold band + test case c=0.49
+- <this commit> (Task 2): `--regime-threshold` CLI flag + `test_classify_regime` (12 cases) + README §4.1.11
+
+Final: 79 PASS + 0 SKIP, 0 modifications to 11 protected files + `dynamics_oos_batch.py` core logic, 0 new dependencies.
