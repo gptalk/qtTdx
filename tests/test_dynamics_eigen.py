@@ -1160,3 +1160,36 @@ def test_write_overlay_summary_creates_txt(tmp_path):
     assert "Industry A" in content
     assert "Industry B" in content
     assert "|H(j0)" in content or "DC" in content
+
+
+# === v5.1 — parse_overlay_pairs 字符串解析 (2026-08-18 Task 3) ===
+
+def test_parse_overlay_pairs_basic():
+    """基本 3 对解析。"""
+    from backtrace.dynamics import dynamics_forced_response as DFR
+    s = "0.5,2.0,Industry A; 2.0,1.5,Industry B; 3.0,0.5,Industry C"
+    pairs = DFR.parse_overlay_pairs(s)
+    assert len(pairs) == 3
+    assert pairs[0] == (0.5, 2.0, "Industry A")
+    assert pairs[1] == (2.0, 1.5, "Industry B")
+    assert pairs[2] == (3.0, 0.5, "Industry C")
+
+
+def test_parse_overlay_pairs_label_with_spaces():
+    """label 含空格的解析。"""
+    from backtrace.dynamics import dynamics_forced_response as DFR
+    s = "2.0,1.5,Bank Index; 0.5,2.0,Tech Sector"
+    pairs = DFR.parse_overlay_pairs(s)
+    assert pairs[0] == (2.0, 1.5, "Bank Index")
+    assert pairs[1] == (0.5, 2.0, "Tech Sector")
+
+
+def test_parse_overlay_pairs_invalid_format():
+    """错误格式 → ValueError。"""
+    from backtrace.dynamics import dynamics_forced_response as DFR
+    with pytest.raises(ValueError, match="格式错误"):
+        DFR.parse_overlay_pairs("only_two_parts")
+    with pytest.raises(ValueError, match="k 必须"):
+        DFR.parse_overlay_pairs("abc,1.5,Label")
+    with pytest.raises(ValueError, match="c 必须"):
+        DFR.parse_overlay_pairs("1.0,xyz,Label")

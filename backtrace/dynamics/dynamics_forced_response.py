@@ -422,6 +422,39 @@ def write_overlay_summary(omega_grid, k_c_pairs, output_path):
         f.write(text)
 
 
+def parse_overlay_pairs(s):
+    """解析 --overlay CLI 字符串为 [(k, c, label), ...]。
+
+    格式:"k1,c1,label1; k2,c2,label2; ..."
+    - 分号 `;` 分隔不同对
+    - 逗号 `,` 分隔 k / c / label
+    - label 可含逗号 / 空格(只取前两个逗号之前的为 k, c;之后全是 label)
+    """
+    if not s or not s.strip():
+        raise ValueError("overlay 字符串为空")
+    pairs = []
+    for chunk in s.split(';'):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = chunk.split(',', 2)  # 只 split 前 2 个逗号,label 可含逗号
+        if len(parts) < 3:
+            raise ValueError(f"格式错误: '{chunk}' 期望 k,c,label")
+        try:
+            k = float(parts[0].strip())
+        except ValueError:
+            raise ValueError(f"k 必须为数字,得 '{parts[0]}'")
+        try:
+            c = float(parts[1].strip())
+        except ValueError:
+            raise ValueError(f"c 必须为数字,得 '{parts[1]}'")
+        label = parts[2].strip()
+        pairs.append((k, c, label))
+    if not pairs:
+        raise ValueError("未解析出任何 (k, c, label) 对")
+    return pairs
+
+
 def main():
     args = parse_args()
     omega_grid = DEFAULT_OMEGA_GRID
