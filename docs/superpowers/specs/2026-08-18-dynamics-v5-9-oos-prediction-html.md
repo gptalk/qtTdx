@@ -1,7 +1,7 @@
 # v5.9 — OOS Prediction Visualization HTML
 
 **Date:** 2026-08-18
-**Status:** Draft
+**Status:** Implemented (v5.9 — 5 commits + v5.9.1 fix = 76 tests PASS)
 **Base:** v5.8.1 (HEAD `ae9bf38`)
 **Author:** Brainstorming output (user authorized: "按计划和推荐执行，不用问我")
 

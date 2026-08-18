@@ -9,6 +9,7 @@
 **Tech Stack:** plotly 5.x (`make_subplots`, `go.Scatter`, `go.Bar`), numpy, pandas, `_dynamics_core.py` (Plan v3 API), `_projection_core.py` (data 接入 + state labels).
 
 **Base commit:** `3f2e49f` (v5.9 spec).
+**Status:** Complete — 5 tasks done + v5.9.1 fix (v5.8 sys.path patch), 76 tests PASS, pushed to origin/main.
 **Reference impls:** `backtrace/dynamics/dynamics_1step_oos.py` (OOS 1-step loop logic — DO NOT import; rewrite to avoid tsfresh M1 shadow), `backtrace/dynamics/dynamics_state_timeline.py` (plotly subplot pattern reference).
 
 ## Global Constraints
