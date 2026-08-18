@@ -311,8 +311,9 @@ def bode_overlay(omega_grid, k_c_pairs, output_path, title="Industry G(ω) Frequ
         title: 图表标题
 
     行为:
-        - 2 子图:上幅频 |H(jω)| vs ω,下相频 arg H(jω) vs ω
+        - 2 子图:上幅频 |H(jω)| dB vs ω,下相频 arg H(jω) vs ω
         - 每对一条曲线,共享 omega_grid,不同颜色 + 实线
+        - 每对额外标出 ω_n(如果有)+ 该点的 |H(jω_n)| (dB)
         - legend 显示 label(带 (k, c) 数值)
         - HTML 通过 plotly CDN 渲染(include_plotlyjs='cdn')
 
@@ -332,7 +333,7 @@ def bode_overlay(omega_grid, k_c_pairs, output_path, title="Industry G(ω) Frequ
             raise ValueError(f"k 和 c 必须 > 0,得 (k={k}, c={c})")
 
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        subplot_titles=("|H(jω)|", "arg H(jω) (degrees)"),
+                        subplot_titles=("|H(jω)| (dB)", "arg H(jω) (degrees)"),
                         vertical_spacing=0.12)
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
               '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
@@ -341,15 +342,27 @@ def bode_overlay(omega_grid, k_c_pairs, output_path, title="Industry G(ω) Frequ
         mag, phase = magnitude_phase(omega_grid, k, c)
         color = colors[idx % len(colors)]
         legend_name = f'{label} (k={k}, c={c})'
-        fig.add_trace(go.Scatter(x=omega_grid, y=mag, mode='lines',
+        mag_db = 20 * np.log10(np.maximum(mag, 1e-12))
+        fig.add_trace(go.Scatter(x=omega_grid, y=mag_db, mode='lines',
                                  name=legend_name, line=dict(color=color, width=2),
                                  legendgroup=label), row=1, col=1)
         fig.add_trace(go.Scatter(x=omega_grid, y=np.degrees(phase), mode='lines',
                                  name=legend_name, line=dict(color=color, width=2),
                                  legendgroup=label, showlegend=False), row=2, col=1)
+        # 标出 ω_n(如果有)+ |H(jω_n)|
+        omega_n = natural_frequency(k, c)
+        if np.isfinite(omega_n):
+            mag_n_scalar, _ = magnitude_phase(np.array([omega_n]), k, c)
+            fig.add_trace(go.Scatter(
+                x=[omega_n], y=[20 * np.log10(max(float(mag_n_scalar[0]), 1e-12))],
+                mode='markers', name=f'{label} ω_n',
+                marker=dict(color=color, size=10, symbol='x'),
+                legendgroup=label, showlegend=False,
+                hovertemplate=f'ω_n={omega_n:.4f}<br>|H|={float(mag_n_scalar[0]):.2f}<extra></extra>',
+            ), row=1, col=1)
 
     fig.update_xaxes(title_text='ω (角频率,rad/sample)', row=2, col=1)
-    fig.update_yaxes(title_text='|H(jω)|', row=1, col=1)
+    fig.update_yaxes(title_text='|H(jω)| (dB)', row=1, col=1)
     fig.update_yaxes(title_text='相位 (degrees)', row=2, col=1)
     fig.update_layout(title=title, height=800, width=1000,
                       hovermode='x unified', legend=dict(orientation='v',

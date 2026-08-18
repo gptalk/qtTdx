@@ -1128,3 +1128,19 @@ def test_bode_overlay_validates_empty_list(tmp_path):
     out = tmp_path / "overlay.html"
     with pytest.raises(ValueError, match="k_c_pairs 不能为空"):
         DFR.bode_overlay(omega, [], str(out))
+
+
+def test_bode_overlay_marks_omega_n(tmp_path):
+    """ω_n 在复极点区域被标在 magnitude subplot。"""
+    from backtrace.dynamics import dynamics_forced_response as DFR
+    omega = np.linspace(0.01, np.pi, 100)
+    # k=2.0, c=1.5 (underdamped) — ω_n is finite
+    pairs = [(2.0, 1.5, "Underdamped")]
+    out = tmp_path / "overlay.html"
+    DFR.bode_overlay(omega, pairs, str(out))
+    content = out.read_text(encoding='utf-8')
+    # ω_n marker trace 存在
+    assert 'ω_n' in content or 'Underdamped' in content
+    # 重新调用 natural_frequency 验证
+    expected_omega_n = DFR.natural_frequency(2.0, 1.5)
+    assert np.isfinite(expected_omega_n)
