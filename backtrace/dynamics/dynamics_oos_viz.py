@@ -32,12 +32,15 @@ if REPO_ROOT not in sys.path:
 sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')
 
 import argparse
+import logging
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+log = logging.getLogger(__name__)
 
 # === 公共 pipeline(给 load_pair 喂数据) ===
 from common import tsfresh_pipeline as P
@@ -77,6 +80,7 @@ def load_oos_predictions(
     c: float | None = None,
     lambda_q: float | None = None,
     f_self_window: int = 10,
+    kc_estimates_path: str | None = None,
 ) -> dict:
     """跑 OOS 1 步预测并返回「预测 vs 实际」对齐数据。
 
@@ -111,9 +115,15 @@ def load_oos_predictions(
     # 3) 动力学描述层(拿到 q_t / a_S_mag / a_M_mag / R / theta / E_self)
     dyn = compute_dynamics(mv, lambda_q=lambda_q)
 
-    # 4) k / c 兜底(brief §6.4-6.5;dyn 不返回 k_hat/c_hat,默认 0)
+    # 4) k / c 查找优先级(spec §3.2):
+    #    显式 k/c > kc_estimates 命中 > 0.0 fallback
     k_used = float(k) if k is not None else 0.0
     c_used = float(c) if c is not None else 0.0
+    if (k_used == 0.0 and c_used == 0.0) and kc_estimates_path:
+        fit = lookup_kc_for_code(kc_estimates_path, stock_code)
+        if fit is not None:
+            k_used, c_used = fit
+            log.info(f"[v5.11] {stock_code}: 使用 (k̂={k_used:.4f}, ĉ={c_used:.4f}) from {kc_estimates_path}")
 
     # 5) 拆字段
     delta_u = mv['stock_move']                 # (T-1, 2) — v_S
@@ -209,10 +219,51 @@ def _label_from_a(a: np.ndarray) -> str:
         return 'accelerating'
 
 
+def lookup_kc_for_code(
+    kc_csv_path: str,
+    stock_code: str,
+) -> tuple[float, float] | None:
+    """从 parameter_fit kc_estimates.csv 查单只票的 (k̂, ĉ)。
+
+    契约:返回 None = 查不到(caller 继续 fallback)。不抛异常。
+
+    Returns:
+        (k_hat, c_hat) if found AND status == 'ok'
+        None if file missing, code not found, status != 'ok', or 必需列缺失
+
+    必需列:code, k_hat, c_hat, status
+    """
+    import os
+    REQUIRED = ['code', 'k_hat', 'c_hat', 'status']
+    if not os.path.exists(kc_csv_path):
+        log.warning(f"[v5.11] kc_estimates 文件不存在: {kc_csv_path}")
+        return None
+    try:
+        df = pd.read_csv(kc_csv_path, encoding='utf-8-sig')
+    except Exception as e:
+        log.warning(f"[v5.11] kc_estimates 读失败 ({type(e).__name__}): {e}")
+        return None
+    missing = [c for c in REQUIRED if c not in df.columns]
+    if missing:
+        log.warning(f"[v5.11] kc_estimates 缺必需列: {missing}")
+        return None
+    rows = df[df['code'] == stock_code]
+    rows = rows[rows['status'] == 'ok']
+    if len(rows) == 0:
+        return None
+    row = rows.iloc[0]
+    try:
+        return (float(row['k_hat']), float(row['c_hat']))
+    except (ValueError, TypeError) as e:
+        log.warning(f"[v5.11] kc_estimates 解析 (k, c) 失败: {e}")
+        return None
+
+
 # === 公共 re-export =========================================================
 __all__ = [
     'load_oos_predictions',
     '_label_from_a',
+    'lookup_kc_for_code',
     'build_oos_prediction_html',
     'DEFAULTS',
     'THRESHOLDS',
