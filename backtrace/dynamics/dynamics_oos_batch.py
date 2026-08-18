@@ -304,10 +304,78 @@ def build_full_market_oos_html(
     log.info(f"[v5.10] wrote {output_path} ({n_stocks} stocks, median hit-rate={median_hr:.3f})")
 
 
+# === Top-5 small multiples ===============================================
+def build_top5_small_multiples(
+    top5_data: list[dict],   # list of {code, common_idx, a_pred, a_actual, hit_rate, rmse}
+    output_path: str,
+    title: str = 'Top-5 OOS Prediction Detail',
+) -> None:
+    """N mini 4-row charts in single figure (spec 3.5).
+
+    N×1 row layout: 1 column, N rows = len(top5_data).
+    Each row: predicted (blue #3498db) + actual (orange #e67e22) magnitude lines.
+    """
+    # 1) Validate
+    if not top5_data:
+        raise ValueError('top5_data is empty')
+
+    # 2) N-row subplots (1 column, shared_xaxes=False)
+    n = len(top5_data)
+    fig = make_subplots(
+        rows=n, cols=1,
+        shared_xaxes=False,
+        vertical_spacing=0.04,
+        subplot_titles=[f"{d['code']} (hit={d['hit_rate']:.3f}, RMSE={d['rmse']:.4f})"
+                        for d in top5_data],
+    )
+
+    # 3) 2 traces per stock (predicted + actual)
+    for i, d in enumerate(top5_data, start=1):
+        a_pred_mag = np.linalg.norm(d['a_pred'], axis=1)
+        a_actual_mag = np.linalg.norm(d['a_actual'], axis=1)
+        common_idx = d['common_idx']
+
+        fig.add_trace(
+            go.Scatter(
+                x=common_idx, y=a_pred_mag,
+                mode='lines', line=dict(color='#3498db', width=1),
+                name=f"{d['code']} pred" if i == 1 else None,
+                legendgroup='series',
+                showlegend=(i == 1),
+            ),
+            row=i, col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=common_idx, y=a_actual_mag,
+                mode='lines', line=dict(color='#e67e22', width=1),
+                name=f"{d['code']} actual" if i == 1 else None,
+                legendgroup='series',
+                showlegend=(i == 1),
+            ),
+            row=i, col=1,
+        )
+        fig.update_yaxes(title_text='|a_S|', row=i, col=1)
+
+    # 4) Layout + output
+    fig.update_xaxes(title_text='date', row=n, col=1)
+    fig.update_layout(
+        title=f"{title} — top {n} by hit-rate",
+        height=250 * n, showlegend=True,
+        template='plotly_white',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+    )
+
+    os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+    fig.write_html(output_path, include_plotlyjs='cdn', full_html=True)
+    log.info(f"[v5.10] wrote {output_path} (top {n})")
+
+
 __all__ = [
     'compute_oos_metrics',
     'aggregate_oos_metrics',
     'build_full_market_oos_html',
+    'build_top5_small_multiples',
     'DEFAULTS',
     'DEFAULT_OUTPUT',
 ]
