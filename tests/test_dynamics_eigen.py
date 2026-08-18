@@ -1525,16 +1525,21 @@ def test_cli_si_freq_response_mode(tmp_path):
     assert result.returncode == 0, f'stderr: {result.stderr}'
 
     # 3 输出文件都存在
-    assert html_path.exists() and html_path.stat().st_size > 1000
+    assert html_path.exists() and html_path.stat().st_size > 2000  # v5.4 dual-pane 加倍
     assert summary_path.exists()
     assert pairs_path.exists()
 
-    # HTML 含 plotly animation_frame + frames + 3 个日期
+    # HTML 含 plotly animation_frame + frames + 3 个日期 + 双子图元素
     html_text = html_path.read_text(encoding='utf-8')
     assert 'plotly' in html_text.lower()
     # plotly v3.x 输出 addFrames(驼峰),不是 frames/小写,放宽到 addFrames 或 Plotly.animate
     assert 'addFrames' in html_text or 'Plotly.animate' in html_text or 'animation_frame' in html_text or 'frames' in html_text
     assert '2024-09-30' in html_text and '2024-10-31' in html_text and '2024-11-30' in html_text
+    # v5.4 dual-pane: at least 2 xaxis/yaxis pairs (subplot 1 + subplot 2)
+    assert html_text.count('xaxis') >= 2, 'v5.4 dual-pane: 至少 2 个 xaxis'
+    assert html_text.count('yaxis') >= 2, 'v5.4 dual-pane: 至少 2 个 yaxis'
+    # phase subplot 关键词(plotly JSON-escape Unicode: ∠ → ∠, ω → ω,所以同时支持字面 + 转义 + yaxis2)
+    assert any(kw in html_text for kw in ('∠H', 'phase', 'arg H', '相角', '\\u2220', 'yaxis2')), 'v5.4: phase 子图存在'
 
     # Summary TXT 含 3 日期 + 中文
     summary_text = summary_path.read_text(encoding='utf-8')

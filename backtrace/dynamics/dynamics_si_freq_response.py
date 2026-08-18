@@ -114,6 +114,7 @@ import sys
 import argparse
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # 让 from backtrace.dynamics... import 能找到包
 BACKTRACE_PARENT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -138,7 +139,11 @@ def build_animated_overlay_html(
     output_path: str,
     title: str = 'Industry G(ω) Frequency Response — Time Series',
 ) -> None:
-    """构建 plotly 动画 slider:每帧一个 asof_date,每帧 N 条 industry Bode 曲线。
+    """构建 plotly 动画 slider:每帧一个 asof_date,每帧 N × 2 条 industry Bode 曲线。
+
+    v5.4 双子图:
+        - 上子图 |H(jω)| dB vs ω
+        - 下子图 ∠H(jω) degrees vs ω(共享 x 轴)
 
     Args:
         pairs_per_date: [(asof_date, k̂, ĉ, label), ...] from select_top_n_per_date
@@ -152,32 +157,43 @@ def build_animated_overlay_html(
     if not pairs_per_date:
         raise ValueError('pairs_per_date 为空,无法构建动画')
 
-    # 按 date 分组,每帧 N 条 trace
     dates = sorted(set(p[0] for p in pairs_per_date))
     initial_date = dates[0]
-    initial_traces = [
-        go.Scatter(
-            x=omega_grid.tolist(),
-            y=magnitude_phase(omega_grid * 1j, p[1], p[2])[0].tolist(),
-            mode='lines',
-            name=p[3],
-        )
-        for p in pairs_per_date if p[0] == initial_date
-    ]
 
-    fig = go.Figure(data=initial_traces)
+    # Phase 1: build initial-figure traces using go.Figure (one row = one subplot)
+    # We use make_subplots(2, 1, shared_xaxes=True) for the dual-pane layout.
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        subplot_titles=('|H(jω)| dB', '∠H(jω) deg'),
+        vertical_spacing=0.10,
+    )
 
+    def _magnitude_db(p):
+        return magnitude_phase(omega_grid * 1j, p[1], p[2])[0].tolist()
+
+    def _phase_deg(p):
+        return magnitude_phase(omega_grid * 1j, p[1], p[2])[1].tolist()
+
+    # Initial-state traces (first date)
+    for p in (p_ for p_ in pairs_per_date if p_[0] == initial_date):
+        fig.add_trace(go.Scatter(x=omega_grid.tolist(), y=_magnitude_db(p),
+                                 mode='lines', name=p[3], legendgroup=p[3]),
+                      row=1, col=1)
+        fig.add_trace(go.Scatter(x=omega_grid.tolist(), y=_phase_deg(p),
+                                 mode='lines', name=p[3], legendgroup=p[3],
+                                 showlegend=False),
+                      row=2, col=1)
+
+    # Phase 2: build frames — one frame per date, each frame has 2 × N traces
     frames = []
     for date in dates:
-        frame_traces = [
-            go.Scatter(
-                x=omega_grid.tolist(),
-                y=magnitude_phase(omega_grid * 1j, p[1], p[2])[0].tolist(),
-                mode='lines',
-                name=p[3],
-            )
-            for p in pairs_per_date if p[0] == date
-        ]
+        frame_traces = []
+        for p in (p_ for p_ in pairs_per_date if p_[0] == date):
+            frame_traces.append(go.Scatter(x=omega_grid.tolist(), y=_magnitude_db(p),
+                                           mode='lines', name=p[3], legendgroup=p[3]))
+            frame_traces.append(go.Scatter(x=omega_grid.tolist(), y=_phase_deg(p),
+                                           mode='lines', name=p[3], legendgroup=p[3],
+                                           showlegend=False))
         frames.append(go.Frame(data=frame_traces, name=date))
 
     fig.frames = frames
@@ -192,7 +208,7 @@ def build_animated_overlay_html(
         for date in dates
     ]
 
-    # Play/Pause button
+    # Play/Pause buttons
     play_button = dict(
         label='Play',
         method='animate',
@@ -206,14 +222,17 @@ def build_animated_overlay_html(
 
     fig.update_layout(
         title=title,
-        xaxis_title='ω (rad/day)',
+        # Only the bottom subplot shows the x-axis title (shared axes)
+        xaxis2_title='ω (rad/day)',
         yaxis_title='|H(jω)| dB',
+        yaxis2_title='∠H(jω) deg',
         updatemenus=[dict(
             type='buttons', showactive=False, y=1.15, x=0.5, xanchor='center',
             buttons=[play_button, pause_button],
         )],
         sliders=[dict(active=0, steps=slider_steps, x=0.1, len=0.9, xanchor='left',
                       y=0, yanchor='top', currentvalue=dict(prefix='asof_date: ', visible=True))],
+        height=700,  # taller to accommodate 2 subplots
     )
 
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
