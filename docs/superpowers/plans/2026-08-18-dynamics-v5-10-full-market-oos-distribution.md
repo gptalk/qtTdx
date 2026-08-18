@@ -875,4 +875,4 @@ No git push needed (memory is outside repo).
 
 ## Status: ✅ DONE — 2026-08-19
 
-All 6 tasks complete. Pushed to origin/main in commit <push_commit_pending>. See memory file `dynamics-v5-10-full-market-oos-distribution.md`.
+All 6 tasks complete. Pushed to origin/main in commit `de4d4f5` (fix) + 5 feature commits. See memory file `dynamics-v5-10-full-market-oos-distribution.md`. Opus final review: PASS after 1 fix round (Important: UnboundLocalError on empty top_data — guarded at `dynamics_oos_batch.py:514-525`). 7 minor findings parked.
