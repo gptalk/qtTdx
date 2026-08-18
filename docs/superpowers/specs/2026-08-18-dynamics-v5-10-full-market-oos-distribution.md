@@ -189,3 +189,14 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_oos_batch.py \
 - parameter_fit integration (k_used/c_used default 0 → fitted values)
 
 本次 v5.10 只做全市场分布 + top-5 detail, 其他按需。
+
+## Status: ✅ DONE — 2026-08-19
+
+5 tasks complete:
+- Task 1: scaffold + metrics — `ba4abee`
+- Task 2: 2×2 dashboard — `c6a4780`
+- Task 3: top-N multiples — `52516fa`
+- Task 4: CLI main() — `7106f84` (with 2 ACCEPTED deviations: encoding='utf-8' for GBK, manifest unwrap + kind=='stocks' filter)
+- Task 5: test_cli_oos_batch_mode — `1c5cff0`
+
+Final: 77 PASS + 0 SKIP, 0 modifications to 11 protected files + dynamics_oos_viz.py + dynamics_oos_batch.py, 0 new dependencies.

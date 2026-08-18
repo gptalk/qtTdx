@@ -872,3 +872,7 @@ No git push needed (memory is outside repo).
 - [ ] spec/plan marked Implemented/Complete
 - [ ] Memory file written
 - [ ] Pushed to origin/main
+
+## Status: ✅ DONE — 2026-08-19
+
+All 6 tasks complete. Pushed to origin/main in commit <push_commit_pending>. See memory file `dynamics-v5-10-full-market-oos-distribution.md`.

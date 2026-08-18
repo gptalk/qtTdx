@@ -1141,3 +1141,45 @@ v5.9 闭环 `predict_next_state` (Plan v3 API) → **业务首次看到预测 vs
 - 二者业务互补: v5.8 现状 dashboard + v5.9 预测质量 dashboard
 
 **0 新依赖** (plotly 已装)、**0 修改 11 保护文件**、**76 tests PASS** (含 v5.9.1 修复 v5.8 sys.path bug)
+
+### 4.1.9 v5.10 — Full-Market OOS Distribution
+
+**File:** `backtrace/dynamics/dynamics_oos_batch.py`
+
+**Goal:** Apply v5.9 predict+visualize framework to N stocks, output 2×2 distribution dashboard + top-N small multiples.
+
+**Functions:**
+- `compute_oos_metrics(stock_code, days=250, *, prefer_industry=True, k=None, c=None, f_self_window=10) -> dict`
+  - Returns `{code, n_oos, hit_rate, rmse, mae, direction_accuracy, k_used, c_used}`
+  - Wraps `load_oos_predictions` from v5.9
+- `aggregate_oos_metrics(metrics_list) -> dict`
+  - Returns `{n_stocks, median_hit_rate, p25_hit_rate, p75_hit_rate, median_rmse, median_mae, median_direction_acc, ranked}`
+  - `ranked` is sorted by hit-rate descending
+- `build_full_market_oos_html(metrics_list, output_path, title='Full-Market OOS Prediction Quality Distribution') -> None`
+  - 2×2 dashboard: Hit-rate histogram, RMSE histogram, Hit-rate vs RMSE scatter, Hit-rate CDF
+- `build_top5_small_multiples(top5_data, output_path, title='Top-5 OOS Prediction Detail') -> None`
+  - N mini charts (predicted vs actual |a_S|) for top-N by hit-rate
+
+**CLI:** `backtrace/dynamics/dynamics_oos_batch.py`
+
+```bash
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_oos_batch.py \
+    --days 250 --limit 0 --top-n 5 \
+    --output backtrace/outputs/dynsys_oos_full_market.html
+```
+
+**Flags:**
+- `--days` (default 250): trading days per stock
+- `--limit` (default 0): 0 = all stocks in local cache, else first N
+- `--prefer-industry` / `--no-prefer-industry` (default prefer): pass to `load_oos_predictions`
+- `--top-n` (default 5): number of top stocks for small multiples
+- `--codes-file` (optional): file with one stock code per line
+- `--output` (default `backtrace/outputs/dynsys_oos_full_market.html`)
+
+**Outputs:**
+- `{output}` — 2×2 distribution dashboard (N stocks)
+- `{output.replace('.html', '_top{top_n}.html')}` — top-N small multiples
+
+**Caveat:** `k_used` / `c_used` returned by `compute_oos_metrics` are always 0.0 — actual values require explicit `parameter_fit.py` integration (deferred to v5.11+).
+
+**Test:** `tests/test_dynamics_eigen.py::test_cli_oos_batch_mode` (F3 inverted tolerance: skips only on documented failures).
