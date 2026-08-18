@@ -1401,3 +1401,38 @@ def test_load_kc_time_series_validates_columns(tmp_path):
     from backtrace.dynamics.dynamics_si_freq_response import load_kc_time_series
     with pytest.raises(ValueError, match='n_valid_days'):
         load_kc_time_series(str(csv_path))
+
+
+def test_aggregate_by_industry_per_date():
+    """按 (asof_date, index_code) 聚合 (k̂, ĉ),每片一个 DataFrame"""
+    rows = [
+        # Date 1 (2 ind × 2 stocks)
+        ('000001.SZ', '801010', '2024-09-30', 0.50, 2.00, 'ok', 250),
+        ('000002.SZ', '801010', '2024-09-30', 0.55, 2.10, 'ok', 250),
+        ('600001.SH', '801080', '2024-09-30', 3.50, 0.50, 'ok', 250),
+        ('600002.SH', '801080', '2024-09-30', 3.60, 0.45, 'ok', 250),
+        # Date 2
+        ('000001.SZ', '801010', '2024-10-31', 0.60, 1.90, 'ok', 250),
+        ('000002.SZ', '801010', '2024-10-31', 0.65, 1.95, 'ok', 250),
+        ('600001.SH', '801080', '2024-10-31', 4.00, 0.40, 'ok', 250),
+        ('600002.SH', '801080', '2024-10-31', 3.90, 0.42, 'ok', 250),
+    ]
+    df = pd.DataFrame(rows, columns=[
+        'code', 'index_code', 'asof_date', 'k_hat', 'c_hat', 'status', 'n_valid_days',
+    ])
+    dates = ['2024-09-30', '2024-10-31']
+
+    from backtrace.dynamics.dynamics_si_freq_response import aggregate_by_industry_per_date
+    result = aggregate_by_industry_per_date(df, dates)
+
+    assert set(result.keys()) == {'2024-09-30', '2024-10-31'}
+    # Date 1: Industry 801010 k̂=0.525, ĉ=2.05; Industry 801080 k̂=3.55, ĉ=0.475
+    d1 = result['2024-09-30'].set_index('index_code')
+    assert d1.loc['801010', 'k_hat'] == pytest.approx(0.525)
+    assert d1.loc['801010', 'c_hat'] == pytest.approx(2.05)
+    assert d1.loc['801010', 'n_stocks'] == 2
+    assert d1.loc['801080', 'k_hat'] == pytest.approx(3.55)
+    # Date 2: 801010 k̂=0.625, ĉ=1.925; 801080 k̂=3.95, ĉ=0.41
+    d2 = result['2024-10-31'].set_index('index_code')
+    assert d2.loc['801010', 'k_hat'] == pytest.approx(0.625)
+    assert d2.loc['801080', 'k_hat'] == pytest.approx(3.95)
