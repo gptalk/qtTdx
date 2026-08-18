@@ -877,3 +877,115 @@ def test_si_timeseries_summary_text(tmp_path):
     content = out.read_text(encoding='utf-8')
     assert '漂移事件' in content
     assert '银行' in content
+
+
+# === v4.10: 时序 SI 的 lagged IC 评估 ===
+
+def _make_si_ts(dates, si_by_ind):
+    """构造 v4.9 风格 11 列 SI 时序;si_by_ind[i] 可为标量或 callable。"""
+    rows = []
+    for ind, si in enumerate(si_by_ind):
+        for d in range(len(dates)):
+            rows.append({
+                'asof_date': dates[d],
+                'industry_l1': f'8010{ind:02d}',
+                'sector_name': f'测试_{ind}',
+                'n_stocks': 42,
+                'rho_median': 0.85, 'c_median': 1.05,
+                'in_wedge_pct': 0.92, 'rho_health': 0.575,
+                'damping_health': 0.975, 'wedge_health': 0.92,
+                'SI': si() if callable(si) else si,
+            })
+    return pd.DataFrame(rows)
+
+
+def test_si_lagged_ic_synthetic_perfect():
+    """5 行业 × 100 日,SI(t) 与 forward(t+20) 完美正相关 → lagged IC > 0.5。"""
+    pytest.importorskip("backtrace.dynamics.dynamics_si_lagged_ic")
+    from backtrace.dynamics.dynamics_si_lagged_ic import compute_lagged_cross_sectional_ic
+    dates = pd.date_range('2024-01-01', periods=100, freq='D')
+    si_ts = _make_si_ts(dates, [(i + 1) / 5.0 for i in range(5)])
+    fwd_rows = []
+    for ind in range(5):
+        for d in range(80):  # 100-20=80 个 eval_dates
+            fwd_rows.append({
+                'asof_date': dates[d + 20],
+                'industry_l1': f'8010{ind:02d}',
+                'forward_return': (ind + 1) / 5.0,
+            })
+    fwd = pd.DataFrame(fwd_rows)
+    daily_ic = compute_lagged_cross_sectional_ic(si_ts, fwd, horizon=20)
+    assert len(daily_ic) > 0, '应有至少 1 个 IC'
+    assert daily_ic['ic'].mean() > 0.5, f'完美正相关应 IC > 0.5,got {daily_ic["ic"].mean()}'
+
+
+def test_si_lagged_ic_synthetic_random():
+    """20 行业 × 100 日,SI 与 forward 完全独立 → |lagged IC| < 0.3。
+
+    注:行业数取 20(非 5)—— n=5 时 Spearman 的抽样噪声本身就有 E|rho| ≈ 0.35,
+    截面太窄无法区分"无预测力"与"有预测力"。
+    """
+    pytest.importorskip("backtrace.dynamics.dynamics_si_lagged_ic")
+    from backtrace.dynamics.dynamics_si_lagged_ic import compute_lagged_cross_sectional_ic
+    np.random.seed(42)
+    dates = pd.date_range('2024-01-01', periods=100, freq='D')
+    si_ts = _make_si_ts(dates, [np.random.rand for _ in range(20)])
+    fwd_rows = []
+    for ind in range(20):
+        for d in range(80):
+            fwd_rows.append({
+                'asof_date': dates[d + 20],
+                'industry_l1': f'8010{ind:02d}',
+                'forward_return': np.random.rand(),
+            })
+    fwd = pd.DataFrame(fwd_rows)
+    daily_ic = compute_lagged_cross_sectional_ic(si_ts, fwd, horizon=20)
+    if len(daily_ic) > 0:
+        mean_abs_ic = daily_ic['ic'].abs().mean()
+        assert mean_abs_ic < 0.3, f'随机应 |IC| < 0.3,got {mean_abs_ic}'
+
+
+def test_si_lagged_ic_temporal_shift():
+    """验证时间偏移正确: t=0 SI 排名 + t=20 forward 收益排名相关。"""
+    pytest.importorskip("backtrace.dynamics.dynamics_si_lagged_ic")
+    from backtrace.dynamics.dynamics_si_lagged_ic import compute_lagged_cross_sectional_ic
+    dates = pd.date_range('2024-01-01', periods=100, freq='D')
+    si_vals_per_ind = [0.9, 0.7, 0.3, 0.8, 0.4]
+    si_ts = _make_si_ts(dates, si_vals_per_ind)
+    fwd_rows = []
+    for ind, fv in enumerate(si_vals_per_ind):  # 同样的排名 → 完美正相关
+        for d in range(80):
+            fwd_rows.append({
+                'asof_date': dates[d + 20],
+                'industry_l1': f'8010{ind:02d}',
+                'forward_return': fv,
+            })
+    fwd = pd.DataFrame(fwd_rows)
+    daily_ic = compute_lagged_cross_sectional_ic(si_ts, fwd, horizon=20)
+    assert len(daily_ic) > 0
+    assert daily_ic['ic'].mean() > 0.9
+
+
+def test_si_lagged_ic_summary_schema(tmp_path):
+    """write_si_lagged_ic_summary 写出 2 horizons × 6 列。"""
+    pytest.importorskip("backtrace.dynamics.dynamics_si_lagged_ic")
+    from backtrace.dynamics.dynamics_si_lagged_ic import write_si_lagged_ic_summary
+    rows = []
+    for h in [20, 60]:
+        for w in range(5):
+            rows.append({
+                'window_end_date': pd.Timestamp('2024-01-01') + pd.DateOffset(days=w * 20),
+                'horizon': h,
+                'ic': 0.05 + w * 0.01,
+                'p_value': 0.3 - w * 0.05,
+                'n_industries': 25,
+            })
+    ts = pd.DataFrame(rows)
+    out = tmp_path / 'ic_summary.csv'
+    summary, text = write_si_lagged_ic_summary(ts, str(out))
+    assert len(summary) == 2, f'expected 2 horizons, got {len(summary)}'
+    assert set(summary.columns) >= {
+        'horizon', 'ic_mean', 'ic_std', 'ic_ir', 'p_value_mean', 'n_windows',
+    }
+    assert out.exists()
+    assert 'horizon=' in text
