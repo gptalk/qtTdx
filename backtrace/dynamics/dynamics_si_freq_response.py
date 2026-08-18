@@ -62,3 +62,48 @@ def aggregate_by_industry_per_date(
         ).reset_index().sort_values(group_col).reset_index(drop=True)
         out[date] = grouped
     return out
+
+
+import numpy as np
+
+
+def select_top_n_per_date(
+    per_date_dfs: dict,
+    criterion: str = 'by_n_stocks',
+    n: int = 5,
+    group_col: str = 'index_code',
+) -> list:
+    """每个 asof_date 选 top-N industries,转动画 overlay 格式。
+
+    Args:
+        per_date_dfs: aggregate_by_industry_per_date 输出 {date: DataFrame}
+        criterion: 'by_n_stocks' / 'by_c_over_k' / 'by_k_over_c'
+        n: top N(每个 date 最多选 n 个行业)
+
+    Returns:
+        [(asof_date, k̂, ĉ, "Industry {group_col}"), ...],按 date 排序
+    """
+    if criterion not in ('by_n_stocks', 'by_c_over_k', 'by_k_over_c'):
+        raise ValueError(f'criterion={criterion!r} 不支持')
+
+    pairs = []
+    for date in sorted(per_date_dfs.keys()):
+        df = per_date_dfs[date]
+        if criterion == 'by_n_stocks':
+            sorted_df = df.sort_values('n_stocks', ascending=False).head(n)
+        elif criterion == 'by_c_over_k':
+            df_copy = df.copy()
+            df_copy['ratio'] = df_copy['c_hat'] / df_copy['k_hat'].replace(0, np.nan)
+            sorted_df = df_copy.sort_values('ratio', ascending=False, na_position='last').head(n)
+        else:  # by_k_over_c
+            df_copy = df.copy()
+            df_copy['ratio'] = df_copy['k_hat'] / df_copy['c_hat'].replace(0, np.nan)
+            sorted_df = df_copy.sort_values('ratio', ascending=False, na_position='last').head(n)
+        for _, row in sorted_df.iterrows():
+            pairs.append((
+                date,
+                float(row['k_hat']),
+                float(row['c_hat']),
+                f'Industry {row[group_col]}',
+            ))
+    return pairs

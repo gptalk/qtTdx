@@ -1436,3 +1436,37 @@ def test_aggregate_by_industry_per_date():
     d2 = result['2024-10-31'].set_index('index_code')
     assert d2.loc['801010', 'k_hat'] == pytest.approx(0.625)
     assert d2.loc['801080', 'k_hat'] == pytest.approx(3.95)
+
+
+def test_select_top_n_per_date():
+    """每个 date 选 top-N industries,返 (asof_date, k̂, ĉ, label) 元组列表(按 date 排序)"""
+    per_date_dfs = {
+        '2024-09-30': pd.DataFrame({
+            'index_code': ['801010', '801080', '801090'],
+            'n_stocks':   [4,         3,         2],
+            'k_hat':      [0.5,       3.5,       2.0],
+            'c_hat':      [2.0,       0.5,       1.5],
+        }),
+        '2024-10-31': pd.DataFrame({
+            'index_code': ['801010', '801080', '801090'],
+            'n_stocks':   [5,         2,         1],
+            'k_hat':      [0.6,       4.0,       1.8],
+            'c_hat':      [1.9,       0.4,       1.7],
+        }),
+    }
+
+    from backtrace.dynamics.dynamics_si_freq_response import select_top_n_per_date
+    pairs = select_top_n_per_date(per_date_dfs, criterion='by_n_stocks', n=2)
+
+    # 2 dates × 2 industries = 4 pairs
+    assert len(pairs) == 4
+    # Date 1 top-2 by n_stocks: 801010 (4 stocks), 801080 (3 stocks)
+    d1 = [p for p in pairs if p[0] == '2024-09-30']
+    assert d1[0][1:] == (0.5, 2.0, 'Industry 801010')
+    assert d1[1][1:] == (3.5, 0.5, 'Industry 801080')
+    # Date 2 top-2 by n_stocks: 801010 (5 stocks), 801080 (2 stocks)
+    d2 = [p for p in pairs if p[0] == '2024-10-31']
+    assert d2[0][1:] == (0.6, 1.9, 'Industry 801010')
+    assert d2[1][1:] == (4.0, 0.4, 'Industry 801080')
+    # 按 date 排序
+    assert [p[0] for p in pairs] == ['2024-09-30', '2024-09-30', '2024-10-31', '2024-10-31']
