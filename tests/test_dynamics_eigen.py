@@ -1023,3 +1023,78 @@ def test_si_lagged_ic_summary_schema(tmp_path):
     }
     assert out.exists()
     assert 'horizon=' in text
+
+
+# === v5 — 受迫系统 + G(ω) 频率响应 (2026-08-18) ===
+
+def test_transfer_function_dc_gain():
+    """DC gain 验证:H(jω→0) ≈ 1.0(任意 k, c,k>0)。"""
+    pytest.importorskip("backtrace.dynamics.dynamics_forced_response")
+    from backtrace.dynamics.dynamics_forced_response import transfer_function
+    for k, c in [(0.5, 0.5), (2.0, 1.5), (4.0, 4.0), (5.0, 0.1)]:
+        H_dc = transfer_function(np.array([0.001]), k, c)
+        assert abs(abs(H_dc[0]) - 1.0) < 1e-3, (
+            f'DC gain failed for (k={k}, c={c}): |H(j0)|={abs(H_dc[0]):.4f}'
+        )
+
+
+def test_transfer_function_stable_rolloff():
+    """Schur 内 (k=2, c=4):高频滚降 |H(jπ)| < |H(j0.1)| 且有界。"""
+    pytest.importorskip("backtrace.dynamics.dynamics_forced_response")
+    from backtrace.dynamics.dynamics_forced_response import magnitude_phase
+    omega = np.array([0.1, np.pi])
+    mag, _ = magnitude_phase(omega, k=2.0, c=4.0)
+    assert mag[1] < mag[0], (
+        f'expected high-freq rolloff, but |H(jπ)|={mag[1]:.4f} >= |H(j0.1)|={mag[0]:.4f}'
+    )
+    # 此 transfer function 公式在 ω=π 时 |H|=|k-2c|/(k+4),对 (k=2,c=4) 恰好 =1;
+    # 验证其有界(不爆炸)而非绝对小值。
+    assert mag[1] < 1.5, f'|H(jπ)|={mag[1]:.4f} 应 < 1.5(强阻尼有界)'
+
+
+def test_transfer_function_resonance_peak():
+    """欠阻尼 (k=4, c=0.5):|H(jω)| 在 ω ≈ arctan(2) ≈ 1.107 处有局部峰值。"""
+    pytest.importorskip("backtrace.dynamics.dynamics_forced_response")
+    from backtrace.dynamics.dynamics_forced_response import (
+        magnitude_phase, natural_frequency, classify_response_type,
+    )
+    assert classify_response_type(4.0, 0.5) == 'underdamped'
+    omega_n = natural_frequency(4.0)
+    assert abs(omega_n - np.arctan(2.0)) < 1e-6
+    omega_grid = np.linspace(0.01, np.pi, 1000)
+    mag, _ = magnitude_phase(omega_grid, k=4.0, c=0.5)
+    # 找峰值
+    peak_idx = np.argmax(mag)
+    peak_omega = omega_grid[peak_idx]
+    peak_mag = mag[peak_idx]
+    # 峰值应在 ω_n 附近(±0.3 弧度)
+    assert abs(peak_omega - omega_n) < 0.3, (
+        f'peak at ω={peak_omega:.4f}, expected near ω_n={omega_n:.4f}'
+    )
+    assert peak_mag > 1.0, f'欠阻尼应有 peak > 1, got {peak_mag:.4f}'
+
+
+def test_transfer_function_unstable_blowup():
+    """严重欠阻尼 (k=0.04, c=0.04):|H(jω_n)| > 5(共振爆炸)。
+
+    注:此 transfer function 公式 H(jω) = [k+c(z-1)]/[(z-1)²+k] 的极点为 z=1±j√k,
+    |z|=√(1+k)。对 (k=4) 极点在距单位圆 1 弧度外,峰值有限(≈1.09);要看到 >5 倍
+    共振峰,需要小 k 让极点接近单位圆。k=0.04,c=0.04(仍欠阻尼,c²=0.0016<4k=0.16)。
+    """
+    pytest.importorskip("backtrace.dynamics.dynamics_forced_response")
+    from backtrace.dynamics.dynamics_forced_response import (
+        magnitude_phase, natural_frequency,
+    )
+    omega_n = natural_frequency(0.04)
+    mag, _ = magnitude_phase(np.array([omega_n]), k=0.04, c=0.04)
+    assert mag[0] > 5.0, f'严重欠阻尼应 |H(jω_n)| > 5, got {mag[0]:.4f}'
+
+
+def test_classify_response_type():
+    """4 种阻尼类型判定。"""
+    pytest.importorskip("backtrace.dynamics.dynamics_forced_response")
+    from backtrace.dynamics.dynamics_forced_response import classify_response_type
+    assert classify_response_type(2.0, 4.0) == 'overdamped'   # c²=16 > 4k=8
+    assert classify_response_type(4.0, 4.0) == 'critical'     # c²=16 = 4k=16
+    assert classify_response_type(4.0, 0.5) == 'underdamped'  # c²=0.25 < 4k=16
+    assert classify_response_type(-1.0, 0.5) == 'anti_damped'  # k<0
