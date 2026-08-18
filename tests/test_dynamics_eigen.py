@@ -1255,3 +1255,27 @@ def test_load_kc_estimates_validates_columns(tmp_path):
     )
     with pytest.raises(ValueError, match="index_code"):
         DFR.load_kc_estimates(str(csv_path))
+
+
+def test_aggregate_by_industry_median():
+    """agg='median' 对 (k̂, ĉ) 中位数聚合 + n_stocks 计数。"""
+    from backtrace.dynamics import dynamics_forced_response as DFR
+    import pandas as pd
+    df = pd.DataFrame({
+        'code': ['A1', 'A2', 'A3', 'B1', 'B2'],
+        'index_code': ['801010', '801010', '801010', '801020', '801020'],
+        'k_hat': [0.5, 0.6, 0.7, 2.0, 2.1],
+        'c_hat': [2.0, 1.9, 2.1, 1.5, 1.4],
+    })
+    agg_df = DFR.aggregate_by_industry(df, group_col='index_code', agg='median')
+    assert len(agg_df) == 2
+    # 801010 中位数 k=0.6, c=2.0, n=3
+    row_a = agg_df[agg_df['index_code'] == '801010'].iloc[0]
+    assert row_a['n_stocks'] == 3
+    assert abs(row_a['k_hat'] - 0.6) < 1e-9
+    assert abs(row_a['c_hat'] - 2.0) < 1e-9
+    # 801020 中位数 k=2.05, c=1.45, n=2
+    row_b = agg_df[agg_df['index_code'] == '801020'].iloc[0]
+    assert row_b['n_stocks'] == 2
+    assert abs(row_b['k_hat'] - 2.05) < 1e-9
+    assert abs(row_b['c_hat'] - 1.45) < 1e-9

@@ -488,6 +488,32 @@ def load_kc_estimates(csv_path):
     return df
 
 
+def aggregate_by_industry(df, group_col='index_code', agg='median'):
+    """按行业聚合 (k̂, ĉ)。
+
+    Args:
+        df: load_kc_estimates 输出
+        group_col: 分组列(默认 index_code)
+        agg: 聚合方法("median" / "mean"),默认 median(抗极端值)
+
+    Returns:
+        DataFrame 列:[group_col, n_stocks, k_hat, c_hat]
+        按 group_col 排序
+    """
+    if agg not in ('median', 'mean'):
+        raise ValueError(f"agg 必须 'median' 或 'mean',得 '{agg}'")
+    agg_fn = np.median if agg == 'median' else np.mean
+    rows = []
+    for grp, sub in df.groupby(group_col):
+        rows.append({
+            group_col: grp,
+            'n_stocks': len(sub),
+            'k_hat': float(agg_fn(sub['k_hat'].values)),
+            'c_hat': float(agg_fn(sub['c_hat'].values)),
+        })
+    return pd.DataFrame(rows).sort_values(group_col).reset_index(drop=True)
+
+
 def main():
     args = parse_args()
     # v5.1 overlay 分支:有 --overlay 则跳过单对逻辑,只写 overlay 文件
