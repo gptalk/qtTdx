@@ -511,15 +511,18 @@ def main():
         except Exception as e:
             log.warning(f"top-{top_n}: failed to reload {code} for small multiples: {e}")
 
+    # Compute top5_path unconditionally so the final log line never references
+    # an unbound name when top_data is empty (e.g. --top-n 0 or all reloads fail).
+    top5_path = args.output.replace('.html', '_top{}.html'.format(top_n))
     if top_data:
-        top5_path = args.output.replace('.html', '_top{}.html'.format(top_n))
         build_top5_small_multiples(
             top5_data=top_data,
             output_path=top5_path,
             title=f"Top-{top_n} OOS Detail",
         )
-
-    log.info(f"[v5.10] DONE — wrote {args.output} + top{top_n}-multiples at {top5_path}")
+        log.info(f"[v5.10] DONE — wrote {args.output} + top{top_n}-multiples at {top5_path}")
+    else:
+        log.info(f"[v5.10] DONE — wrote {args.output} (no top{top_n}-multiples; top_data empty)")
 
 
 if __name__ == '__main__':
