@@ -284,3 +284,14 @@ v5.11 是 v5.9 框架的"数据接入"层,对应 v5.2 在 `dynamics_forced_respo
 - v5.13: 滚动拟合 `kc_rolling_*.csv` 接入(`days=250` 时取最匹配窗口)
 - v5.14: M1 tsfresh 根因 fix(整个 dynamics/ CLI 共享的 shadow 问题)
 - v5.15: 状态转移热图(P(state[t+1] | state[t]))
+
+## Status: ✅ DONE — 2026-08-19
+
+5 commits complete:
+- Task 1 (75fc840): `lookup_kc_for_code` helper + signature
+- Task 2 (7dd55d1): `--kc-estimates-csv` flag on `dynamics_oos_viz`
+- v5.11.1 fix (0850679): status filter for verbose format (post-Task-2 critical bug)
+- Task 3 (f6ba836): propagate `kc_estimates_path` through `compute_oos_metrics` + v5.10 CLI
+- Task 4 (this): test + README + final review + push + memory
+
+Final: 78 PASS + 3 pre-existing SKIP, 0 modifications to 11 protected files + `dynamics_oos_viz.py` core logic, 0 new dependencies. v5.10 §4.1.9 caveat closed.

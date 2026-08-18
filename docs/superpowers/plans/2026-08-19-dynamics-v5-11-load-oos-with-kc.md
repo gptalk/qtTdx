@@ -571,3 +571,7 @@ DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED
 - 0 new dependencies
 - M1 tsfresh shadow tolerated
 - F3 inverted tolerance in any new subprocess test (none added for v5.11 — only unit test for lookup)
+
+## Status: ✅ DONE — 2026-08-19
+
+All 4 tasks + 1 mid-stream fix complete. Pushed to origin/main in commits <push_commit_pending>. See memory file `dynamics-v5-11-load-oos-with-kc.md`.
