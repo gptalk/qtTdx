@@ -514,6 +514,40 @@ def aggregate_by_industry(df, group_col='index_code', agg='median'):
     return pd.DataFrame(rows).sort_values(group_col).reset_index(drop=True)
 
 
+def select_top_n_industries(df, criterion='by_n_stocks', n=5, group_col='index_code'):
+    """从聚合 DataFrame 选 top-N 行业,转 v5.1 overlay 格式。
+
+    Args:
+        df: aggregate_by_industry 输出
+        criterion: 排序标准
+            - "by_n_stocks": 按股票数降序(最多成分股的行业)
+            - "by_c_over_k": 按 c/k 比降序(最过阻尼,稳定)
+            - "by_k_over_c": 按 k/c 比降序(最欠阻尼,危险)
+        n: top N
+        group_col: label 用 group_col 值,前缀 "Industry "
+
+    Returns:
+        [(k̂, ĉ, label), ...] — 直接喂给 bode_overlay
+    """
+    df_sorted = df.copy()
+    if criterion == 'by_n_stocks':
+        df_sorted = df_sorted.sort_values('n_stocks', ascending=False)
+    elif criterion == 'by_c_over_k':
+        df_sorted['_ratio'] = df_sorted['c_hat'] / df_sorted['k_hat'].replace(0, np.nan)
+        df_sorted = df_sorted.sort_values('_ratio', ascending=False)
+    elif criterion == 'by_k_over_c':
+        df_sorted['_ratio'] = df_sorted['k_hat'] / df_sorted['c_hat'].replace(0, np.nan)
+        df_sorted = df_sorted.sort_values('_ratio', ascending=False)
+    else:
+        raise ValueError(f"criterion 必须 by_n_stocks / by_c_over_k / by_k_over_c,得 '{criterion}'")
+    df_sorted = df_sorted.head(n)
+    pairs = []
+    for _, row in df_sorted.iterrows():
+        label = f"Industry {row[group_col]}"
+        pairs.append((float(row['k_hat']), float(row['c_hat']), label))
+    return pairs
+
+
 def main():
     args = parse_args()
     # v5.1 overlay 分支:有 --overlay 则跳过单对逻辑,只写 overlay 文件

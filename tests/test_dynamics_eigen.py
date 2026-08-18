@@ -1279,3 +1279,38 @@ def test_aggregate_by_industry_median():
     assert row_b['n_stocks'] == 2
     assert abs(row_b['k_hat'] - 2.05) < 1e-9
     assert abs(row_b['c_hat'] - 1.45) < 1e-9
+
+
+# === v5.2 select_top_n_industries ===
+
+def test_select_top_n_by_n_stocks():
+    """criterion='by_n_stocks' 按股票数降序排,选 top N。"""
+    from backtrace.dynamics import dynamics_forced_response as DFR
+    import pandas as pd
+    df = pd.DataFrame({
+        'index_code': ['A', 'B', 'C'],
+        'n_stocks': [10, 5, 2],
+        'k_hat': [1.0, 2.0, 3.0],
+        'c_hat': [1.5, 1.5, 1.5],
+    })
+    pairs = DFR.select_top_n_industries(df, criterion='by_n_stocks', n=2)
+    assert len(pairs) == 2
+    # A (10 stocks) 第一, B (5 stocks) 第二
+    assert pairs[0] == (1.0, 1.5, 'Industry A')
+    assert pairs[1] == (2.0, 1.5, 'Industry B')
+
+
+def test_select_top_n_by_c_over_k():
+    """criterion='by_c_over_k' 按 c/k 比降序排,选 top N。"""
+    from backtrace.dynamics import dynamics_forced_response as DFR
+    import pandas as pd
+    df = pd.DataFrame({
+        'index_code': ['A', 'B', 'C'],
+        'n_stocks': [5, 5, 5],
+        'k_hat': [0.5, 2.0, 1.0],
+        'c_hat': [2.0, 1.5, 1.0],  # c/k: 4.0, 0.75, 1.0
+    })
+    pairs = DFR.select_top_n_industries(df, criterion='by_c_over_k', n=2)
+    # A (c/k=4.0) 第一, C (c/k=1.0) 第二
+    assert pairs[0][2] == 'Industry A'
+    assert pairs[1][2] == 'Industry C'
