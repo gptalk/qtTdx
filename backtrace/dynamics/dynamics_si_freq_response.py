@@ -13,6 +13,7 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')  # non-interactive backend (no display required)
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
 # v5.6 — regime 颜色字典(镜像 v5.5 _regime_color 闭包 dict)
 REGIME_COLORS = {
@@ -339,8 +340,18 @@ def build_static_bode_grid(
     axes[-1, 0].set_xlabel('ω (rad/day)')
     axes[-1, 1].set_xlabel('ω (rad/day)')
 
+    # I-1 fix: regime color legend (matplotlib equivalent of v5.5 plotly annotation)
+    regime_patches = [
+        mpatches.Patch(color='#2ca02c', label='overdamped (stable)'),
+        mpatches.Patch(color='#ff7f0e', label='critical'),
+        mpatches.Patch(color='#d62728', label='underdamped (resonance)'),
+        mpatches.Patch(color='#9467bd', label='anti_damped'),
+    ]
+    fig.legend(handles=regime_patches, loc='upper center',
+               bbox_to_anchor=(0.5, 0.99), ncol=4, frameon=False, fontsize=9)
+
     fig.suptitle(title, fontsize=14)
-    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
 
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     fig.savefig(output_path, dpi=dpi, bbox_inches='tight')
