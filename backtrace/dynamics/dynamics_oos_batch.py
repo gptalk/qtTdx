@@ -178,70 +178,19 @@ def aggregate_oos_metrics(metrics_list: list[dict]) -> dict:
     }
 
 
-def classify_regime(k: float, c: float, threshold: float = 0.1) -> str:
-    """按 |k| / |c| 比例分 3 个 regime (v5.12)。
-
-    Args:
-        k: 拟合的弹性系数 (k̂)
-        c: 拟合的阻尼系数 (ĉ)
-        threshold: 相对差异容忍度,默认 0.1 (= 10%)。
-                   |k|/|c| 在 [1/(1+threshold), 1+threshold] 内视为 balanced。
-                   注意:无上限 clip — 传很大(>1.0)会让 balanced 区膨胀到吞掉
-                   几乎所有 ratio,失去分类意义。caller 自行 cap 到 ≤ 1.0。
-
-    Returns:
-        'k_dominant' — 共振风险 (|k| > |c| * (1 + threshold))
-        'c_dominant' — 过阻尼稳定 (|c| > |k| * (1 + threshold))
-        'balanced'   — 其余(含 k=c=0 placeholder 状态)
-
-    Raises:
-        ValueError: if threshold < 0
-    """
-    if threshold < 0:
-        raise ValueError(f'threshold must be >= 0, got {threshold}')
-
-    abs_k, abs_c = abs(float(k)), abs(float(c))
-
-    # 占位符或零参数 → balanced (不区分,免得"无信息"被错分)
-    if abs_k == 0.0 and abs_c == 0.0:
-        return 'balanced'
-
-    # 阈值上限:绝对值差异非常悬殊时,ratio 会爆 → 强制归类
-    # 不报错,允许 caller 探索大 threshold
-    if abs_c < 1e-12:
-        return 'k_dominant'
-    if abs_k < 1e-12:
-        return 'c_dominant'
-
-    ratio = abs_k / abs_c
-    upper = 1.0 + threshold
-    lower = 1.0 / upper
-
-    if ratio > upper:
-        return 'k_dominant'
-    if ratio < lower:
-        return 'c_dominant'
-    return 'balanced'
-
-
 # === Full-market 2x2 dashboard =============================================
 def build_full_market_oos_html(
     metrics_list: list[dict],
     output_path: str,
     title: str = 'Full-Market OOS Prediction Quality Distribution',
-    regime_threshold: float = 0.1,  # v5.12 NEW
 ) -> None:
     """2x2 plotly dashboard of full-market OOS prediction quality (spec 3.4).
 
     Panels:
         (1,1) hit-rate histogram + median/p25/p75 vlines
         (1,2) RMSE histogram + median vline
-        (2,1) hit-rate vs RMSE scatter (3 regime colors + legend, hover = code + regime + k̂ + ĉ)
+        (2,1) hit-rate vs RMSE scatter (Viridis, hover = code)
         (2,2) hit-rate CDF + median vline
-
-    v5.12 regime_threshold:
-        |k| / |c| 平衡区相对差异容忍度(默认 0.1 = 10%)。
-        控制 dashboard (2,1) 散点 panel 的 regime 颜色分布。
     """
     # 1) 空输入 → 明确报错(而不是画空图)
     if not metrics_list:
@@ -251,10 +200,6 @@ def build_full_market_oos_html(
     df = pd.DataFrame(metrics_list)
     hit_rates = df['hit_rate'].to_numpy()
     rmses = df['rmse'].to_numpy()
-
-    # 2b) v5.12 NEW: hoist n_stocks for reuse in scatter block (legend counts)
-    # and final layout title.
-    n_stocks = len(metrics_list)
 
     # 3) 汇总统计
     median_hr = float(np.median(hit_rates))
@@ -302,61 +247,25 @@ def build_full_market_oos_html(
     fig.add_vline(x=median_rmse, line_dash='dash', line_color='#e74c3c',
                   annotation_text='median', row=1, col=2)
 
-    # 7) (2,1) hit-rate vs RMSE 散点(v5.12: 按 regime 离散着色)
-    regimes = [classify_regime(m.get('k_used', 0.0), m.get('c_used', 0.0),
-                               threshold=regime_threshold)
-               for m in metrics_list]
-    regime_colors = {
-        'k_dominant': '#e74c3c',  # 红
-        'c_dominant': '#3498db',  # 蓝
-        'balanced':   '#2ecc71',  # 绿
-    }
-
-    # 主散点(按 regime 离散着色)+ hover 含 regime + (k̂, ĉ)
+    # 7) (2,1) hit-rate vs RMSE 散点
     fig.add_trace(
         go.Scatter(
             x=hit_rates, y=rmses,
             mode='markers',
             marker=dict(
                 size=6,
-                color=[regime_colors[r] for r in regimes],
+                color=hit_rates,
+                colorscale='Viridis',
+                showscale=True,
+                colorbar=dict(title='hit-rate', x=0.45, len=0.4, y=0.2),
                 line=dict(color='#2c3e50', width=0.5),
             ),
             text=df['code'].tolist(),
-            customdata=list(zip(
-                regimes,
-                [m.get('k_used', 0.0) for m in metrics_list],
-                [m.get('c_used', 0.0) for m in metrics_list],
-            )),
-            hovertemplate=(
-                '<b>%{text}</b><br>'
-                'hit-rate: %{x:.3f}<br>'
-                'RMSE: %{y:.4f}<br>'
-                'regime: %{customdata[0]}<br>'
-                'k̂: %{customdata[1]:.4f}<br>'
-                'ĉ: %{customdata[2]:.4f}'
-                '<extra></extra>'
-            ),
+            hovertemplate='<b>%{text}</b><br>hit-rate: %{x:.3f}<br>RMSE: %{y:.4f}<extra></extra>',
             name='stocks',
-            showlegend=False,
         ),
         row=2, col=1,
     )
-
-    # 7b) Legend 3 个 invisible scatter traces(纯 legend entry,不画数据)
-    for regime_name, regime_color in regime_colors.items():
-        count = regimes.count(regime_name)
-        fig.add_trace(
-            go.Scatter(
-                x=[None], y=[None],
-                mode='markers',
-                marker=dict(size=10, color=regime_color,
-                            line=dict(color='#2c3e50', width=0.5)),
-                name=f'{regime_name} (N={count})',
-                showlegend=True,
-            ),
-            row=2, col=1,
-        )
 
     # 8) (2,2) hit-rate CDF
     sorted_hr = np.sort(hit_rates)
@@ -385,17 +294,11 @@ def build_full_market_oos_html(
     fig.update_yaxes(title_text='RMSE', row=2, col=1)
     fig.update_yaxes(title_text='CDF', row=2, col=2)
 
-    # 10) layout + 落盘(n_stocks 已在 Step 2b 提前算好)
+    # 10) layout + 落盘
+    n_stocks = len(metrics_list)
     fig.update_layout(
         title=f"{title} — N={n_stocks}",
-        height=800, showlegend=True,            # v5.12: 显示 regime legend
-        legend=dict(
-            x=0.01, y=0.99,
-            xanchor='left', yanchor='top',
-            bgcolor='rgba(255,255,255,0.8)',
-            bordercolor='#2c3e50',
-            borderwidth=1,
-        ),
+        height=800, showlegend=False,
         template='plotly_white',
     )
 
@@ -476,7 +379,6 @@ __all__ = [
     'aggregate_oos_metrics',
     'build_full_market_oos_html',
     'build_top5_small_multiples',
-    'classify_regime',
     'DEFAULTS',
     'DEFAULT_OUTPUT',
 ]
@@ -541,8 +443,6 @@ def main():
                    help='output HTML path')
     p.add_argument('--kc-estimates-csv', dest='kc_estimates_csv', type=str, default=None,
                    help='v5.11: 透传给 compute_oos_metrics → load_oos_predictions')
-    p.add_argument('--regime-threshold', dest='regime_threshold', type=float, default=0.1,
-                   help='v5.12: |k|/|c| 平衡区相对差异容忍度 — 默认 0.1 即 10pct')
     args = p.parse_args()
 
     # 1. Load stock codes
@@ -595,7 +495,6 @@ def main():
         metrics_list=metrics_list,
         output_path=args.output,
         title=f"Full-Market OOS — {agg['n_stocks']} stocks, {args.days} days",
-        regime_threshold=args.regime_threshold,  # v5.12 NEW
     )
 
     # 5. Render top-N small multiples (separate file)

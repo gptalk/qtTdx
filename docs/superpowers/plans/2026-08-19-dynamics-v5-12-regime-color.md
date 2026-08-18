@@ -277,7 +277,7 @@ def test_classify_regime():
     assert classify_regime(0.1, 0.5, 0.1) == 'c_dominant'
 
     # 3. 平衡 (|k|/|c|=1.11 在 [1/1.1, 1.1] 内)
-    assert classify_regime(0.5, 0.49, 0.1) == 'balanced'
+    assert classify_regime(0.5, 0.45, 0.1) == 'balanced'
 
     # 4. 占位符 (k=c=0) → balanced
     assert classify_regime(0.0, 0.0, 0.1) == 'balanced'
@@ -529,20 +529,6 @@ git commit -m "docs(dynamics): v5.12 — plan footer with actual push commit has
 Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
 git push origin main  # final push
 ```
-
-## Status: ✅ DONE — 2026-08-19
-
-All 2 tasks + 1 drift fix + 1 v5.12.1 fix + 1 opus polish complete. Pushed to origin/main in 8 commits `378d448..9ec2078`:
-- ff5f954 (plan)
-- d1b64bf (Task 1): `classify_regime` helper + dashboard (2,1) scatter color/legend/hover
-- a2a49b8 (post-review drift fix): spec/plan threshold band + balanced test case
-- c392845 (Task 2): `--regime-threshold` CLI flag + `test_classify_regime` (12 cases)
-- 9618244 (Task 2): README §4.1.11
-- ab366fd (Task 2): spec/plan status + memory file
-- 8588f09 (v5.12.1 fix): revert unauthorized threshold clip + fix test #10
-- 9ec2078 (opus polish): 3 minor touchups (docstring + __all__ + spec)
-
-Final: 79 PASS + 0 SKIP, 0 modifications to 11 protected files + `dynamics_oos_batch.py` core logic, 0 new dependencies. Opus final review READY TO MERGE. See memory file `dynamics-v5-12-regime-color.md`.
 
 ## Report contract
 

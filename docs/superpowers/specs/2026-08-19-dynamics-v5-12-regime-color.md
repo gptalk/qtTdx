@@ -35,7 +35,7 @@ v5.11 让 `k_used` / `c_used` 从 placeholder (0.0) 变成真实拟合值,业务
 def classify_regime(k: float, c: float, threshold: float = 0.1) -> str:
     """按 |k| / |c| 比例分 3 个 regime。
 
-    threshold = 相对差异容忍度:|k| / |c| 在 [1/(1+threshold), 1+threshold] 内视为平衡。
+    threshold = 相对差异容忍度:|k| / |c| 在 [1-threshold, 1+threshold] 内视为平衡。
     防止 1.05/0.95 这种微小差异被分成两类的"伪边界"问题。
 
     Returns:
@@ -49,7 +49,7 @@ def classify_regime(k: float, c: float, threshold: float = 0.1) -> str:
 |---|---|---|---|
 | `k=0.5, c=0.1, threshold=0.1` | `k_dominant` | 红 `#e74c3c` | 共振风险 |
 | `k=0.1, c=0.5, threshold=0.1` | `c_dominant` | 蓝 `#3498db` | 过阻尼稳定 |
-| `k=0.5, c=0.49, threshold=0.1` | `balanced` | 绿 `#2ecc71` | 平衡 |
+| `k=0.5, c=0.45, threshold=0.1` | `balanced` | 绿 `#2ecc71` | 平衡 |
 | `k=0.0, c=0.0` | `balanced` (ratio=1) | 绿 | v5.11 placeholder 状态 — 视觉上"无信息" |
 | `k=-0.5, c=0.1` | `k_dominant` (|k|=0.5 > |c|*1.1) | 红 | 负 k 也是共振(anti-restoring) |
 
@@ -57,7 +57,7 @@ def classify_regime(k: float, c: float, threshold: float = 0.1) -> str:
 - `k=0` 且 `c=0` → balanced (视为"无信息",不进任何一类)
 - `threshold=0.0` → 严格不等式 (退化情况,等价于 `|k| == |c|` → balanced)
 - `threshold < 0` → ValueError (caller 错)
-- `threshold > 10` → 不拒绝,但 ratio 区间会膨胀到几乎所有股票进 balanced(失去分类意义),建议 caller 自 cap 到 ≤ 1.0
+- `threshold > 10` → 不拒绝,但警告 (clip 到 10)
 
 ### 3.2 Dashboard 改动
 
@@ -137,7 +137,7 @@ def test_classify_regime():
     assert classify_regime(0.1, 0.5, 0.1) == 'c_dominant'
 
     # 3. 平衡 (|k|/|c| 在 [1/1.1, 1.1])
-    assert classify_regime(0.5, 0.49, 0.1) == 'balanced'
+    assert classify_regime(0.5, 0.45, 0.1) == 'balanced'
 
     # 4. 占位符 (k=c=0) → balanced
     assert classify_regime(0.0, 0.0, 0.1) == 'balanced'
@@ -220,12 +220,3 @@ v5.12 是 v5.11 真实 (k̂, ĉ) 的"视觉化"层 —— 数据已经在,只是
 ## Status: 📝 DRAFT — 2026-08-19
 
 待 plan + implementer。
-
-## Status: ✅ DONE — 2026-08-19
-
-3 commits complete (post-base `ff5f954`):
-- `d1b64bf` (Task 1): `classify_regime` helper + dashboard (2,1) scatter color/legend/hover
-- `a2a49b8` (post-review drift fix): spec/plan threshold band + test case c=0.49
-- <this commit> (Task 2): `--regime-threshold` CLI flag + `test_classify_regime` (12 cases) + README §4.1.11
-
-Final: 79 PASS + 0 SKIP, 0 modifications to 11 protected files + `dynamics_oos_batch.py` core logic, 0 new dependencies.

@@ -1211,36 +1211,3 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_oos_viz.py \
 **v5.10 propagation:** `dynamics_oos_batch.py::compute_oos_metrics` accepts `kc_estimates_path: str | None = None` + new CLI flag `--kc-estimates-csv`. All stocks in batch get real (k̂, ĉ) when CSV provided.
 
 **Test:** `tests/test_dynamics_eigen.py::test_lookup_kc_for_code` (6 cases incl. verbose status format).
-
-### 4.1.11 v5.12 — Dashboard regime color-coding (k̂ vs ĉ dominance)
-
-**File:** `backtrace/dynamics/dynamics_oos_batch.py` (extended)
-
-**Goal:** After v5.11 made `k_used`/`c_used` real, v5.12 surfaces them visually — (2,1) scatter panel now colors points by regime instead of continuous hit-rate Viridis.
-
-**Regime classifier:** `classify_regime(k, c, threshold=0.1) -> str`
-- `'k_dominant'` — `|k| > |c| * (1 + threshold)` (resonance risk, red `#e74c3c`)
-- `'c_dominant'` — `|c| > |k| * (1 + threshold)` (overdamped stability, blue `#3498db`)
-- `'balanced'`   — ratio in `[1/(1+threshold), 1+threshold]` (green `#2ecc71`); also catches `k_used=c_used=0` placeholder state
-
-**Dashboard changes:**
-- (2,1) scatter: discrete 3-color markers (was Viridis continuous)
-- Legend shows each regime with stock count: `k_dominant (N=X)`
-- Hover adds `regime`, `k̂`, `ĉ` fields
-- Other 3 panels (1,1 histogram / 1,2 RMSE histogram / 2,2 CDF) untouched
-
-**CLI:**
-```bash
-PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_oos_batch.py \
-    --days 60 --limit 5 --top-n 3 \
-    --kc-estimates-csv data/projection/kc_estimates.csv \
-    --regime-threshold 0.1 \
-    --output backtrace/outputs/dynsys_oos_full_market.html
-```
-
-**Threshold guidance:**
-- `0.05` (5%): strict balance — only near-equal ratios count as balanced
-- `0.10` (default): practical — catches most "visually balanced" stocks
-- `0.30+`: only extreme k-dominant or c-dominant stocks split off
-
-**Test:** `tests/test_dynamics_eigen.py::test_classify_regime` (12 cases incl. boundaries + ValueError + near-zero).
