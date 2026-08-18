@@ -123,8 +123,7 @@ def build_animated_overlay_html(
     """构建 plotly 动画 slider:每帧一个 asof_date,每帧 N 条 industry Bode 曲线。
 
     行为:
-        - 上子图 |H(jω)| dB vs ω(共享 omega_grid)
-        - 下子图 arg H(jω) degrees vs ω
+        - 单子图 |H(jω)| dB vs ω(共享 omega_grid)— phase 子图留 v5.4+
         - animation_frame = asof_date(可拖 slider)
         - Play/Pause 按钮(默认 500ms / frame)
         - 每帧 N 条曲线(N = top-n industries per date)
