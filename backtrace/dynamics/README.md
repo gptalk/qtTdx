@@ -1099,3 +1099,20 @@ v5.7 给同一份数据加 **dashboard 视图** — 业务写周报 / 复盘用:
 - v5.6 PNG: 静态曲线, 嵌 PDF / PPT
 - v5.7 PNG: **静态 cells, dashboard 执行摘要**
 - 三者共用 `classify_response_type` + REGIME_COLORS → 0 重复, 0 不一致
+
+### §4.1.7 v5.8 — State Timeline + Force Decomposition HTML (plotly)
+
+v5.8 闭环 `_projection_core.py` 3 个高级函数 → 业务可读可视化:
+
+- CLI: `dynamics_state_timeline.py --code 002475.SZ --days 250 --prefer-industry`
+- 复用函数: `compute_movement_projection` + `compute_dynamics` + `compute_forces` + `classify_states` (projection core)
+- Top 子图: 7 状态颜色时间线 (follow / weak_div / accelerating / independent / against / returning / resonance)
+- Bottom 子图: 4 力 stacked area (F_market / F_restore / F_damp / F_self)
+- 0 新依赖 (plotly 已装)
+
+**v5.5 / v5.6 / v5.7 / v5.8 关系**:
+- v5.5 HTML: 交互频率曲线, 物理分析
+- v5.6 PNG: 静态频率曲线, 物理报告
+- v5.7 PNG: 静态 regime cells, 物理 dashboard
+- v5.8 HTML: **交互状态时间线 + 4 力分解, 业务可直接读**
+- 四者数据源不同: v5.5-v5.7 用 kc_time.csv, v5.8 用 load_pair → compute_dynamics
