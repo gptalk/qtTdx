@@ -934,3 +934,63 @@ v5.1 是 v5 的**纯可视化层扩展**,不动数学层(`transfer_function` / `
 - 单对模式 `main()` 函数体**一行未动**,仅在最开头加 `if args.overlay: ... return` 分支
 - 现有 53 v5 测试 + 8 v5.1 测试 = 61 tests pass,所有 v5 单对模式行为向后兼容
 - 边界:复极点区域 (k<c) 才有有限 ω_n;实极点区域 (k>>c) ω_n 不显示 marker
+
+### §4.1.1 v5.2 — parameter_fit Integration (数据驱动 overlay)
+
+把 `parameter_fit.py` 的 `kc_estimates.csv` 数据接到 v5.1 overlay,从"对比框架"升级到"真实行业 G(ω) 对比"。
+
+#### 新增 CLI flag
+
+| flag | 类型 | 说明 |
+|---|---|---|
+| `--from-kc-estimates` | path | parameter_fit kc_estimates.csv 路径(与 `--overlay` 互斥) |
+| `--top-n` | int | 选 top-N 行业(默认 5) |
+| `--industry-agg` | str | 行业聚合方法:`median` / `mean`(默认 median) |
+| `--select-criterion` | str | 排序标准:`by_n_stocks` / `by_c_over_k` / `by_k_over_c`(默认 by_n_stocks) |
+| `--industry-pairs-csv` | path | 选中行业 CSV 输出(默认 `backtrace/outputs/dynsys_industry_overlay_pairs.csv`) |
+
+#### 端到端示例
+
+```bash
+# 前提:parameter_fit.py 已跑过,data/projection/kc_estimates.csv 存在
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_forced_response.py \
+    --from-kc-estimates data/projection/kc_estimates.csv \
+    --top-n 5 \
+    --select-criterion by_n_stocks
+# 期待:3 个 gitignored 输出
+#   backtrace/outputs/dynsys_bode_overlay.html
+#   backtrace/outputs/dynsys_bode_overlay_summary.txt
+#   backtrace/outputs/dynsys_industry_overlay_pairs.csv
+```
+
+#### 排序标准
+
+| criterion | 含义 | 业务用途 |
+|---|---|---|
+| `by_n_stocks` | 按行业股票数降序 | 默认:成分股最多的行业(覆盖广) |
+| `by_c_over_k` | 按 c/k 比降序 | 最过阻尼 / 最稳 / 低通过滤器 |
+| `by_k_over_c` | 按 k/c 比降序 | 最欠阻尼 / 共振风险高 / 危险行业 |
+
+#### 与 v5.1 的关系
+
+v5.2 是 v5.1 的**数据接入层** — v5.1 提供"对比框架",v5.2 提供"真实数据 → 框架输入"转换。两者组合 = 业务可决策的行业 G(ω) 对比。
+
+#### 与 parameter_fit 的接口契约(只读)
+
+```python
+# v5.2 期望 kc_estimates.csv 的列:
+# code: str — 股票代码
+# index_code: str — 申万二级代码
+# k_hat: float — OLS 拟合恢复系数
+# c_hat: float — OLS 拟合阻尼系数
+# status: str — "ok" / "fail" (过滤 fail 行)
+#
+# 其他列可选。**不调任何 parameter_fit 函数** — CSV 是 stable 接口
+```
+
+#### 已知陷阱
+
+- `kc_estimates.csv` 必须先存在(跑 `parameter_fit.py`),否则 FileNotFoundError
+- 必需列缺失 → ValueError(列出缺失列名)
+- `--from-kc-estimates` 与 `--overlay` 互斥,不能同时传
+- `select_top_n_industries` 只取实际存在的行业数,如果少于 `--top-n` 会 print 警告
