@@ -24,10 +24,11 @@ v4.7-v4.10 四轮迭代脉络:
 **3 种典型频率响应**:
 | 系统 | \|H(jω)\| 行为 | 物理含义 |
 |---|---|---|
-| 强阻尼 (k=2, c=4, Schur 内) | 单调滚降,无峰值 | 系统不"记住"过去的强迫,只跟当前 |
-| 临界阻尼 (k=4, c=4) | 微凸峰 | 边界 case,刚好不振荡 |
-| 欠阻尼 (k=4, c=0.5, Schur 外) | 共振峰 → ∞ | 不稳定,强迫放大,系统"打摆" |
-| 抗阻尼 (k=-1, c=0.5) | 高频滚降但低频爆炸 | 反向弹簧,无界 |
+| 强阻尼 (k=3.5, c=3.6, 复极点稳定区 k<c) | \|H\| 有界,无峰值 | 系统极点 \|z\|<1,稳定但不保证滚降 |
+| 临界阻尼 (k=4, c=4) | 边界 case | k=c,极点 \|z\|²=1,数学边界 |
+| 边界共振 (k=2.01, c=2, k>c 紧邻) | 共振峰 → ∞ | 极点 \|z\|²≈1,数学奇点 |
+| 欠阻尼 (k=4, c=0.5, k>>c 远离) | 共振峰有限 | 极点 \|z\|²=4.95,远离单位圆,峰值不大 |
+| 抗阻尼 (k=-1, c=0.5) | 低频 \|H\| 爆炸 | 反向弹簧,无界 |
 
 ## 2. 范围 (Scope)
 
@@ -43,7 +44,7 @@ v4.7-v4.10 四轮迭代脉络:
 - 时变 β(t) 的非正弦驱动(脉冲、白噪声) — v5.1+ 候选
 - 受迫系统的 1-step 预测下游应用(rotation strategy) — v5.2+ 候选
 - 修改 `predict_next_state` / `simulate_trajectory` / `compute_sector_stability` / `analyze_eigenvalues` 数学
-- 修改 7 个 v4.7-v4.10 文件(`_dynamics_core.py` / 3 caller / `dynamics_si_ic.py` / `dynamics_si_timeseries.py` / `compute_sector_stability_timeseries`)
+- 修改 8 个 v4.7-v4.10 文件(`_dynamics_core.py` / 3 caller / `dynamics_si_ic.py` (v4.8) / `dynamics_si_timeseries.py` (v4.9) / `dynamics_si_lagged_ic.py` (v4.10) / `compute_sector_stability_timeseries` (v4.9))
 - 真实数据的 G(ω) 拟合 — 本轮纯解析 + 数值扫描
 - v4.10 lagged IC 真实数据 verdict — 已知未跑,等用户 E2E
 
@@ -75,55 +76,82 @@ d(t+1) = d(t) + v_S(t) - (β₀ + β_f·cos(ωt))·V_M₀
 
 ### 3.2 线性化与 z 域
 
-设稳态时 v_S(t) = V·e^(jωt), d(t) = D·e^(jωt),令 z = e^(jω)(单位步长):
+设稳态时 v_S(t) = V·e^(jωt), d(t) = D·e^(jωt),令 z = e^(jω)(单位步长)。从 §3.1 的状态递推:
 
 ```
-z·V = V - k·D + c·V_M₀·β(z)        [a_S 方程]
-z·D = D + V - V_M₀·β(z)            [d 递推]
+δv_S(t+1) = (1-c)·δv_S(t) - k·δd(t) + c·V_M₀·δβ(t)
+δd(t+1)   = δd(t) + δv_S(t) - V_M₀·δβ(t)
 ```
 
-其中 β(z) 在 z 域是其正弦分量的 z 变换。整理:
-
+z 域(对 δX):
 ```
-(z - 1)·V + k·D = c·V_M₀·β(z)      ...(1)
--(z - 1)·D + V = V_M₀·β(z)          ...(2)
+z·V = (1-c)·V - k·D + c·V_M₀·β(z)        [v_S 方程]
+z·D = D + V - V_M₀·β(z)                   [d 递推]
+```
+
+整理:
+```
+(z - 1 + c)·V + k·D = c·V_M₀·β(z)        ...(1)
+-(z - 1)·D + V = V_M₀·β(z)                ...(2)
 ```
 
 由 (2):`V = V_M₀·β(z) + (z-1)·D`,代入 (1):
 
 ```
-(z-1)·[V_M₀·β(z) + (z-1)·D] + k·D = c·V_M₀·β(z)
-(z-1)·V_M₀·β(z) + (z-1)²·D + k·D = c·V_M₀·β(z)
-[(z-1)² + k]·D = V_M₀·β(z)·[c - (z-1)]
-D = V_M₀·β(z)·[c - (z-1)] / [(z-1)² + k]
+(z-1+c)·[V_M₀·β(z) + (z-1)·D] + k·D = c·V_M₀·β(z)
+(z-1+c)·V_M₀·β(z) + [(z-1+c)(z-1) + k]·D = c·V_M₀·β(z)
+[(z-1)² + c·(z-1) + k]·D = V_M₀·β(z)·[c - (z-1+c)]
+[(z-1)² + c·(z-1) + k]·D = V_M₀·β(z)·[-(z-1)]
+D = V_M₀·β(z)·(1-z) / [(z-1)² + c·(z-1) + k]
 ```
 
 代入 (2):
 ```
-V = V_M₀·β(z) + (z-1)·V_M₀·β(z)·[c - (z-1)] / [(z-1)² + k]
-V = V_M₀·β(z)·[1 + (z-1)·(c - (z-1)) / ((z-1)² + k)]
-V = V_M₀·β(z)·[((z-1)² + k) + (z-1)·c - (z-1)²] / [(z-1)² + k]
-V = V_M₀·β(z)·[k + c·(z-1)] / [(z-1)² + k]
+V = V_M₀·β(z) + (z-1)·V_M₀·β(z)·(1-z) / [(z-1)² + c·(z-1) + k]
+  = V_M₀·β(z)·[1 - (z-1)² / ((z-1)² + c·(z-1) + k)]
+  = V_M₀·β(z)·[(z-1)² + c·(z-1) + k - (z-1)²] / [(z-1)² + c·(z-1) + k]
+  = V_M₀·β(z)·[c·(z-1) + k] / [(z-1)² + c·(z-1) + k]
 ```
 
-**复频响应(从 β 强迫到 v_S)**:
+**复频响应(从 β 强迫到 v_S,V_M₀ = 1 归一化)**:
 ```
-H(jω) = [k + c·(e^(jω) - 1)] / [(e^(jω) - 1)² + k]
-       = [k + c·(z - 1)] / [(z - 1)² + k]   其中 z = e^(jω)
+H(z) = [k + c·(z-1)] / [(z-1)² + c·(z-1) + k]   其中 z = e^(jω)
 ```
 
-### 3.3 极限行为
+### 3.3 极点与稳定性
+
+分母为零:`(z-1)² + c·(z-1) + k = 0`。令 μ = z - 1,则 μ² + cμ + k = 0,根为:
+
+```
+μ = (-c ± √(c² - 4k)) / 2
+```
+
+**(a) 复极点**(c² < 4k):z = 1 - c/2 ± j·√(4k-c²)/2。极坐标 |z|² = (1-c/2)² + (4k-c²)/4 = **1 - c + k**。
+
+**(b) 实极点**(c² ≥ 4k):z = (2-c ± √(c²-4k))/2。其中一个根通常 |z| > 1(系统不稳定,即使看似过阻尼)。
+
+**稳定性条件(本线性化系统)**:复极点情形下 |z| < 1 ⟺ 1 - c + k < 1 ⟺ **k < c**。
+
+> **注意**:v4.7 的 Schur 楔形 c² ≥ 4k 对应**不同的 2×2 系统**(`[[0,1],[-k,c]]`,特征方程 λ² - cλ + k = 0)。本 spec 线性化后的 A 矩阵是 `[[1,1],[-k,1-c]]`,对应的稳定边界是 k = c,**不是** v4.7 的 c² = 4k。
+
+### 3.4 极限行为
 
 | ω | H(jω) | 物理含义 |
 |---|---|---|
-| ω → 0 | k / (k) = 1 | DC gain,稳态放大 = 1 |
-| ω → π | k - 2c / (4 + k) | Nyquist,有限值 |
+| ω → 0 | k / k = 1 | DC gain,稳态放大 = 1(任意 k, c > 0) |
+| ω → π | (k-2c) / (4-2c+k) | Nyquist,可能为任意有限实数(取决于 k, c) |
 
-### 3.4 共振条件
+### 3.5 共振条件
 
-对欠阻尼系统 `c² < 4k`,特征方程 `(z-1)² + k = 0` 在 z 域:`z = 1 ± j·√k`。对应**离散时间自然频率** ω_n = arctan(√k / 1) = arctan(√k)。
+对欠阻尼系统 `k > c`(Schur 不稳定边界外),极点为复数对,角度:
 
-**共振峰条件**:`d|H|/dω = 0` 在 ω ≈ ω_n 处;在 Schur 楔形内 (c ≥ 2√k),峰被阻尼压平。
+```
+ω_n = arg(z_pole) = arctan(√(4k-c²) / (2-c))    (c² < 4k)
+```
+
+**共振峰高度**:峰值大小取决于极点距单位圆的距离 `|z|² - 1 = k - c`。越接近稳定边界 (k → c⁺),|z| → 1,峰值 → ∞(数学奇点)。远离边界 (k >> c),峰值有限且不大。
+
+**稳定区**:k < c 时极点 |z| < 1,|H(jω)| 有界但**不一定单调滚降**(分子零点也影响响应)。具体测试需选 (k, c) 验证有界性。
 
 ## 4. 数值实现
 
@@ -184,7 +212,7 @@ H(jω) = [k + c·(e^(jω) - 1)] / [(e^(jω) - 1)² + k]
 │ (1,1) |H(jω)| 半对数图(给定 k, c)              │
 │       - 横轴:ω ∈ [0.001, π]                      │
 │       - 纵轴:log10|H|                            │
-│       - 红线:ω_n = arctan(√k) 标记               │
+│       - 红线:ω_n = arctan(√(4k-c²)/(2-c)) 标记   │
 │       - 灰虚线:|H|=1 单位增益                     │
 │ (2,1) arg H(jω) 度数                             │
 │       - 横轴:ω                                    │
@@ -211,11 +239,11 @@ H(jω) = [k + c·(e^(jω) - 1)] / [(e^(jω) - 1)² + k]
 
 | # | 名称 | 断言 |
 |---|---|---|
-| 1 | `test_transfer_function_dc_gain` | `H(jω=0)` ≈ 1.0(任意 k, c)— DC 增益验证 |
-| 2 | `test_transfer_function_stable_rolloff` | (k=2, c=4) Schur 内 → \|H(jπ)\| < \|H(j0.1)\|(高频滚降) |
-| 3 | `test_transfer_function_resonance_peak` | (k=4, c=0.5) 欠阻尼 → \|H(jω)\| 在 ω ≈ arctan(2) ≈ 1.107 处有局部峰值 |
-| 4 | `test_transfer_function_unstable_blowup` | (k=4, c=0.05) 严重欠阻尼 → \|H(jω_peak)\| > 5(共振爆炸) |
-| 5 | `test_classify_response_type` | (k=4, c=4) critical / (k=4, c=0.5) underdamped / (k=2, c=4) overdamped / (k=-1, c=0.5) anti_damped |
+| 1 | `test_transfer_function_dc_gain` | `H(jω=0)` ≈ 1.0(任意 k, c > 0)— DC 增益验证 |
+| 2 | `test_transfer_function_complex_pole_stability` | (k=3.5, c=3.6) 复极点稳定区 → 极点 \|z\|²=0.9<1,\|H\|max<100(有界) |
+| 3 | `test_transfer_function_resonance_peak` | (k=4, c=0.5) 复极点不稳定(k>c) → \|H(jω)\| 在 ω_n = arctan(√15/1.5) ≈ 1.21 处有局部峰值 |
+| 4 | `test_transfer_function_unstable_blowup` | (k=2.01, c=2.0) 紧邻稳定边界 → 极点 \|z\|²=1.01,\|H(jω_n)\| ≈ 200(共振爆炸) |
+| 5 | `test_classify_response_type` | (k=2, c=4) overdamped / (k=4, c=4) critical / (k=4, c=0.5) underdamped / (k=-1, c=0.5) anti_damped |
 
 **总测试数**: 48 (v4.10) + 5 (v5) = **53 tests pass**
 
@@ -225,7 +253,7 @@ H(jω) = [k + c·(e^(jω) - 1)] / [(e^(jω) - 1)² + k]
 |---|---|
 | `_dynamics_core.predict_next_state` (v3) | **理论入口** — 复频响应公式从此推导,但不调此函数(纯解析) |
 | `dynamics_1step_oos.py` (1-step OOS predictor) | **配套** — 1-step OOS 是时域实验,本 spec 是频域解析;两者互补 |
-| `analyze_eigenvalues` / `compute_sector_stability` (v4.7) | **关联** — (k, c) Schur 楔形 ↔ H(jω) 共振峰抑制 |
+| `analyze_eigenvalues` / `compute_sector_stability` (v4.7) | **关联** — v4.7 的 (k, c) Schur 楔形(c² ≥ 4k)是**不同的 2×2 系统**;本 spec 的稳定边界是 k = c |
 | `dynamics_si_ic.py` (v4.8) | **不动** |
 | `dynamics_si_timeseries.py` (v4.9) | **不动** |
 | `dynamics_si_lagged_ic.py` (v4.10) | **不动** |
@@ -239,8 +267,9 @@ H(jω) = [k + c·(e^(jω) - 1)] / [(e^(jω) - 1)² + k]
 | ω=0 时 `e^(jω) - 1 = 0`,分母 = k 不为零,但仍可能数值不稳 | `omega_grid = np.linspace(0.001, π, 200)`,避免 ω=0 |
 | 极端 (k, c) → \|H\| 爆炸(超 1e10) | log-scale 显示,数值上 `np.clip(np.log10(\|H\|), -2, 4)` |
 | 离散 vs 连续 Bode 区别 | README 注明 "离散时间 Bode,ω ∈ [0, π],Nyquist 在 π" |
-| `classify_response_type` 与 Schur wedge 边界 | 用 `c² vs 4k`:c² < 4k 欠阻尼,c² = 4k 临界,c² > 4k 过阻尼,与 v4.7 Schur 一致 |
+| `classify_response_type` 与本系统 Schur wedge 边界 | 用 k vs c:k<c 过阻尼(稳定),k=c 临界,k>c 欠阻尼(不稳定)— **与 v4.7 的 c² vs 4k 不同** |
 | 5 个测试用合成 (k, c) 而非真实数据 | 本 spec 是数学验证,不依赖真实数据;README 注明 "需 v4.7 SI 数据可加 §5.3 真实 (k̂, c) 频率响应" |
+| 实极点区域(c² > 4k)往往一个极点在单位圆外 | 即使看似"过阻尼",系统仍可能不稳定;测试用复极点区域验证 |
 
 ## 10. 后续(本轮不做)
 
@@ -266,5 +295,5 @@ H(jω) = [k + c·(e^(jω) - 1)] / [(e^(jω) - 1)² + k]
 - [ ] `dynsys_forced_response.html` Bode 图 2 子图正常渲染
 - [ ] `dynsys_forced_response_stability.html` 2D 热图 + Schur 边界
 - [ ] `dynsys_forced_response_summary.txt` UTF-8 中文可读
-- [ ] **0 行修改**:`backtrace/dynamics/_dynamics_core.py` / `dynamics_system.py` / `dynamics_batch.py` / `dynamics_1step_oos.py` / `dynamics_si_ic.py` (v4.8) / `dynamics_si_timeseries.py` (v4.9) / `dynamics_si_lagged_ic.py` (v4.10) / `compute_sector_stability_timeseries` (v4.9)
+- [ ] **0 行修改**:`backtrace/dynamics/_dynamics_core.py` / `dynamics_system.py` / `dynamics_batch.py` / `dynamics_1step_oos.py` / `dynamics_si_ic.py` (v4.8) / `dynamics_si_timeseries.py` (v4.9) / `dynamics_si_lagged_ic.py` (v4.10) / `dynamics_eigen_analysis.py` (v4.7 + v4.9 fns)
 - [ ] 端到端: 跑 CLI exit 0,产出 5 个新文件
