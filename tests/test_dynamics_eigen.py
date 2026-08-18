@@ -1540,6 +1540,14 @@ def test_cli_si_freq_response_mode(tmp_path):
     assert html_text.count('yaxis') >= 2, 'v5.4 dual-pane: 至少 2 个 yaxis'
     # phase subplot 关键词(plotly JSON-escape Unicode: ∠ → ∠, ω → ω,所以同时支持字面 + 转义 + yaxis2)
     assert any(kw in html_text for kw in ('∠H', 'phase', 'arg H', '相角', '\\u2220', 'yaxis2')), 'v5.4: phase 子图存在'
+    # v5.5 regime color: HTML 含至少 1 种 regime 颜色 hex
+    # fixture 里有 2 industries × 3 dates: Industry A 始终 overdamped (k=0.5-0.7, c=1.8-2.0)
+    # Industry B 始终 underdamped (k=3.0-4.0, c=0.4-0.6)
+    # 所以 HTML 应同时含 #2ca02c (绿) 和 #d62728 (红)
+    assert '#2ca02c' in html_text, 'v5.5: 至少 1 个 overdamped 颜色 hex (绿)'
+    assert '#d62728' in html_text, 'v5.5: 至少 1 个 underdamped 颜色 hex (红)'
+    # v5.5 颜色注释关键词
+    assert any(kw in html_text for kw in ('过阻尼', '欠阻尼', 'regime', '稳定', '共振')), 'v5.5: 颜色注释'
 
     # F1 fix: phase y-axis must be in degrees (not radians).
     # y-axis title is '∠H(jω) deg'; data is wrapped with np.degrees() in the closure.

@@ -131,6 +131,7 @@ PAIRS_OUT = 'data/dynamics/si_freq_response_pairs.csv'
 
 # Reuse v5.1 / v5.2 zero-modification helpers
 from backtrace.dynamics.dynamics_forced_response import natural_frequency, magnitude_phase
+from backtrace.dynamics.dynamics_forced_response import classify_response_type
 
 
 def build_animated_overlay_html(
@@ -174,14 +175,27 @@ def build_animated_overlay_html(
     def _phase_deg(p):
         return np.degrees(magnitude_phase(omega_grid * 1j, p[1], p[2])[1]).tolist()
 
+    def _regime_color(k, c):
+        """Map (k, c) to regime color hex per classify_response_type."""
+        regime = classify_response_type(k, c)
+        return {
+            'overdamped':  '#2ca02c',   # 绿, Schur 内稳定
+            'critical':    '#ff7f0e',   # 橙, Schur 边界
+            'underdamped': '#d62728',   # 红, Schur 外共振
+            'anti_damped': '#9467bd',   # 紫, 病态
+        }.get(regime, '#7f7f7f')        # 灰 fallback (理论不应触发)
+
     # Initial-state traces (first date)
     for p in (p_ for p_ in pairs_per_date if p_[0] == initial_date):
+        color = _regime_color(p[1], p[2])
         fig.add_trace(go.Scatter(x=omega_grid.tolist(), y=_magnitude_db(p),
-                                 mode='lines', name=p[3], legendgroup=p[3]),
+                                 mode='lines', name=p[3], legendgroup=p[3],
+                                 line=dict(color=color)),
                       row=1, col=1)
         fig.add_trace(go.Scatter(x=omega_grid.tolist(), y=_phase_deg(p),
                                  mode='lines', name=p[3], legendgroup=p[3],
-                                 showlegend=False),
+                                 showlegend=False,
+                                 line=dict(color=color)),
                       row=2, col=1)
 
     # Phase 2: build frames — one frame per date, each frame has 2 × N traces
@@ -189,11 +203,14 @@ def build_animated_overlay_html(
     for date in dates:
         frame_traces = []
         for p in (p_ for p_ in pairs_per_date if p_[0] == date):
+            color = _regime_color(p[1], p[2])
             frame_traces.append(go.Scatter(x=omega_grid.tolist(), y=_magnitude_db(p),
-                                           mode='lines', name=p[3], legendgroup=p[3]))
+                                           mode='lines', name=p[3], legendgroup=p[3],
+                                           line=dict(color=color)))
             frame_traces.append(go.Scatter(x=omega_grid.tolist(), y=_phase_deg(p),
                                            mode='lines', name=p[3], legendgroup=p[3],
-                                           showlegend=False))
+                                           showlegend=False,
+                                           line=dict(color=color)))
         frames.append(go.Frame(data=frame_traces, name=date))
 
     fig.frames = frames
@@ -233,6 +250,20 @@ def build_animated_overlay_html(
         sliders=[dict(active=0, steps=slider_steps, x=0.1, len=0.9, xanchor='left',
                       y=0, yanchor='top', currentvalue=dict(prefix='asof_date: ', visible=True))],
         height=700,  # taller to accommodate 2 subplots
+    )
+
+    # v5.5 color legend annotation (top-right)
+    fig.add_annotation(
+        xref='paper', yref='paper',
+        x=0.99, y=1.08, xanchor='right', yanchor='top',
+        showarrow=False,
+        text=('颜色 = 阻尼 regime: '
+              '<span style="color:#2ca02c">●</span> 过阻尼 (stable)  '
+              '<span style="color:#ff7f0e">●</span> 临界 (critical)  '
+              '<span style="color:#d62728">●</span> 欠阻尼 (resonance)  '
+              '<span style="color:#9467bd">●</span> anti-damped'),
+        align='left',
+        font=dict(size=11),
     )
 
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
