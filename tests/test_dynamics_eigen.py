@@ -1144,3 +1144,19 @@ def test_bode_overlay_marks_omega_n(tmp_path):
     # 重新调用 natural_frequency 验证
     expected_omega_n = DFR.natural_frequency(2.0, 1.5)
     assert np.isfinite(expected_omega_n)
+
+
+# === v5.1 — 多对 (k, c) summary TXT (2026-08-18 Task 2) ===
+
+def test_write_overlay_summary_creates_txt(tmp_path):
+    """write_overlay_summary 调用产生 TXT 文件 + 内容含所有 label。"""
+    from backtrace.dynamics import dynamics_forced_response as DFR
+    omega = np.linspace(0.01, np.pi, 50)
+    pairs = [(0.5, 2.0, "Industry A"), (2.0, 1.5, "Industry B")]
+    out = tmp_path / "overlay_summary.txt"
+    DFR.write_overlay_summary(omega, pairs, str(out))
+    assert out.exists()
+    content = out.read_text(encoding='utf-8')
+    assert "Industry A" in content
+    assert "Industry B" in content
+    assert "|H(j0)" in content or "DC" in content

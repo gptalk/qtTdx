@@ -372,6 +372,56 @@ def bode_overlay(omega_grid, k_c_pairs, output_path, title="Industry G(ω) Frequ
     fig.write_html(output_path, include_plotlyjs='cdn')
 
 
+def write_overlay_summary(omega_grid, k_c_pairs, output_path):
+    """多对 (k, c) 的 UTF-8 中文汇总表。
+
+    每对一行,展示:
+            - 行业/时间窗 label
+            - (k, c) + 响应类型
+            - ω_n + |H(jω_n)|(若有)
+            - |H(j0)| (DC 增益)
+            - |H(jπ)| (Nyquist)
+            - Schur 楔形内/外
+            - 一句业务解读
+    """
+    lines = [
+        '=' * 80,
+        f'v5.1 Industry G(ω) Frequency Response Comparison — {len(k_c_pairs)} 对 (k, c)',
+        '=' * 80,
+        '',
+    ]
+    for k, c, label in k_c_pairs:
+        omega_n = natural_frequency(k, c)
+        response_type = classify_response_type(k, c)
+        in_wedge = is_in_schur_wedge(k, c)
+        mag_dc, _ = magnitude_phase(np.array([0.001]), k, c)
+        mag_pi, _ = magnitude_phase(np.array([np.pi]), k, c)
+        lines.append(f'[{label}]  (k={k}, c={c})')
+        lines.append(f'  响应类型: {response_type}    Schur 楔形内: {in_wedge}')
+        if np.isfinite(omega_n):
+            mag_n, _ = magnitude_phase(np.array([omega_n]), k, c)
+            lines.append(f'  ω_n = {omega_n:.4f}    |H(jω_n)| = {float(mag_n[0]):.4f}')
+        else:
+            lines.append(f'  ω_n = N/A (实极点)')
+        lines.append(f'  |H(j0)|  = {float(mag_dc[0]):.4f} (DC 增益)')
+        lines.append(f'  |H(jπ)| = {float(mag_pi[0]):.4f} (Nyquist)')
+        # 业务解读
+        if not in_wedge:
+            lines.append(f'  业务解读: 共振风险高,β 强迫会在 ω_n 处放大 {float(mag_n[0]):.1f} 倍')
+        elif response_type == 'overdamped':
+            lines.append(f'  业务解读: 低通过滤器,β 强迫不会引发共振,稳定')
+        elif response_type == 'critical':
+            lines.append(f'  业务解读: 临界阻尼,边界 case')
+        else:
+            lines.append(f'  业务解读: 标准响应')
+        lines.append('')
+    lines.append('=' * 80)
+    text = '\n'.join(lines)
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(text)
+
+
 def main():
     args = parse_args()
     omega_grid = DEFAULT_OMEGA_GRID
