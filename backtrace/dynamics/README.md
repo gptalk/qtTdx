@@ -820,13 +820,16 @@ v4.7-v4.10 把 SI 当成被动的"稳定性指标"。v5 扩展到受迫:用 sinu
 
 **核心公式**(离散 z 域):
 ```
-H(jω) = [k + c·(z-1)] / [(z-1)² + k]    其中 z = e^(jω)
+H(jω) = V_M0·[k + c·(z-1)] / [(z-1)² + c·(z-1) + k]    其中 z = e^(jω)
 ```
+
+(本目录实现忽略 V_M0 标量 — 它只放大常数倍,不影响 |H| 形状。)
 
 **关键性质**:
 - **DC gain**:H(j0) = 1(任意 k, c > 0)
-- **共振**:Schur 楔形外(c² < 4k)→ |H| 在 ω_n = arctan(√k) 处爆炸
-- **滚降**:Schur 楔形内(c² > 4k)→ |H| 单调滚降,无峰值
+- **共振**:Schur 楔形外(k > c)→ |H| 在 ω_n = arctan(√(4k-c²)/(2-c)) 处爆炸
+- **滚降**:Schur 楔形内(k < c)→ |H| 单调滚降,无峰值
+- **Schur wedge**:本线性化系统的稳定性边界为 k = c(不是 v4.7 的 c² = 4k,后者是不同 2×2 系统的边界)
 - **抗阻尼**:k < 0 → 低频 |H| 爆炸,系统无界
 
 **输出**:
@@ -836,7 +839,7 @@ H(jω) = [k + c·(z-1)] / [(z-1)² + k]    其中 z = e^(jω)
   - (1,1) |H(jω)| 半对数 + ω_n 红虚线 + |H|=1 灰虚线
   - (1,2) arg H(jω) 度数 + -180° 红虚线
 - `backtrace/outputs/dynsys_forced_response_stability.html` — 2D 热图
-  - (1,1) |H(jω_n)| 颜色 + Schur 边界 c = 2√k 黑虚线
+  - (1,1) |H(jω_n)| 颜色 + Schur 边界 c = k 黑虚线(本系统的稳定性边界)
 - `backtrace/outputs/dynsys_forced_response_summary.txt` — UTF-8 中文汇总
 
 **CLI**:

@@ -5,12 +5,15 @@
 从 _dynamics_core.predict_next_state 出发,纯解析推导离散时间 2D 动力系统
 对正弦 β-forcing 的复频响应:
 
-    H(jω) = [k + c·(z-1)] / [(z-1)² + k]   其中 z = e^(jω)
+    H(jω) = V_M0·[k + c·(z-1)] / [(z-1)² + c·(z-1) + k]   其中 z = e^(jω)
+
+(本文件实现忽略 V_M0 标量 — 不影响 |H| 形状。)
 
 特性:
 - DC gain: H(j0) = 1
-- 共振:Schur 楔形外(c² < 4k)→ |H| 在 ω_n = arctan(√k) 处爆炸
-- 滚降:Schur 楔形内(c² > 4k)→ |H| 单调滚降,无峰值
+- 共振:Schur 楔形外(k > c,复数极点)→ |H| 在 ω_n = arctan(√(4k-c²)/(2-c)) 处爆炸
+- 滚降:Schur 楔形内(k < c)→ |H| 单调滚降,无峰值
+- Schur 楔形:本线性化系统的稳定性边界为 k = c(不是 v4.7 的 c² = 4k)
 
 输出(全 gitignored):
   - data/dynamics/transfer_function_grid.csv
@@ -67,7 +70,9 @@ def parse_args():
 
 
 def transfer_function(omega, k, c):
-    """复频响应 H(jω) = [k + c·(z-1)] / [(z-1)² + k],z = e^(jω)。
+    """复频响应 H(jω) = [k + c·(z-1)] / [(z-1)² + c·(z-1) + k],z = e^(jω)。
+
+    (本实现忽略 V_M0 标量 — 它只放大常数倍,不影响 |H| 形状。)
 
     Args:
         omega: 角频率数组(ndarray 或标量)
@@ -81,35 +86,43 @@ def transfer_function(omega, k, c):
     z = np.exp(1j * omega)
     z_minus_1 = z - 1
     numerator = k + c * z_minus_1
-    denominator = z_minus_1 ** 2 + k
+    denominator = z_minus_1 ** 2 + c * z_minus_1 + k
     return numerator / denominator
 
 
-def natural_frequency(k):
-    """离散时间自然频率 ω_n = arctan(√k)。
+def natural_frequency(k, c):
+    """离散自然频率 ω_n = arg(z_pole),其中 z_pole 是复数极点(Schur 楔形外)。
+
+    极点 z = 1 - c/2 + j·√(4k-c²)/2(c² < 4k 时为复数)。
+    arg(z) = arctan(√(4k-c²) / (2-c))
+
+    当 c² >= 4k(实根)或 k <= 0 时返回 NaN。
 
     Returns:
         float,ω_n ∈ (0, π/2)
     """
-    return float(np.arctan(np.sqrt(k)))
+    if c ** 2 >= 4 * k or k <= 0:
+        return float('nan')
+    real_part = 1 - c / 2
+    imag_part = np.sqrt(4 * k - c ** 2) / 2
+    return float(np.arctan2(imag_part, real_part))
 
 
 def classify_response_type(k, c):
-    """判别阻尼类型。
+    """判别阻尼类型(基于 Schur 楔形 k = c 边界)。
 
     Returns:
         str ∈ {'overdamped', 'critical', 'underdamped', 'anti_damped'}
-        - overdamped: c² > 4k (Schur 内)
-        - critical:   c² ≈ 4k
-        - underdamped: 0 < c² < 4k (Schur 外)
-        - anti_damped: k < 0 (负恢复系数)
+        - overdamped: k < c(Schur 内,稳定)
+        - critical:   k ≈ c(Schur 边界)
+        - underdamped: k > c(Schur 外,不稳定 / 共振)
+        - anti_damped: k < 0(负恢复系数,反向弹簧)
     """
     if k < 0:
         return 'anti_damped'
-    discriminant = c ** 2 - 4 * k
-    if abs(discriminant) < 1e-9:
+    if abs(k - c) < 1e-9:
         return 'critical'
-    if discriminant > 0:
+    if k < c:
         return 'overdamped'
     return 'underdamped'
 
@@ -131,8 +144,12 @@ def magnitude_phase(omega_array, k, c):
 
 
 def is_in_schur_wedge(k, c, tol=1e-9):
-    """Schur 楔形判定:c² >= 4k 且 k > 0(同 v4.7)。"""
-    return k > 0 and (c ** 2) >= (4 * k) - tol
+    """Schur 楔形判定(本线性化系统):k > 0 且 k < c + tol。
+
+    注:v4.7 的 Schur 楔形 c² >= 4k 对应不同 2×2 系统(特征多项式 det(zI-A)=z²-cz+k);
+    本系统 A=[[1,1],[-k,1-c]] 的特征多项式是 (z-1)² + c(z-1) + k,稳定性边界是 k = c。
+    """
+    return k > 0 and k < c + tol
 
 
 def bode_plot(omega_grid, k, c, output_path):
@@ -146,7 +163,7 @@ def bode_plot(omega_grid, k, c, output_path):
     magnitude, phase_rad = magnitude_phase(omega_grid, k, c)
     phase_deg = np.degrees(phase_rad)
     log_mag = np.log10(np.clip(magnitude, 1e-12, None))
-    omega_n = natural_frequency(k)
+    omega_n = natural_frequency(k, c)
     response_type = classify_response_type(k, c)
     fig = make_subplots(
         rows=1, cols=2,
@@ -158,8 +175,9 @@ def bode_plot(omega_grid, k, c, output_path):
         x=omega_grid, y=log_mag, mode='lines', name='|H|',
         line=dict(color='steelblue', width=2),
     ), row=1, col=1)
-    fig.add_vline(x=omega_n, line_dash='dash', line_color='red',
-                  annotation_text=f'ω_n={omega_n:.3f}', row=1, col=1)
+    if np.isfinite(omega_n):
+        fig.add_vline(x=omega_n, line_dash='dash', line_color='red',
+                      annotation_text=f'ω_n={omega_n:.3f}', row=1, col=1)
     fig.add_hline(y=0, line_dash='dash', line_color='gray',
                   annotation_text='|H|=1', row=1, col=1)
     fig.update_xaxes(title_text='ω (rad)', row=1, col=1)
@@ -173,9 +191,10 @@ def bode_plot(omega_grid, k, c, output_path):
     fig.update_xaxes(title_text='ω (rad)', row=1, col=2)
     fig.update_yaxes(title_text='arg H (degrees)', row=1, col=2,
                      range=[-200, 200])
+    omega_n_str = f'{omega_n:.4f}' if np.isfinite(omega_n) else 'N/A'
     fig.update_layout(
         height=500, width=1400,
-        title_text=f"v5 Bode 图 (k={k}, c={c}, ω_n={omega_n:.4f})",
+        title_text=f"v5 Bode 图 (k={k}, c={c}, ω_n={omega_n_str})",
         showlegend=False,
     )
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or '.', exist_ok=True)
@@ -183,23 +202,25 @@ def bode_plot(omega_grid, k, c, output_path):
 
 
 def stability_heatmap(k_grid, c_grid, output_path):
-    """2D (k, c) 热图 |H(jω_n)| + Schur 楔形边界(c = 2√k)。
+    """2D (k, c) 热图 |H(jω_n)| + Schur 楔形边界(c = k)。
 
     颜色:|H(jω_n)| 对数尺度
-    黑色虚线:Schur 边界 c = 2√k
-    楔形内:稳定(色冷),楔形外:共振爆炸(色热)
+    黑色虚线:Schur 边界 c = k(本线性化系统的稳定性边界)
+    楔形内(k < c):稳定(色冷);楔形外(k > c):共振爆炸(色热)
+    仅对复数极点(c² < 4k 且 k > 0)画 |H(jω_n)|;其余点 NaN。
     """
     import plotly.graph_objects as go
     K, C = np.meshgrid(k_grid, c_grid)  # shape (len(c_grid), len(k_grid))
-    H_at_resonance = np.zeros_like(K)
+    H_at_resonance = np.full_like(K, np.nan)
     for i in range(K.shape[0]):
         for j in range(K.shape[1]):
             k_val = K[i, j]
             c_val = C[i, j]
             if k_val <= 0:
-                H_at_resonance[i, j] = np.nan
                 continue
-            omega_n = natural_frequency(k_val)
+            omega_n = natural_frequency(k_val, c_val)
+            if not np.isfinite(omega_n):
+                continue
             H_val = transfer_function(omega_n, k_val, c_val)
             H_at_resonance[i, j] = np.abs(H_val)
     log_H = np.log10(np.clip(H_at_resonance, 1e-12, None))
@@ -211,16 +232,16 @@ def stability_heatmap(k_grid, c_grid, output_path):
         colorbar=dict(title='log10|H(jω_n)|'),
         hovertemplate='k=%{x:.3f}<br>c=%{y:.3f}<br>log10|H|=%{z:.3f}<extra></extra>',
     ))
-    # Schur boundary c = 2√k
+    # Schur boundary c = k
     k_boundary = np.linspace(k_grid[0], k_grid[-1], 100)
-    c_boundary = 2 * np.sqrt(k_boundary)
+    c_boundary = k_boundary  # c = k
     fig.add_trace(go.Scatter(
         x=k_boundary, y=c_boundary,
-        mode='lines', name='Schur boundary c=2√k',
+        mode='lines', name='Schur boundary c=k',
         line=dict(color='black', dash='dash', width=2),
     ))
     fig.update_layout(
-        title='v5 频率响应稳定性热图 (|H(jω_n)| 在 Schur 楔形上)',
+        title='v5 频率响应稳定性热图 (|H(jω_n)|,Schur 楔形边界 c=k)',
         xaxis_title='k (恢复系数)',
         yaxis_title='c (阻尼系数)',
         height=700, width=900,
@@ -232,12 +253,15 @@ def stability_heatmap(k_grid, c_grid, output_path):
 
 def write_summary(omega_grid, k_grid, c_grid, k, c, output_path):
     """写 UTF-8 中文汇总:典型 (k, c) 的频率响应特征 + (k, c) 网格统计。"""
-    omega_n = natural_frequency(k)
+    omega_n = natural_frequency(k, c)
     response_type = classify_response_type(k, c)
     magnitude_at_dc, _ = magnitude_phase(np.array([0.001]), k, c)
-    magnitude_at_n, phase_at_n = magnitude_phase(np.array([omega_n]), k, c)
+    magnitude_at_n, phase_at_n = (None, None), None
+    if np.isfinite(omega_n):
+        magnitude_at_n, phase_at_n = magnitude_phase(np.array([omega_n]), k, c)
     magnitude_at_pi, _ = magnitude_phase(np.array([np.pi]), k, c)
     in_wedge = is_in_schur_wedge(k, c)
+    omega_n_str = f'{omega_n:.4f}' if np.isfinite(omega_n) else 'N/A'
     lines = [
         '=' * 70,
         'v5 受迫系统 + G(ω) 频率响应 汇总',
@@ -245,17 +269,20 @@ def write_summary(omega_grid, k_grid, c_grid, k, c, output_path):
         f'给定 (k, c) = ({k}, {c})',
         f'  阻尼类型: {response_type}',
         f'  Schur 楔形内: {in_wedge}',
-        f'  自然频率 ω_n = arctan(√k) = {omega_n:.4f}',
+        f'  自然频率 ω_n = arctan(√(4k-c²)/(2-c)) = {omega_n_str}',
         f'  |H(j0)|  ≈ {float(magnitude_at_dc[0]):.4f} (DC 增益,应 ≈ 1)',
-        f'  |H(jω_n)| = {float(magnitude_at_n[0]):.4f} (共振峰)',
-        f'  arg H(jω_n) = {float(np.degrees(phase_at_n[0])):.2f}°',
-        f'  |H(jπ)|   = {float(magnitude_at_pi[0]):.4f} (Nyquist)',
+    ]
+    if np.isfinite(omega_n):
+        lines.append(f'  |H(jω_n)| = {float(magnitude_at_n[0]):.4f} (共振峰)')
+        lines.append(f'  arg H(jω_n) = {float(np.degrees(phase_at_n[0])):.2f}°')
+    lines.append(f'  |H(jπ)|   = {float(magnitude_at_pi[0]):.4f} (Nyquist)')
+    lines.extend([
         '',
         f'频率扫描: ω ∈ [{omega_grid[0]:.4f}, {omega_grid[-1]:.4f}], 共 {len(omega_grid)} 点',
         f'(k, c) 网格扫描: k ∈ [{k_grid[0]:.2f}, {k_grid[-1]:.2f}], '
         f'c ∈ [{c_grid[0]:.2f}, {c_grid[-1]:.2f}], 共 {len(k_grid)}×{len(c_grid)} = {len(k_grid)*len(c_grid)} 点',
         '',
-    ]
+    ])
     # 物理含义注释
     if response_type == 'overdamped':
         lines.append('物理含义:系统强阻尼,β 强迫不会引发共振,|H| 单调滚降。')
@@ -281,7 +308,7 @@ def main():
     c_grid = DEFAULT_C_GRID
     # 1. 频率扫描(给定 k, c)
     magnitude, phase_rad = magnitude_phase(omega_grid, args.k, args.c)
-    omega_n = natural_frequency(args.k)
+    omega_n = natural_frequency(args.k, args.c)
     grid_df = pd.DataFrame({
         'omega': omega_grid,
         'magnitude': magnitude,
@@ -298,8 +325,9 @@ def main():
         for j in range(K.shape[1]):
             k_val = K[i, j]
             c_val = C[i, j]
-            omega_n_val = natural_frequency(k_val) if k_val > 0 else np.nan
-            H_val = transfer_function(omega_n_val, k_val, c_val) if k_val > 0 else np.nan
+            omega_n_val = natural_frequency(k_val, c_val) if k_val > 0 else np.nan
+            H_val = (transfer_function(omega_n_val, k_val, c_val)
+                     if k_val > 0 and np.isfinite(omega_n_val) else np.nan)
             stability_rows.append({
                 'k': k_val, 'c': c_val,
                 'omega_n': omega_n_val,
