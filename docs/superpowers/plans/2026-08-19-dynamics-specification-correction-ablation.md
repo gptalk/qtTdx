@@ -85,14 +85,19 @@ from projection.ablation_fit import (
 )
 
 
-def _make_ext_inputs(k_true=0.5, c_true=0.2, q_true=0.8, T=200, seed=0):
+def _make_ext_inputs(k_true=0.5, c_true=0.2, q_true=0.8, T=200, seed=0,
+                     beta_drift=0.001):
     """Synthetic 2-D data satisfying Model 3 exactly.
+
+    Defaults satisfy Model 3: q_true=0.8 (free q), beta_drift=0.001 (β varies).
+    For Model 0 tests, override: q_true=1.0, beta_drift=0 (matches Model 0's
+    q=1, β̇=0 assumptions exactly, avoiding omitted-variable bias).
 
     Returns 6-tuple: (u_vec, d_vec, a_u_vec, a_v_vec, beta, beta_dot_vM_vec)
     The 5th element (beta) is required by build_design_model_0/1/2/3.
     """
     rng = np.random.default_rng(seed)
-    beta = 1.2 + 0.001 * np.arange(T)            # β with mild drift
+    beta = 1.2 + beta_drift * np.arange(T)            # β constant if beta_drift=0
     delta_v = rng.normal(0, 1, (T, 2))
     delta_u = beta[:, None] * delta_v + rng.normal(0, 0.5, (T, 2))
     d_vec = np.zeros((T, 2)); d_vec[1:] = np.cumsum(delta_u[:-1] - beta[:-1, None]*delta_v[:-1], axis=0)
@@ -140,13 +145,16 @@ def test_build_design_model3_combines_offset_and_free_q():
     u, d, au, av, beta, bdv = _make_ext_inputs()
     X, Y = build_design_model_3(u, d, au, av, beta, bdv)
     assert X.shape[1] == 3
-    # Y = Model 1's Y (which already has β̇·v_M subtracted)
+    # Y_Model3 - Y_Model1 = β·a_M (since Model 3 keeps β·a_M in X, Model 1 subtracts it)
     X1, Y1 = build_design_model_1(u, d, au, av, beta, bdv)
-    np.testing.assert_allclose(np.nan_to_num(Y), np.nan_to_num(Y1), equal_nan=True)
+    beta_aM = beta[:, None] * av
+    beta_aM_stack = np.concatenate([beta_aM[:, 0], beta_aM[:, 1]])
+    np.testing.assert_allclose(np.nan_to_num(Y - Y1), np.nan_to_num(beta_aM_stack), equal_nan=True)
 
 
 def test_ols_fit_recovers_k_c_model0():
-    u, d, au, av, beta, bdv = _make_ext_inputs(k_true=0.5, c_true=0.2)
+    # Model 0 assumes q=1 and β̇=0; must use compatible synthetic data
+    u, d, au, av, beta, bdv = _make_ext_inputs(k_true=0.5, c_true=0.2, q_true=1.0, beta_drift=0.0)
     X, Y = build_design_model_0(u, d, au, av, beta, bdv)
     mask = np.isfinite(Y)
     X_v, Y_v = X[mask], Y[mask]
