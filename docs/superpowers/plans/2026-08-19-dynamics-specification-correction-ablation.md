@@ -745,7 +745,7 @@ git commit -m "feat(projection): V0.1 Task 3 — 70/30 OOS split + Spearman IC +
 
 **Files:**
 - Modify: `backtrace/projection/ablation_fit.py` (add `permute_regressors`, `fit_one_with_placebo`)
-- Modify: `tests/test_dynamics_eigen.py` (append 4 placebo tests)
+- Modify: `tests/test_dynamics_eigen.py` (append 3 placebo tests)
 
 **Interfaces:**
 - Produces:
@@ -780,30 +780,6 @@ def test_placebo_permutes_regressors_not_Y():
     np.testing.assert_array_equal(X_perm, X_perm2)
 
 
-def test_placebo_pure_noise_no_signal():
-    """a_S = pure random → ic_real ≈ ic_null ≈ 0."""
-    from projection.ablation_fit import fit_one_with_placebo
-    import tempfile, os
-    mv_dir = tempfile.mkdtemp()
-    csv_path = os.path.join(mv_dir, "movement_idx_stk000002.csv")
-    T = 200
-    beta = np.ones(T)
-    rng = np.random.default_rng(7)
-    delta_v = rng.normal(0, 1, (T, 2))
-    delta_u = rng.normal(0, 1, (T, 2))   # NOT beta·a_v + noise — pure noise
-    pd.DataFrame({
-        'Date': pd.date_range('2024-01-01', periods=T),
-        'Move_Delta_Vol_idx': delta_v[:, 0],
-        'Move_Delta_Amt_idx': delta_v[:, 1],
-        'Move_Delta_Vol_stk': delta_u[:, 0],
-        'Move_Delta_Amt_stk': delta_u[:, 1],
-        'Move_Proj_Coeff': beta,
-    }).to_csv(csv_path, index=False)
-    row = fit_one_with_placebo(csv_path, 'stk000002', 'idx', '000002.SZ', 'T', '000001.SH', model_id=3)
-    assert abs(row['ic_real']) < 0.2
-    assert abs(row['ic_null']) < 0.2
-
-
 def test_placebo_real_signal_beats_null():
     """a_S = Model 3 with true signal → ic_real > ic_null + 0.1."""
     from projection.ablation_fit import fit_one_with_placebo
@@ -827,13 +803,15 @@ def test_placebo_real_signal_beats_null():
     assert row['ic_real'] - row['ic_null'] > 0.1
 ```
 
+> **NOTE**: `test_placebo_pure_noise_no_signal` was originally included but is irreducible: pure-noise fixture has Cov(Y, X[:,2]) = Var(delta_u) via shared `delta_u[i]` in both Y (= diff(delta_u)) and X[:,2] (= -delta_u + β·delta_v). Empirically |ic_real| ∈ [0.53, 0.72] across seeds/T. The other 3 placebo tests (seed_is_42, permutes_regressors_not_Y, real_signal_beats_null) cover the placebo logic comprehensively (user decision 2026-08-19).
+
 - [ ] **Step 4.2: Run tests, verify FAIL**
 
 Run:
 ```bash
 PYTHONIOENCODING=utf-8 /c/Users/yellow/.conda/envs/venv/python.exe -m pytest tests/test_dynamics_eigen.py -k "test_placebo" -v
 ```
-Expected: 4 FAIL with `ImportError` or `AttributeError`.
+Expected: 3 FAIL with `ImportError` or `AttributeError`.
 
 - [ ] **Step 4.3: Implement `PLACEBO_SEED` + `permute_regressors` + `fit_one_with_placebo`**
 
@@ -935,13 +913,13 @@ Run:
 ```bash
 PYTHONIOENCODING=utf-8 /c/Users/yellow/.conda/envs/venv/python.exe -m pytest tests/test_dynamics_eigen.py -k "test_placebo" -v
 ```
-Expected: 4 PASS.
+Expected: 3 PASS.
 
 - [ ] **Step 4.5: Commit**
 
 ```bash
 git add backtrace/projection/ablation_fit.py tests/test_dynamics_eigen.py
-git commit -m "feat(projection): V0.1 Task 4 — permutation placebo (seed=42) + 4 tests"
+git commit -m "feat(projection): V0.1 Task 4 — permutation placebo (seed=42) + 3 tests"
 ```
 
 ---
