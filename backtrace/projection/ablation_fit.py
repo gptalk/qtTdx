@@ -495,7 +495,7 @@ def build_ablation_html(summary_df: pd.DataFrame, output_path: str) -> str:
     fig = make_subplots(rows=2, cols=2, subplot_titles=(
         'R² distribution (4 models)',
         'IC_real vs IC_null (4 models)',
-        'ΔIC = IC_real − IC_null (3 corrections)',
+        'Placebo ΔIC = IC_real − IC_null (4 models)',
         '|q̂ − 1| distribution (Models 2/3)',
     ))
     colors = {0: '#1f77b4', 1: '#ff7f0e', 2: '#2ca02c', 3: '#d62728'}
@@ -514,11 +514,11 @@ def build_ablation_html(summary_df: pd.DataFrame, output_path: str) -> str:
     fig.add_trace(go.Bar(x=ic_null.index, y=ic_null.values, name='IC_null',
                          marker_color='lightgray'), row=1, col=2)
 
-    # Panel 3: ΔIC for Models 1/2/3 vs Model 0
-    delta_ic = summary_df.loc['delta_ic_vs_m0'].dropna().astype(float)
+    # Panel 3: Placebo ΔIC = median(IC_real − IC_null) per-model (4 models)
+    delta_ic = summary_df.loc['median_delta_ic'].astype(float)
     fig.add_trace(go.Bar(x=delta_ic.index, y=delta_ic.values,
-                         marker_color=[colors[i] for i in range(1, 4)],
-                         name='ΔIC vs M0', showlegend=False), row=2, col=1)
+                         marker_color=[colors[i] for i in range(4)],
+                         name='Placebo ΔIC', showlegend=False), row=2, col=1)
 
     # Panel 4: |q̂ − 1| for Models 2/3
     abs_q = summary_df.loc['median_abs_q_minus_1'].dropna().astype(float)
@@ -546,7 +546,8 @@ def write_recommendation_txt(summary_df: pd.DataFrame, output_path: str) -> str:
     median_r2_m3 = float(summary_df.loc['median_r2', 'model_3'])
     median_r2_m0 = float(summary_df.loc['median_r2', 'model_0'])
     abs_q_m2 = float(summary_df.loc['median_abs_q_minus_1', 'model_2']) if 'median_abs_q_minus_1' in summary_df.index else np.nan
-    delta_ic_m3 = float(summary_df.loc['delta_ic_vs_m0', 'model_3'])
+    # Step 3: placebo delta = median(IC_real_M3) − median(IC_null_M3)  (per spec §10, difference of medians)
+    delta_ic_m3 = float(summary_df.loc['median_ic_real', 'model_3'] - summary_df.loc['median_ic_null', 'model_3'])
     # Per-stock median ΔR² (写死, 不是 difference of medians)
     delta_r2_m1 = float(summary_df.loc['delta_r2_vs_m0', 'model_1'])
 
