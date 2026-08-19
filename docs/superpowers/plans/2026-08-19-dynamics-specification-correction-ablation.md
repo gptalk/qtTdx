@@ -281,30 +281,6 @@ def _build_kinematics_ext(delta_u, delta_v, beta):
     return u_vec, d_vec, a_u_vec, a_v_vec, beta_dot_vM_vec
 
 
-def build_design_model_0(u_vec, d_vec, a_u_vec, a_v_vec, beta_dot_vM_vec):
-    """Model 0: Y = a_S − β·a_M, X = [−d, −u], θ = (k, c)."""
-    # β·a_M = β * a_v_vec; need β per-row from a_v_vec — derive: β = a_v ? NO
-    # β is implicit in Y: a_S − β·a_M = a_u_vec − β*a_v_vec. We need β here.
-    # Caller must pass beta separately OR we recompute. Pass via closure — actually
-    # simplest: caller precomputes (β·a_v) externally. But for clean API, accept beta.
-    raise NotImplementedError("build_design_model_0: see plan — refactor to accept beta")
-
-
-def build_design_model_1(u_vec, d_vec, a_u_vec, a_v_vec, beta_dot_vM_vec):
-    raise NotImplementedError
-
-
-def build_design_model_2(u_vec, d_vec, a_u_vec, a_v_vec, beta_dot_vM_vec):
-    raise NotImplementedError
-
-
-def build_design_model_3(u_vec, d_vec, a_u_vec, a_v_vec, beta_dot_vM_vec):
-    raise NotImplementedError
-```
-
-**STOP** — this skeleton is incomplete. The user spec explicitly requires β in `build_design_model_*` (since Model 0/2/3 reference `β·a_M`). Refactor: change signatures to `build_design_model_N(u_vec, d_vec, a_u_vec, a_v_vec, beta, beta_dot_vM_vec)` and provide full implementation:
-
-```python
 def build_design_model_0(u_vec, d_vec, a_u_vec, a_v_vec, beta, beta_dot_vM_vec):
     """Model 0: Y = a_S − β·a_M, X = [−d, −u], θ = (k, c)."""
     beta_aM = beta[:, None] * a_v_vec
@@ -342,8 +318,6 @@ def build_design_model_3(u_vec, d_vec, a_u_vec, a_v_vec, beta, beta_dot_vM_vec):
     X = np.column_stack([beta_aM_stack, -d_stack, -u_stack])
     return X, Y
 ```
-
-Replace the four `raise NotImplementedError` stubs with the implementations above.
 
 - [ ] **Step 1.4: Run tests, verify PASS**
 
@@ -1292,7 +1266,9 @@ Expected: all v0.1 tests pass; full suite (96 + 16 new = 112) green.
 - [ ] **Step 5.6: CLI冒烟(--all --limit 5)**
 
 ```bash
-PYTHONIOENCODING=utf-8 /c/Users/yellow/.conda/envs/venv/python.exe backtrace/projection/ablation_fit.py --all --limit 5 --movement-dir /tmp/synthetic_mv
+# Windows: 用 %TEMP% 或本地相对路径;Linux/macOS: /tmp/synthetic_mv
+mkdir -p "$TEMP/synthetic_mv" 2>/dev/null || mkdir -p ./tmp/synthetic_mv
+PYTHONIOENCODING=utf-8 /c/Users/yellow/.conda/envs/venv/python.exe backtrace/projection/ablation_fit.py --all --limit 5 --movement-dir ./tmp/synthetic_mv --output-dir ./tmp/ablation_out
 ```
 Expected: exit 0, 4 per-model CSVs + summary + HTML + TXT all created.
 
