@@ -2811,3 +2811,43 @@ def test_panel5_uses_x_x_corr_not_q_x_corr():
             html = f.read()
         assert 'corr_x_beta_d' in html, "x-axis must be corr_x_beta_d"
         assert 'corr(q' not in html, "x-axis must NOT be the undefined corr(q, β·a_M)"
+
+
+# === V0.2-D Task 6 — CLI orchestrator + audit verification (2026-08-20) ===
+
+def test_cli_smoke_v0_2_d_full_pipeline():
+    """V0.2-D §13: full pipeline runs end-to-end with synthetic movement CSVs."""
+    import subprocess, tempfile, os
+    with tempfile.TemporaryDirectory() as td:
+        mv_dir = os.path.join(td, 'mv')
+        os.makedirs(mv_dir)
+        # 3 synthetic stocks
+        for i in range(3):
+            T = 80
+            rng = np.random.default_rng(i)
+            beta = 1.2 + 0.001 * np.arange(T)
+            delta_v = rng.normal(0, 1, (T, 2))
+            delta_u = beta[:, None] * delta_v + rng.normal(0, 0.5, (T, 2))
+            pd.DataFrame({
+                'Date': pd.date_range('2024-01-01', periods=T),
+                'Move_Delta_Vol_idx': delta_v[:, 0],
+                'Move_Delta_Amt_idx': delta_v[:, 1],
+                f'Move_Delta_Vol_stk{i:06d}': delta_u[:, 0],
+                f'Move_Delta_Amt_stk{i:06d}': delta_u[:, 1],
+                'Move_Proj_Coeff': beta,
+            }).to_csv(os.path.join(mv_dir, f'movement_idx_stk{i:06d}.csv'), index=False)
+        out_dir = os.path.join(td, 'out')
+        # Run CLI
+        result = subprocess.run([
+            sys.executable,
+            'backtrace/projection/v0_2_d_decompose.py',
+            '--movement-dir', mv_dir,
+            '--output-dir', out_dir,
+            '--limit', '3',
+        ], capture_output=True, text=True, timeout=120,
+           cwd=REPO_ROOT, env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
+        assert result.returncode == 0, f"CLI failed: {result.stderr}"
+        # Verify outputs exist
+        for f in ('kc_estimates_model2_diag.csv', 'panel5_drift_vs_collinearity.html',
+                   'v0_2_d_distributions.csv', 'v0_2_d_summary.txt'):
+            assert os.path.exists(os.path.join(out_dir, f)), f"missing output: {f}"
