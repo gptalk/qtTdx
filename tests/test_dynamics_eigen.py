@@ -2991,3 +2991,118 @@ def test_c0_c1_summary_txt_format():
         # Has D1/D2/D3 sections
         for d in ('D1', 'D2', 'D3'):
             assert d in txt
+
+
+# === V0.2-C1 Task 3 — CLI orchestrator (2026-08-20) ===
+
+def test_v0_2_c1_cli_smoke():
+    """V0.2-C1 §7: full pipeline (data gen + ablation + paired compare) end-to-end with synthetic stocks."""
+    import subprocess, tempfile, os, sys
+    with tempfile.TemporaryDirectory() as td:
+        # Pre-populate <td>/data/projection/ with 3 SH + 3 SZ synthetic movement files
+        proj_dir = os.path.join(td, 'data', 'projection')
+        os.makedirs(proj_dir)
+        for i in range(3):
+            T = 80
+            rng = np.random.default_rng(i)
+            beta = 1.2 + 0.001 * np.arange(T)
+            delta_v = rng.normal(0, 1, (T, 2))
+            delta_u = beta[:, None] * delta_v + rng.normal(0, 0.5, (T, 2))
+            # SH version (index=000001)
+            sh_code = f'600{100 + i:03d}'
+            sh_tag = sh_code
+            pd.DataFrame({
+                'Date': pd.date_range('2024-01-01', periods=T),
+                'Move_Delta_Vol_000001': delta_v[:, 0],
+                'Move_Delta_Amt_000001': delta_v[:, 1],
+                f'Move_Delta_Vol_{sh_tag}': delta_u[:, 0],
+                f'Move_Delta_Amt_{sh_tag}': delta_u[:, 1],
+                'Move_Proj_Coeff': beta,
+            }).to_csv(os.path.join(proj_dir, f'movement_000001_{sh_tag}.csv'), index=False)
+            # SZ version (index=399001)
+            sz_code = f'000{100 + i:03d}'
+            sz_tag = sz_code
+            pd.DataFrame({
+                'Date': pd.date_range('2024-01-01', periods=T),
+                'Move_Delta_Vol_399001': delta_v[:, 0],
+                'Move_Delta_Amt_399001': delta_v[:, 1],
+                f'Move_Delta_Vol_{sz_tag}': delta_u[:, 0],
+                f'Move_Delta_Amt_{sz_tag}': delta_u[:, 1],
+                'Move_Proj_Coeff': beta,
+            }).to_csv(os.path.join(proj_dir, f'movement_399001_{sz_tag}.csv'), index=False)
+        # Pre-populate <td>/data/stock_basic.csv with 6 stocks
+        basic = os.path.join(td, 'data', 'stock_basic.csv')
+        rows = []
+        for i in range(3):
+            rows.append({'code': f'600{100 + i:03d}', 'market': 'SH', 'name': f'SH{i}', 'status': 'active'})
+            rows.append({'code': f'000{100 + i:03d}', 'market': 'SZ', 'name': f'SZ{i}', 'status': 'active'})
+        pd.DataFrame(rows).to_csv(basic, index=False)
+        # Pre-populate C0 (industry) for paired compare
+        c0_dir = os.path.join(td, 'data', 'projection_v01_d')
+        os.makedirs(c0_dir)
+        n = 6
+        # Include `index_code` so the CLI's driver-aware filter is exercised.
+        # SH stocks (600xxx) → 申万 industry codes (881xxx.SH/SZ) for C0
+        # SH stocks → 000001.SH (上证综指) for C1
+        # SZ stocks (000xxx) → 申万 industry codes (881xxx) for C0
+        # SZ stocks → 399001.SZ (深证成指) for C1
+        index_codes_c0 = ['881001.SH', '881001.SH', '881001.SH',
+                          '881002.SZ', '881002.SZ', '881002.SZ']
+        index_codes_c1 = ['000001.SH', '000001.SH', '000001.SH',
+                          '399001.SZ', '399001.SZ', '399001.SZ']
+        pd.DataFrame({
+            'code': [r['code'] for r in rows],
+            'name': [r['name'] for r in rows],
+            'index_code': index_codes_c0,
+            'ic_real': np.random.default_rng(0).normal(0, 0.3, n),
+            'q_drift': np.random.default_rng(1).normal(0.1, 0.05, n),
+            'q_hat': np.random.default_rng(2).normal(0.5, 0.2, n),
+            'test_fit_r2': np.random.default_rng(3).uniform(0, 0.2, n),
+            'oos_r2': np.random.default_rng(4).normal(0, 0.1, n),
+            'condition_number': np.random.default_rng(5).uniform(5, 30, n),
+        }).to_csv(os.path.join(c0_dir, 'kc_estimates_model2_diag.csv'), index=False)
+        # C1 input CSV (the CLI's ablation step would normally produce this,
+        # but for the smoke test we pre-populate with matching market-driver rows)
+        c1_input_dir = os.path.join(td, 'data', 'projection_v01_c1')
+        os.makedirs(c1_input_dir)
+        pd.DataFrame({
+            'code': [r['code'] for r in rows],
+            'name': [r['name'] for r in rows],
+            'index_code': index_codes_c1,
+            'ic_real': np.random.default_rng(0).normal(0, 0.2, n),
+            'q_drift': np.random.default_rng(1).normal(0.05, 0.03, n),
+            'q_hat': np.random.default_rng(2).normal(0.5, 0.2, n),
+            'test_fit_r2': np.random.default_rng(3).uniform(0, 0.2, n),
+            'oos_r2': np.random.default_rng(4).normal(0, 0.08, n),
+            'condition_number': np.random.default_rng(5).uniform(5, 30, n),
+        }).to_csv(os.path.join(c1_input_dir, 'kc_estimates_model2_diag.csv'), index=False)
+        # Run CLI
+        market_dir = os.path.join(td, 'data', 'projection_market')
+        c1_dir = os.path.join(td, 'data', 'projection_v01_c1')
+        # Use --skip-data-gen --skip-ablation so the test is CI-friendly
+        # (no TQ required; C0 + C1 CSVs are pre-populated).
+        result = subprocess.run([
+            sys.executable,
+            'backtrace/projection/v0_2_c1_market_swap.py',
+            '--input', basic,
+            '--market-dir', market_dir,
+            '--c0-dir', c0_dir,
+            '--c1-output-dir', c1_dir,
+            '--skip-data-gen',
+            '--skip-ablation',
+            '--limit', '0',
+        ], capture_output=True, text=True,
+           # encoding='utf-8' on the pipe: the CLI prints Chinese, and text=True
+           # alone would decode it with the Windows locale codec (gbk) and blow
+           # up the reader thread — leaving result.stdout None in the assert below.
+           encoding='utf-8', errors='replace',
+           env={**os.environ, 'PYTHONIOENCODING': 'utf-8', 'REPO_ROOT': os.getcwd()},
+           cwd=os.getcwd(), timeout=300)
+        assert result.returncode == 0, f"CLI failed: {result.stderr}\nstdout: {result.stdout}"
+        # Verify paired compare outputs (the test's actual scope)
+        for f in ('kc_estimates_model2_diag_filtered.csv', 'c0_c1_paired_compare.csv', 'c0_c1_compare_summary.txt'):
+            assert os.path.exists(os.path.join(c1_dir, f)), f"missing C1 output: {f}"
+        # Verify paired compare has all 25 cols and the driver-filter was applied
+        paired = pd.read_csv(os.path.join(c1_dir, 'c0_c1_paired_compare.csv'))
+        assert len(paired.columns) == 25, f"paired CSV has {len(paired.columns)} cols, expected 25"
+        assert len(paired) == 6, f"expected 6 paired rows (after filter), got {len(paired)}"
