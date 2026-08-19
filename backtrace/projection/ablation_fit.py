@@ -431,9 +431,9 @@ def _oos_r2_from_train_params(X_test: np.ndarray, Y_test: np.ndarray,
 
 
 def _refit_window(X_window: np.ndarray, Y_window: np.ndarray, model_id: int):
-    """Fit OLS on one window; return (theta, f_res, cond, r2)."""
+    """Fit OLS on one window; return (theta, f_res, cond, r2, rcorr)."""
     theta, f_res, n_v, rank, cond, rcorr, r2 = ols_fit(X_window, Y_window)
-    return theta, f_res, cond, r2
+    return theta, f_res, cond, r2, rcorr
 
 
 def compute_x_x_correlations(X: np.ndarray):
@@ -530,10 +530,10 @@ def fit_one_split(movement_csv: str, stock_tag: str, index_tag: str,
     X_test, Y_test = X[test_idx_abs], Y[test_idx_abs]
 
     # Layer 1: train fit (only valid source for OOS prediction)
-    theta_train, f_res_train, cond_train, train_fit_r2 = _refit_window(X_train, Y_train, model_id)
+    theta_train, f_res_train, cond_train, train_fit_r2, rcorr_train = _refit_window(X_train, Y_train, model_id)
 
     # Layer 2: test refit (diagnostic only — must not leak into oos_r2 / oos_ic)
-    theta_test, f_res_test, _, test_fit_r2 = _refit_window(X_test, Y_test, model_id)
+    theta_test, f_res_test, _, test_fit_r2, _rcorr_test = _refit_window(X_test, Y_test, model_id)
 
     # Layer 3: OOS prediction with train params only
     oos_r2 = _oos_r2_from_train_params(X_test, Y_test, theta_train)
@@ -569,7 +569,7 @@ def fit_one_split(movement_csv: str, stock_tag: str, index_tag: str,
         'index_tag': index_tag, 'stock_tag': stock_tag,
         'n_train': X_train.shape[0], 'n_test': X_test.shape[0],
         'condition_number': cond_train,
-        'regressor_corr': float(np.nan),  # populated by Task 3 helper if needed
+        'regressor_corr': rcorr_train,
         'r2': train_fit_r2,
         'identification_status': compute_identification_status(
             int(np.linalg.matrix_rank(X_train)), cond_train),

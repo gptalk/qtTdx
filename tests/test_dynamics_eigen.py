@@ -2752,3 +2752,37 @@ def test_residual_correlation_missing_term_detects():
     F_self = Y_train - X_train @ theta
     c_b, c_d, c_u = compute_residual_correlations(F_self, X_train)
     assert abs(c_d) > 0.3, f"missing-term residual must correlate with X_d; got {c_d}"
+
+
+# === V0.2-D Task 4 amend — populate regressor_corr from ols_fit (Phase 1 regression) ===
+
+def test_regressor_corr_populated_in_fit_one_split():
+    """V0.2-D Task 4 amend: regressor_corr must NOT be hard-coded NaN.
+
+    Regression check: V0.1 fit_one_in_sample populated regressor_corr from ols_fit.
+    V0.2-D Phase 1 hard-coded NaN; Task 4 amend must restore it.
+    """
+    from projection.ablation_fit import fit_one_split
+    import tempfile, os
+    mv_dir = tempfile.mkdtemp()
+    csv_path = os.path.join(mv_dir, "movement_idx_stk000003.csv")
+    T = 200
+    rng = np.random.default_rng(0)
+    beta = 1.2 + 0.001 * np.arange(T)
+    delta_v = rng.normal(0, 1, (T, 2))
+    delta_u = beta[:, None] * delta_v + rng.normal(0, 0.5, (T, 2))
+    pd.DataFrame({
+        'Date': pd.date_range('2024-01-01', periods=T),
+        'Move_Delta_Vol_idx': delta_v[:, 0],
+        'Move_Delta_Amt_idx': delta_v[:, 1],
+        'Move_Delta_Vol_stk': delta_u[:, 0],
+        'Move_Delta_Amt_stk': delta_u[:, 1],
+        'Move_Proj_Coeff': beta,
+    }).to_csv(csv_path, index=False)
+    row = fit_one_split(csv_path, 'stk', 'idx', '000003.SZ', 'T', '000001.SH', model_id=2)
+    # regressor_corr must be a finite float, not NaN
+    assert np.isfinite(row['regressor_corr']), \
+        f"regressor_corr should be populated by ols_fit; got {row['regressor_corr']}"
+    # Sanity: regressor_corr ∈ [0, 1] (it's max |corr|)
+    assert 0.0 <= row['regressor_corr'] <= 1.0, \
+        f"regressor_corr must be max |corr| ∈ [0, 1]; got {row['regressor_corr']}"
