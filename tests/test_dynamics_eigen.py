@@ -3106,3 +3106,42 @@ def test_v0_2_c1_cli_smoke():
         paired = pd.read_csv(os.path.join(c1_dir, 'c0_c1_paired_compare.csv'))
         assert len(paired.columns) == 25, f"paired CSV has {len(paired.columns)} cols, expected 25"
         assert len(paired) == 6, f"expected 6 paired rows (after filter), got {len(paired)}"
+
+
+# === V0.2-C1 Task 5a — empty movement file pruning (2026-08-20) ===
+
+def test_prune_empty_movement_files():
+    """688826.SH (newly-listed, 1 valid row) → projection_batch.py writes a
+    header-only movement file. fit_one_split crashes on np.isfinite(object).
+    The orchestrator must prune such files before v0_2_d_decompose.py sees them.
+    """
+    import tempfile, os
+    import sys as _sys
+    BACKTRACE = os.path.join(os.getcwd(), 'backtrace')
+    if BACKTRACE not in _sys.path:
+        _sys.path.insert(0, BACKTRACE)
+    from projection.v0_2_c1_market_swap import _prune_empty_movement_files
+    with tempfile.TemporaryDirectory() as td:
+        # Write 3 files: 1 empty (header only), 1 with 1 row, 1 with 100 rows
+        empty_path = os.path.join(td, 'movement_000001_688826.csv')
+        with open(empty_path, 'w', encoding='utf-8') as f:
+            f.write('Date,Move_Delta_Vol_000001,Move_Delta_Amt_000001,'
+                    'Move_Delta_Vol_688826,Move_Delta_Amt_688826,Move_Proj_Coeff\n')
+        one_row_path = os.path.join(td, 'movement_000001_600000.csv')
+        with open(one_row_path, 'w', encoding='utf-8') as f:
+            f.write('Date,Move_Delta_Vol_000001,Move_Delta_Amt_000001,'
+                    'Move_Delta_Vol_600000,Move_Delta_Amt_600000,Move_Proj_Coeff\n')
+            f.write('2024-01-01,0.1,0.2,0.3,0.4,1.1\n')
+        # Non-movement file: must NOT be touched
+        unrelated_path = os.path.join(td, 'manifest.json')
+        with open(unrelated_path, 'w', encoding='utf-8') as f:
+            f.write('{}')
+
+        n_pruned = _prune_empty_movement_files(td)
+        assert n_pruned == 1, f'expected 1 pruned, got {n_pruned}'
+        assert not os.path.exists(empty_path), 'empty file should be deleted'
+        assert os.path.exists(one_row_path), '1-row file should be kept (project_batch may regenerate)'
+        assert os.path.exists(unrelated_path), 'non-movement file must not be touched'
+
+    # Non-existent dir: return 0, no crash
+    assert _prune_empty_movement_files(os.path.join(td, 'does_not_exist')) == 0
