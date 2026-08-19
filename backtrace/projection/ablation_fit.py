@@ -234,3 +234,95 @@ def write_in_sample_csvs(targets: List[Tuple], output_dir: str):
         df = pd.DataFrame(rows_by_model[m], columns=CSV_COLUMNS)
         df.to_csv(os.path.join(output_dir, f'kc_estimates_model{m}.csv'),
                   index=False, encoding='utf-8')
+
+
+# === V0.1 Task 3: OOS 70/30 Split + Spearman IC ===
+from scipy.stats import spearmanr
+
+
+def oos_split_indices(n_valid: int, train_frac: float = 0.7):
+    """70/30 split. Train = [0, floor(0.7·n_valid)), test = [floor(0.7·n_valid), n_valid).
+    Returns (train_idx, test_idx) as numpy int arrays. NO overlap, NO shuffle.
+    """
+    n_train = int(np.floor(train_frac * n_valid))
+    train_idx = np.arange(0, n_train, dtype=int)
+    test_idx = np.arange(n_train, n_valid, dtype=int)
+    return train_idx, test_idx
+
+
+def compute_spearman_ic(y_pred: np.ndarray, y_actual: np.ndarray) -> float:
+    """Spearman rank correlation between predicted and actual a_S (2-D)."""
+    if len(y_pred) < 3:
+        return np.nan
+    rho, _ = spearmanr(y_pred, y_actual)
+    return float(rho) if np.isfinite(rho) else np.nan
+
+
+def fit_one_oos(movement_csv: str, stock_tag: str, index_tag: str,
+                code: str, name: str, index_code: str, model_id: int) -> dict:
+    """Run 70/30 OOS fit for one stock × one model.
+
+    Algorithm:
+      1. Reconstruct kinematics.
+      2. Build (X, Y) per model.
+      3. mask = isfinite(Y) & all-isfinite(X).
+      4. Split valid indices into train/test (70/30, no overlap).
+      5. OLS on train → θ.
+      6. Predict on test: ŷ = X_test · θ.
+      7. IC = Spearman(ŷ, Y_test).
+      8. Use TRAIN set's cond/r2/diagnostics (NOT OOS).
+    """
+    delta_u, delta_v, beta = _read_movement(movement_csv, stock_tag, index_tag)
+    u_vec, d_vec, a_u_vec, a_v_vec, bdv_vec = _build_kinematics_ext(delta_u, delta_v, beta)
+    X, Y = BUILDERS[model_id](u_vec, d_vec, a_u_vec, a_v_vec, beta, bdv_vec)
+    mask = np.isfinite(Y) & np.all(np.isfinite(X), axis=1)
+    valid_indices = np.where(mask)[0]
+    n_valid = len(valid_indices)
+
+    if n_valid < 20:
+        return fit_one_in_sample(movement_csv, stock_tag, index_tag, code, name, index_code, model_id)
+
+    train_idx_rel, test_idx_rel = oos_split_indices(n_valid, train_frac=0.7)
+    train_idx_abs = valid_indices[train_idx_rel]
+    test_idx_abs = valid_indices[test_idx_rel]
+
+    X_train, Y_train = X[train_idx_abs], Y[train_idx_abs]
+    X_test, Y_test = X[test_idx_abs], Y[test_idx_abs]
+
+    theta, f_res, n_train_v, rank, cond, rcorr, r2 = ols_fit(X_train, Y_train)
+
+    # OOS prediction
+    Y_pred_test = X_test @ theta
+    ic_real = compute_spearman_ic(Y_pred_test, Y_test)
+
+    if model_id in (0, 1):
+        k_hat, c_hat = float(theta[0]), float(theta[1])
+        q_hat = 1.0
+    else:
+        q_hat, k_hat, c_hat = float(theta[0]), float(theta[1]), float(theta[2])
+
+    return {
+        'code': code, 'name': name, 'index_code': index_code,
+        'index_tag': index_tag, 'stock_tag': stock_tag,
+        'n_train': n_train_v, 'n_test': len(test_idx_abs),
+        'condition_number': cond, 'regressor_corr': rcorr, 'r2': r2,
+        'identification_status': compute_identification_status(rank, cond),
+        'fit_quality': compute_fit_quality(r2),
+        'q_hat': q_hat, 'k_hat': k_hat, 'c_hat': c_hat,
+        'f_self_loss': f_res,
+        'ic_real': ic_real, 'ic_null': np.nan,   # Task 4 populates
+    }
+
+
+def write_oos_csvs(targets: List[Tuple], output_dir: str):
+    """Write 4 OOS CSVs to output_dir/kc_estimates_model{0,1,2,3}.csv (overwrites Task 2 output)."""
+    os.makedirs(output_dir, exist_ok=True)
+    rows_by_model = {m: [] for m in range(4)}
+    for code, name, mv_csv, index_tag, stock_tag, index_code in targets:
+        for m in range(4):
+            row = fit_one_oos(mv_csv, stock_tag, index_tag, code, name, index_code, m)
+            rows_by_model[m].append(row)
+    for m in range(4):
+        df = pd.DataFrame(rows_by_model[m], columns=CSV_COLUMNS)
+        df.to_csv(os.path.join(output_dir, f'kc_estimates_model{m}.csv'),
+                  index=False, encoding='utf-8')

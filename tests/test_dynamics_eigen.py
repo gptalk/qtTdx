@@ -2424,3 +2424,49 @@ def test_in_sample_fit_5_synthetic_stocks(tmp_path):
         # Models 0/1 q_hat = 1.0; Models 2/3 q_hat = OLS estimate (varies)
         if m in (0, 1):
             assert (df['q_hat'] == 1.0).all()
+
+
+# === v0.1 — Task 3: OOS 70/30 Split + Spearman IC ===
+
+from scipy.stats import spearmanr
+
+
+def test_oos_split_no_overlap():
+    from projection.ablation_fit import oos_split_indices
+    train, test = oos_split_indices(n_valid=100, train_frac=0.7)
+    assert len(train) + len(test) == 100
+    assert set(train).isdisjoint(set(test))
+    assert max(train) < min(test)  # train < test in index
+
+
+def test_oos_split_70_30():
+    from projection.ablation_fit import oos_split_indices
+    train, test = oos_split_indices(n_valid=100, train_frac=0.7)
+    assert len(train) == 70
+    assert len(test) == 30
+
+
+def test_oos_perfect_prediction_high_ic():
+    """Synthetic Model 3 data → OOS IC ≈ 1."""
+    from projection.ablation_fit import fit_one_oos
+    u, d, au, av, beta, bdv = _make_ext_inputs(k_true=0.5, c_true=0.2, q_true=0.8, T=200)
+    # Construct minimal movement dict-like
+    import tempfile, os
+    mv_dir = tempfile.mkdtemp()
+    csv_path = os.path.join(mv_dir, "movement_idx_stk000001.csv")
+    rng = np.random.default_rng(0)
+    T = 200
+    beta = 1.2 + 0.001 * np.arange(T)
+    delta_v = rng.normal(0, 1, (T, 2))
+    delta_u = beta[:, None] * delta_v + rng.normal(0, 0.5, (T, 2))
+    pd.DataFrame({
+        'Date': pd.date_range('2024-01-01', periods=T),
+        'Move_Delta_Vol_idx': delta_v[:, 0],
+        'Move_Delta_Amt_idx': delta_v[:, 1],
+        'Move_Delta_Vol_stk000001': delta_u[:, 0],
+        'Move_Delta_Amt_stk000001': delta_u[:, 1],
+        'Move_Proj_Coeff': beta,
+    }).to_csv(csv_path, index=False)
+    row = fit_one_oos(csv_path, 'stk000001', 'idx', '000001.SZ', 'T', '000001.SH', model_id=3)
+    assert row['n_train'] > 0 and row['n_test'] > 0
+    assert row['ic_real'] > 0.5  # strong signal, should be high
