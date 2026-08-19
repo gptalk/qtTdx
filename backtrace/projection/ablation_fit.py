@@ -443,14 +443,20 @@ def list_movement_csvs(movement_dir: str):
 
 
 def summarize_ablation(csv_paths: dict) -> pd.DataFrame:
-    """4×10 metric matrix from 4 per-model CSVs.
+    """4×11 metric matrix from 4 per-model CSVs (V0.2-D Phase 0: +1 ΔIC stat).
 
     csv_paths: {0: path_model0, 1: ..., 2: ..., 3: ...}
     Returns DataFrame with rows = metrics, cols = model_N.
+
+    ΔIC stats (3):
+      - median_delta_ic (A): median_s(IC_real_s − IC_null_s) per model
+      - diff_of_medians_delta_ic (B): median(IC_real) − median(IC_null) per model  ← NEW (V0.2-D audit fix)
+      - delta_ic_vs_m0 (C): median_s(IC_real_new,s − IC_real_M0,s) per stock, per model vs M0
     """
     metrics = ['median_r2', 'p25_r2', 'p75_r2', 'median_cond',
                'median_ic_real', 'median_ic_null', 'median_delta_ic',
-               'median_abs_q_minus_1', 'delta_r2_vs_m0', 'delta_ic_vs_m0']
+               'diff_of_medians_delta_ic',           # ← NEW (V0.2-D Phase 0)
+                'median_abs_q_minus_1', 'delta_r2_vs_m0', 'delta_ic_vs_m0']
     summary = pd.DataFrame(index=metrics, columns=['model_0', 'model_1', 'model_2', 'model_3'])
 
     r2_m0 = None
@@ -470,6 +476,10 @@ def summarize_ablation(csv_paths: dict) -> pd.DataFrame:
         summary.loc['median_ic_null', f'model_{m}'] = float(np.median(ic_null)) if len(ic_null) else np.nan
         summary.loc['median_delta_ic', f'model_{m}'] = (
             float(np.median(ic_real - ic_null)) if len(ic_real) and len(ic_null) else np.nan
+        )
+        # NEW: difference of medians (V0.2-D audit fix)
+        summary.loc['diff_of_medians_delta_ic', f'model_{m}'] = (
+            float(np.median(ic_real) - np.median(ic_null)) if len(ic_real) and len(ic_null) else np.nan
         )
         if m in (2, 3):
             summary.loc['median_abs_q_minus_1', f'model_{m}'] = (
@@ -546,8 +556,8 @@ def write_recommendation_txt(summary_df: pd.DataFrame, output_path: str) -> str:
     median_r2_m3 = float(summary_df.loc['median_r2', 'model_3'])
     median_r2_m0 = float(summary_df.loc['median_r2', 'model_0'])
     abs_q_m2 = float(summary_df.loc['median_abs_q_minus_1', 'model_2']) if 'median_abs_q_minus_1' in summary_df.index else np.nan
-    # Step 3: placebo delta = median(IC_real_M3) − median(IC_null_M3)  (per spec §10, difference of medians)
-    delta_ic_m3 = float(summary_df.loc['median_ic_real', 'model_3'] - summary_df.loc['median_ic_null', 'model_3'])
+    # V0.2-D Phase 0 audit fix: read all ΔIC numbers from the summary DataFrame (no inline recompute)
+    delta_ic_m3 = float(summary_df.loc['diff_of_medians_delta_ic', 'model_3'])
     # Per-stock median ΔR² (写死, 不是 difference of medians)
     delta_r2_m1 = float(summary_df.loc['delta_r2_vs_m0', 'model_1'])
 
@@ -589,8 +599,10 @@ def write_recommendation_txt(summary_df: pd.DataFrame, output_path: str) -> str:
         '--- |q̂ − 1| (per-stock median) ---',
         f'  Model 2: {abs_q_m2:.4f}        (Step 2 threshold > 0.1)',
         '',
-        '--- ΔIC (Model 3 IC_real median − IC_null median) vs Model 0 ---',
-        f'  ΔIC_M3: {delta_ic_m3:+.4f}    (Step 3 threshold > 0.02)',
+        '--- ΔIC (3 stats; see summary CSV row names) ---',
+        f'  median_delta_ic (A) M3:          {float(summary_df.loc["median_delta_ic", "model_3"]):+.4f}',
+        f'  diff_of_medians_delta_ic (B) M3: {delta_ic_m3:+.4f}    (Step 3 threshold > 0.02)',
+        f'  delta_ic_vs_m0 (C) M3:           {float(summary_df.loc["delta_ic_vs_m0", "model_3"]):+.4f}',
         '',
         '--- Decision tree (spec §10) ---',
         f'  Step 1 (β-drift ΔR² > 0.005): {"PASS" if step1_pass else "FAIL"}',

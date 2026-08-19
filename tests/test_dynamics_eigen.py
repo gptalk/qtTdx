@@ -2560,3 +2560,37 @@ def test_cli_smoke_full_ablation(tmp_path):
     assert (out_dir / "kc_ablation_recommendation.txt").exists()
     # HTML
     assert (out_dir / "ablation_distribution.html").exists()
+
+
+def test_summarize_ablation_writes_three_delta_ic():
+    """V0.2-D audit fix: 3 ΔIC statistics all persisted in summary CSV."""
+    import tempfile, os
+    from projection.ablation_fit import summarize_ablation
+    with tempfile.TemporaryDirectory() as td:
+        # Write 4 stub CSVs with ic_real and ic_null columns
+        for m in range(4):
+            stub = pd.DataFrame({
+                'code': [f'stk{m:06d}'] * 10,
+                'r2': [0.05] * 10,
+                'condition_number': [10.0] * 10,
+                'ic_real': [0.5 + 0.01 * i for i in range(10)],
+                'ic_null': [0.01 * i for i in range(10)],
+                'q_hat': [0.5] * 10,
+            })
+            stub.to_csv(os.path.join(td, f'kc_estimates_model{m}.csv'), index=False)
+        summary = summarize_ablation({m: os.path.join(td, f'kc_estimates_model{m}.csv') for m in range(4)})
+        # 3 ΔIC rows must exist
+        assert 'median_delta_ic' in summary.index
+        assert 'diff_of_medians_delta_ic' in summary.index, \
+            "diff_of_medians_delta_ic missing — verdict B stat not persisted"
+        assert 'delta_ic_vs_m0' in summary.index
+        # Each row has all 4 model columns
+        for row in ('median_delta_ic', 'diff_of_medians_delta_ic', 'delta_ic_vs_m0'):
+            assert all(summary.loc[row, f'model_{m}'] is not None for m in range(4))
+        # diff_of_medians matches direct computation (B definition)
+        for m in range(4):
+            stub = pd.read_csv(os.path.join(td, f'kc_estimates_model{m}.csv'))
+            expected = float(np.median(stub['ic_real']) - np.median(stub['ic_null']))
+            actual = float(summary.loc['diff_of_medians_delta_ic', f'model_{m}'])
+            assert abs(actual - expected) < 1e-9, \
+                f"diff_of_medians_delta_ic[m={m}] mismatch: {actual} vs {expected}"
