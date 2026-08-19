@@ -869,3 +869,94 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+# === V0.2-D Phase 4 (Task 5): Panel 5 + Distribution Reporting (diagnostic only, no PASS/FAIL) ===
+
+def build_panel5_html(model2_csv: str, output_path: str) -> str:
+    """V0.2-D §9: scatter of q_drift × corr_x_beta_d, colored by oos_ic.
+
+    Per spec §9 4-quadrant interpretation:
+      - upper-right: regime shift + collinearity (highest-risk)
+      - upper-left: regime shift dominates
+      - lower-right: pure collinearity
+      - lower-left: clean
+    """
+    import plotly.graph_objects as go
+    df = pd.read_csv(model2_csv)
+    fig = go.Figure()
+    fig.add_trace(go.Scattergl(
+        x=df['corr_x_beta_d'], y=df['q_drift'],
+        mode='markers',
+        marker=dict(
+            size=4, opacity=0.6,
+            color=df['ic_real'],
+            colorscale='RdBu_r', cmin=-1, cmax=1,
+            colorbar=dict(title='OOS IC'),
+        ),
+        text=df['code'],
+        hovertemplate='code=%{text}<br>corr_x_beta_d=%{x:.3f}<br>q_drift=%{y:.3f}<br>oos_ic=%{marker.color:.3f}<extra></extra>',
+    ))
+    fig.update_layout(
+        template='plotly_dark',
+        title='V0.2-D Panel 5: q_drift × corr_x_beta_d (color = OOS IC, Model 2)',
+        xaxis_title='corr_x_beta_d (corr(β·a_M, −d))',
+        yaxis_title='q_drift = q_test_fit − q_train_fit',
+        height=700,
+    )
+    fig.write_html(output_path)
+    return output_path
+
+
+def compute_v0_2_d_distributions(model2_csv: str) -> pd.DataFrame:
+    """V0.2-D §10: distribution reports for D1 / D2 / D3.
+
+    Returns DataFrame with rows = (gate, statistic) and one column of values.
+    Distribution stats: median, p25, p75, P(|x| > threshold) for D1/D2;
+                        median, p25, p75, P(x > threshold) for D3.
+    """
+    df = pd.read_csv(model2_csv)
+    rows = []
+
+    def _stats(s: pd.Series, abs_val: bool, threshold: float):
+        s_used = s.abs() if abs_val else s
+        return {
+            'median': float(np.median(s_used.dropna())),
+            'p25': float(np.percentile(s_used.dropna(), 25)),
+            'p75': float(np.percentile(s_used.dropna(), 75)),
+            f'P(>{threshold})': float(np.mean(s_used.dropna() > threshold)),
+        }
+
+    for name, col, abs_val, thr in [
+        ('D1', 'q_drift', True, 0.3),
+        ('D2', 'corr_x_beta_d', True, 0.3),
+        ('D3', 'corr_F_d', False, 0.2),
+    ]:
+        stats = _stats(df[col], abs_val, thr)
+        for stat_name, val in stats.items():
+            rows.append({'gate': name, 'statistic': stat_name, 'value': val})
+    return pd.DataFrame(rows)
+
+
+def write_v0_2_d_summary_txt(dist_df: pd.DataFrame, output_path: str) -> str:
+    """V0.2-D §10: UTF-8 Chinese distribution report (diagnostic only, no PASS/FAIL)."""
+    lines = [
+        '=' * 60,
+        'V0.2-D — OOS Reversal Decomposition (Diagnostic Report)',
+        '=' * 60,
+        f'Run date:  {pd.Timestamp.now().strftime("%Y-%m-%d")}',
+        '',
+        'NOTE: This is a diagnostic report. No PASS/FAIL verdicts.',
+        'Interpretation routes to V0.2-E or user.',
+        '',
+    ]
+    for gate in ('D1', 'D2', 'D3'):
+        gate_df = dist_df[dist_df['gate'] == gate]
+        lines.append(f'--- Gate {gate} ---')
+        for _, row in gate_df.iterrows():
+            lines.append(f'  {row["statistic"]:<8s}: {row["value"]:+.4f}')
+        lines.append('')
+    lines.append('=' * 60)
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+    return output_path

@@ -2786,3 +2786,28 @@ def test_regressor_corr_populated_in_fit_one_split():
     # Sanity: regressor_corr ∈ [0, 1] (it's max |corr|)
     assert 0.0 <= row['regressor_corr'] <= 1.0, \
         f"regressor_corr must be max |corr| ∈ [0, 1]; got {row['regressor_corr']}"
+
+
+# === V0.2-D Task 5 — Panel 5 + Distribution Reporting (2026-08-20) ===
+
+def test_panel5_uses_x_x_corr_not_q_x_corr():
+    """V0.2-D §9: Panel 5 x-axis is corr_x_beta_d, NOT corr(q, β·a_M)."""
+    from projection.ablation_fit import build_panel5_html
+    import tempfile, os
+    # Build a stub Model 2 CSV
+    with tempfile.TemporaryDirectory() as td:
+        csv_path = os.path.join(td, 'kc_estimates_model2.csv')
+        rng = np.random.default_rng(0)
+        n = 200
+        pd.DataFrame({
+            'code': [f'stk{i:06d}' for i in range(n)],
+            'corr_x_beta_d': rng.normal(0.3, 0.1, n),
+            'q_drift': rng.normal(0.1, 0.05, n),
+            'ic_real': rng.normal(0, 0.5, n),
+        }).to_csv(csv_path, index=False)
+        html_path = build_panel5_html(csv_path, os.path.join(td, 'panel5.html'))
+        # Read HTML and verify x-axis label
+        with open(html_path, encoding='utf-8') as f:
+            html = f.read()
+        assert 'corr_x_beta_d' in html, "x-axis must be corr_x_beta_d"
+        assert 'corr(q' not in html, "x-axis must NOT be the undefined corr(q, β·a_M)"
