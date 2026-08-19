@@ -86,7 +86,11 @@ from projection.ablation_fit import (
 
 
 def _make_ext_inputs(k_true=0.5, c_true=0.2, q_true=0.8, T=200, seed=0):
-    """Synthetic 2-D data satisfying Model 3 exactly."""
+    """Synthetic 2-D data satisfying Model 3 exactly.
+
+    Returns 6-tuple: (u_vec, d_vec, a_u_vec, a_v_vec, beta, beta_dot_vM_vec)
+    The 5th element (beta) is required by build_design_model_0/1/2/3.
+    """
     rng = np.random.default_rng(seed)
     beta = 1.2 + 0.001 * np.arange(T)            # β with mild drift
     delta_v = rng.normal(0, 1, (T, 2))
@@ -102,12 +106,12 @@ def _make_ext_inputs(k_true=0.5, c_true=0.2, q_true=0.8, T=200, seed=0):
     a_u_new = q_true * beta[:, None] * a_v + beta_dot_vM - k_true * d_vec - c_true * u_vec + eps
     # only first T-1 rows used (last row NaN)
     a_u[:-1] = a_u_new[:-1]
-    return u_vec, d_vec, a_u, a_v, beta_dot_vM
+    return u_vec, d_vec, a_u, a_v, beta, beta_dot_vM
 
 
 def test_build_design_model0_subtracts_beta_aM():
-    u, d, au, av, bdv = _make_ext_inputs()
-    X, Y = build_design_model_0(u, d, au, av, bdv)
+    u, d, au, av, beta, bdv = _make_ext_inputs()
+    X, Y = build_design_model_0(u, d, au, av, beta, bdv)
     # Y = a_u - β·a_v, X = [-d, -u]
     assert X.shape[1] == 2
     # Last row is NaN (from au NaN) → Y last row should be NaN
@@ -117,33 +121,33 @@ def test_build_design_model0_subtracts_beta_aM():
 
 
 def test_build_design_model1_subtracts_betadot_vM():
-    u, d, au, av, bdv = _make_ext_inputs()
-    X, Y = build_design_model_1(u, d, au, av, bdv)
+    u, d, au, av, beta, bdv = _make_ext_inputs()
+    X, Y = build_design_model_1(u, d, au, av, beta, bdv)
     assert X.shape[1] == 2
     # Y should equal Model 0's Y minus bdv stacked
-    X0, Y0 = build_design_model_0(u, d, au, av, bdv)
+    X0, Y0 = build_design_model_0(u, d, au, av, beta, bdv)
     bdv_stack = np.concatenate([bdv[:, 0], bdv[:, 1]])
     np.testing.assert_allclose(np.nan_to_num(Y), np.nan_to_num(Y0 - bdv_stack), equal_nan=True)
 
 
 def test_build_design_model2_keeps_aS_in_Y():
-    u, d, au, av, bdv = _make_ext_inputs()
-    X, Y = build_design_model_2(u, d, au, av, bdv)
+    u, d, au, av, beta, bdv = _make_ext_inputs()
+    X, Y = build_design_model_2(u, d, au, av, beta, bdv)
     assert X.shape[1] == 3  # [β·a_M, -d, -u]
 
 
 def test_build_design_model3_combines_offset_and_free_q():
-    u, d, au, av, bdv = _make_ext_inputs()
-    X, Y = build_design_model_3(u, d, au, av, bdv)
+    u, d, au, av, beta, bdv = _make_ext_inputs()
+    X, Y = build_design_model_3(u, d, au, av, beta, bdv)
     assert X.shape[1] == 3
     # Y = Model 1's Y (which already has β̇·v_M subtracted)
-    X1, Y1 = build_design_model_1(u, d, au, av, bdv)
+    X1, Y1 = build_design_model_1(u, d, au, av, beta, bdv)
     np.testing.assert_allclose(np.nan_to_num(Y), np.nan_to_num(Y1), equal_nan=True)
 
 
 def test_ols_fit_recovers_k_c_model0():
-    u, d, au, av, bdv = _make_ext_inputs(k_true=0.5, c_true=0.2)
-    X, Y = build_design_model_0(u, d, au, av, bdv)
+    u, d, au, av, beta, bdv = _make_ext_inputs(k_true=0.5, c_true=0.2)
+    X, Y = build_design_model_0(u, d, au, av, beta, bdv)
     mask = np.isfinite(Y)
     X_v, Y_v = X[mask], Y[mask]
     theta, f_res, n_valid, rank, cond, rcorr, r2 = ols_fit(X_v, Y_v)
@@ -153,8 +157,8 @@ def test_ols_fit_recovers_k_c_model0():
 
 
 def test_ols_fit_recovers_q_k_c_model3():
-    u, d, au, av, bdv = _make_ext_inputs(k_true=0.5, c_true=0.2, q_true=0.8)
-    X, Y = build_design_model_3(u, d, au, av, bdv)
+    u, d, au, av, beta, bdv = _make_ext_inputs(k_true=0.5, c_true=0.2, q_true=0.8)
+    X, Y = build_design_model_3(u, d, au, av, beta, bdv)
     mask = np.isfinite(Y)
     X_v, Y_v = X[mask], Y[mask]
     theta, *_ = ols_fit(X_v, Y_v)
@@ -172,14 +176,18 @@ def test_ols_fit_r2_nan_when_ss_tot_zero():
 
 
 def test_ols_fit_cond_uses_X_not_XTX():
-    """Verify cond(X) not cond(X.T @ X) (κ² amplifier test)."""
+    """Verify cond(X) not cond(X.T @ X) (κ² amplifier test).
+
+    For this X, cond(X) ≈ 2.45e8 but cond(XᵀX) = inf. Threshold must
+    distinguish finite cond(X) from infinite cond(XᵀX), so use 1e10.
+    """
     X = np.array([[1.0, 1.0], [1.0 + 1e-8, 1.0], [1.0, 1.0 + 1e-8]])
     Y = np.array([1.0, 2.0, 3.0])
     *_, cond, _, _ = ols_fit(X, Y)
     expected_cond = np.linalg.cond(X)
     assert abs(cond - expected_cond) < 1e-3
-    # cond(X.T @ X) would be much larger — assert that cond < 1e6
-    assert cond < 1e6
+    # cond(X.T @ X) = inf, cond(X) ≈ 2.45e8 → threshold must be > 2.45e8 and < inf
+    assert cond < 1e10
 ```
 
 - [ ] **Step 1.2: Run tests, verify FAIL**
@@ -581,7 +589,7 @@ def test_oos_split_70_30():
 def test_oos_perfect_prediction_high_ic():
     """Synthetic Model 3 data → OOS IC ≈ 1."""
     from projection.ablation_fit import fit_one_oos
-    u, d, au, av, bdv = _make_ext_inputs(k_true=0.5, c_true=0.2, q_true=0.8, T=200)
+    u, d, au, av, beta, bdv = _make_ext_inputs(k_true=0.5, c_true=0.2, q_true=0.8, T=200)
     # Construct minimal movement dict-like
     import tempfile, os
     mv_dir = tempfile.mkdtemp()
