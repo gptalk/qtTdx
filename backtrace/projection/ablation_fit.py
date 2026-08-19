@@ -436,6 +436,29 @@ def _refit_window(X_window: np.ndarray, Y_window: np.ndarray, model_id: int):
     return theta, f_res, cond, r2
 
 
+def compute_x_x_correlations(X: np.ndarray):
+    """V0.2-D §5: pairwise Pearson correlation among 3 design-matrix columns.
+
+    Arguments:
+      X: design matrix, shape (n, 3); columns are [beta*a_M, -d, -u].
+
+    Returns:
+      (corr_x_beta_d, corr_x_beta_u, corr_x_d_u) — 3 floats.
+      (nan, nan, nan) if n < 3, if X is not 3-column, or if any column is
+      (near-)constant (std < 1e-12), where Pearson correlation is undefined.
+
+    CRITICAL (V0.2-D §5): this computes corr(X_i, X_j), NOT corr(q_hat, X).
+    corr(q_hat, X) is statistically undefined (scalar x time series).
+    """
+    if X.ndim != 2 or X.shape[0] < 3 or X.shape[1] != 3:
+        return (np.nan, np.nan, np.nan)
+    stds = X.std(axis=0)
+    if np.any(stds < 1e-12):
+        return (np.nan, np.nan, np.nan)
+    corr = np.corrcoef(X.T)
+    return (float(corr[0, 1]), float(corr[0, 2]), float(corr[1, 2]))
+
+
 def fit_one_split(movement_csv: str, stock_tag: str, index_tag: str,
                   code: str, name: str, index_code: str, model_id: int) -> dict:
     """V0.2-D: 36-col diagnostic row — train/test refit + OOS + diagnostics.
@@ -507,9 +530,11 @@ def fit_one_split(movement_csv: str, stock_tag: str, index_tag: str,
     k_drift = k_test_fit - k_train
     c_drift = c_test_fit - c_train
 
-    # Group C: X-X collinearity on X_train (Task 3 fills in)
+    # Group C: X-X collinearity on X_train (V0.2-D §5)
+    corr_x_beta_d, corr_x_beta_u, corr_x_d_u = compute_x_x_correlations(X_train)
+
     # Group D: residual structure (Task 4 fills in)
-    # For now, leave as NaN — Tasks 3 and 4 populate.
+    # For now, leave as NaN — Task 4 populates.
 
     return {
         'code': code, 'name': name, 'index_code': index_code,
@@ -533,8 +558,10 @@ def fit_one_split(movement_csv: str, stock_tag: str, index_tag: str,
         'train_fit_r2': train_fit_r2,
         'test_fit_r2': test_fit_r2,
         'oos_r2': oos_r2,
-        # Group C placeholders
-        'corr_x_beta_d': np.nan, 'corr_x_beta_u': np.nan, 'corr_x_d_u': np.nan,
+        # Group C
+        'corr_x_beta_d': corr_x_beta_d,
+        'corr_x_beta_u': corr_x_beta_u,
+        'corr_x_d_u': corr_x_d_u,
         # Group D placeholders
         'corr_F_beta_aM': np.nan, 'corr_F_d': np.nan, 'corr_F_u': np.nan,
     }

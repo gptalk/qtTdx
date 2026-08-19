@@ -2682,3 +2682,36 @@ def test_oos_uses_train_params_only():
     expected_oos_r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else np.nan
     assert abs(row['oos_r2'] - expected_oos_r2) < 1e-6, \
         f"oos_r2 mismatch: stored={row['oos_r2']:.4f} vs expected={expected_oos_r2:.4f}"
+
+
+def test_x_x_correlation_per_stock_scalar():
+    """V0.2-D §5: X-X correlation is scalar per stock (NOT corr(q, X) which is undefined)."""
+    from projection.ablation_fit import compute_x_x_correlations
+    rng = np.random.default_rng(0)
+    T = 100
+    X = rng.normal(0, 1, (T, 3))
+    out = compute_x_x_correlations(X)
+    assert len(out) == 3, "must return 3 scalars (one per pair)"
+    c_beta_d, c_beta_u, c_d_u = out
+    # All scalars
+    assert all(isinstance(v, float) for v in (c_beta_d, c_beta_u, c_d_u))
+    # Reproduce via direct np.corrcoef
+    expected_bd = float(np.corrcoef(X[:, 0], X[:, 1])[0, 1])
+    expected_bu = float(np.corrcoef(X[:, 0], X[:, 2])[0, 1])
+    expected_du = float(np.corrcoef(X[:, 1], X[:, 2])[0, 1])
+    assert abs(c_beta_d - expected_bd) < 1e-9
+    assert abs(c_beta_u - expected_bu) < 1e-9
+    assert abs(c_d_u - expected_du) < 1e-9
+
+
+def test_x_x_correlation_matches_cond_x_pattern():
+    """V0.2-D §5: large |corr_x_beta_d| generally coincides with large condition_number."""
+    from projection.ablation_fit import compute_x_x_correlations
+    rng = np.random.default_rng(1)
+    T = 200
+    # Highly collinear X_beta with X_d
+    X = rng.normal(0, 1, (T, 3))
+    X[:, 1] = X[:, 0] + 0.01 * rng.normal(0, 1, T)  # X_d ~ X_beta
+    X[:, 2] = rng.normal(0, 1, T)
+    c_beta_d, _, _ = compute_x_x_correlations(X)
+    assert abs(c_beta_d) > 0.9, f"expected high correlation; got {c_beta_d}"
