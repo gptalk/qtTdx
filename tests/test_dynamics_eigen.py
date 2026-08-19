@@ -2417,7 +2417,13 @@ def test_in_sample_fit_5_synthetic_stocks(tmp_path):
         assert path.exists(), f"missing {path}"
         df = pd.read_csv(path)
         assert len(df) == 5
-        assert len(df.columns) == 18  # spec §5 schema (17 in count comment is typo; CSV_COLUMNS list has 18 entries)
+        # V0.2-D Phase 1: CSV_COLUMNS extended to 36 (18 existing + 9 Group A + 3 Group B + 3 Group C + 3 Group D)
+        assert len(df.columns) == 36, f"expected 36 columns, got {len(df.columns)}"
+        # Group A fields exist (NaN at this stage — fit_one_in_sample doesn't populate them)
+        for k in ('q_train_fit', 'k_train_fit', 'c_train_fit',
+                  'q_test_fit', 'k_test_fit', 'c_test_fit',
+                  'q_drift', 'k_drift', 'c_drift'):
+            assert k in df.columns, f"missing column {k}"
         # ic_real / ic_null are NaN at this stage (Tasks 3+4 will populate)
         assert df['ic_real'].isna().all()
         assert df['ic_null'].isna().all()
@@ -2594,3 +2600,85 @@ def test_summarize_ablation_writes_three_delta_ic():
             actual = float(summary.loc['diff_of_medians_delta_ic', f'model_{m}'])
             assert abs(actual - expected) < 1e-9, \
                 f"diff_of_medians_delta_ic[m={m}] mismatch: {actual} vs {expected}"
+
+
+# === V0.2-D Phase 1: Parameter Stability (Group A) ===
+
+def test_fit_split_returns_train_test_params():
+    """V0.2-D Phase 1: fit_one_split returns train/test params + drifts."""
+    from projection.ablation_fit import fit_one_split
+    import tempfile, os
+    mv_dir = tempfile.mkdtemp()
+    csv_path = os.path.join(mv_dir, "movement_idx_stk000001.csv")
+    T = 200
+    rng = np.random.default_rng(0)
+    beta = 1.2 + 0.001 * np.arange(T)
+    delta_v = rng.normal(0, 1, (T, 2))
+    delta_u = beta[:, None] * delta_v + rng.normal(0, 0.5, (T, 2))
+    pd.DataFrame({
+        'Date': pd.date_range('2024-01-01', periods=T),
+        'Move_Delta_Vol_idx': delta_v[:, 0],
+        'Move_Delta_Amt_idx': delta_v[:, 1],
+        'Move_Delta_Vol_stk': delta_u[:, 0],
+        'Move_Delta_Amt_stk': delta_u[:, 1],
+        'Move_Proj_Coeff': beta,
+    }).to_csv(csv_path, index=False)
+    row = fit_one_split(csv_path, 'stk', 'idx', '000001.SZ', 'T', '000001.SH', model_id=2)
+    # Group A fields exist
+    for k in ('q_train_fit', 'k_train_fit', 'c_train_fit',
+              'q_test_fit', 'k_test_fit', 'c_test_fit',
+              'q_drift', 'k_drift', 'c_drift'):
+        assert k in row, f"missing field {k}"
+    # Both fits finite
+    assert np.isfinite(row['q_train_fit']) and np.isfinite(row['q_test_fit'])
+    # Drift = test − train
+    assert abs(row['q_drift'] - (row['q_test_fit'] - row['q_train_fit'])) < 1e-9
+
+
+def test_param_drift_no_l2_aggregation():
+    """V0.2-D §4: param_drift_l2 is FORBIDDEN — only separate drifts exist."""
+    from projection import ablation_fit
+    src = open(ablation_fit.__file__, encoding='utf-8').read()
+    assert 'param_drift_l2' not in src, \
+        "V0.2-D §4 forbids param_drift_l2 (q is dimensionless, k/c have units)"
+
+
+def test_oos_uses_train_params_only():
+    """V0.2-D §7: oos_r2 = R²(Y_test, X_test · θ_train) — θ_test must NOT be used."""
+    from projection import ablation_fit
+    from projection.ablation_fit import fit_one_split
+    import tempfile, os
+    mv_dir = tempfile.mkdtemp()
+    csv_path = os.path.join(mv_dir, "movement_idx_stk000002.csv")
+    T = 200
+    rng = np.random.default_rng(1)
+    beta = 1.2 + 0.001 * np.arange(T)
+    delta_v = rng.normal(0, 1, (T, 2))
+    delta_u = beta[:, None] * delta_v + rng.normal(0, 0.5, (T, 2))
+    pd.DataFrame({
+        'Date': pd.date_range('2024-01-01', periods=T),
+        'Move_Delta_Vol_idx': delta_v[:, 0],
+        'Move_Delta_Amt_idx': delta_v[:, 1],
+        'Move_Delta_Vol_stk': delta_u[:, 0],
+        'Move_Delta_Amt_stk': delta_u[:, 1],
+        'Move_Proj_Coeff': beta,
+    }).to_csv(csv_path, index=False)
+    row = fit_one_split(csv_path, 'stk', 'idx', '000002.SZ', 'T', '000001.SH', model_id=2)
+    # oos_r2 must use train params only
+    delta_u, delta_v, beta_arr = ablation_fit._read_movement(csv_path, 'stk', 'idx')
+    u_vec, d_vec, a_u_vec, a_v_vec, bdv_vec = ablation_fit._build_kinematics_ext(delta_u, delta_v, beta_arr)
+    X, Y = ablation_fit.BUILDERS[2](u_vec, d_vec, a_u_vec, a_v_vec, beta_arr, bdv_vec)
+    mask = np.isfinite(Y) & np.all(np.isfinite(X), axis=1)
+    valid = np.where(mask)[0]
+    n_valid = len(valid)
+    n_train = int(np.floor(0.7 * n_valid))
+    train_idx = valid[:n_train]
+    test_idx = valid[n_train:]
+    # Reproduce θ_train
+    theta_train = np.array([row['q_train_fit'], row['k_train_fit'], row['c_train_fit']])
+    Y_pred_oos = X[test_idx] @ theta_train
+    ss_res = np.sum((Y[test_idx] - Y_pred_oos) ** 2)
+    ss_tot = np.sum((Y[test_idx] - Y[test_idx].mean()) ** 2)
+    expected_oos_r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else np.nan
+    assert abs(row['oos_r2'] - expected_oos_r2) < 1e-6, \
+        f"oos_r2 mismatch: stored={row['oos_r2']:.4f} vs expected={expected_oos_r2:.4f}"

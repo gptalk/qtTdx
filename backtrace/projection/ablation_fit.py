@@ -128,13 +128,26 @@ from typing import List, Tuple
 
 CSV_OUT_DIR = 'data/projection'
 
-# Schema (17 cols, identical across all 4 models)
+# Schema (V0.2-D Phase 1: 36 cols, identical across all 4 models)
+#   18 existing (V0.1) + 9 Group A + 3 Group B + 3 Group C + 3 Group D
 CSV_COLUMNS = [
+    # [18 existing — V0.1]
     'code', 'name', 'index_code', 'index_tag', 'stock_tag',
-    'n_train', 'n_test', 'condition_number', 'regressor_corr', 'r2',
+    'n_train', 'n_test',
+    'condition_number', 'regressor_corr', 'r2',  # r2 语义改名 = train_fit_r2
     'identification_status', 'fit_quality',
     'q_hat', 'k_hat', 'c_hat', 'f_self_loss',
     'ic_real', 'ic_null',
+    # [9 new — Group A: parameter stability, V0.2-D §4]
+    'q_train_fit', 'k_train_fit', 'c_train_fit',
+    'q_test_fit',  'k_test_fit',  'c_test_fit',
+    'q_drift',     'k_drift',     'c_drift',
+    # [3 new — Group B: three R², V0.2-D §7]
+    'train_fit_r2', 'test_fit_r2', 'oos_r2',
+    # [3 new — Group C: X-X collinearity, V0.2-D §5]
+    'corr_x_beta_d', 'corr_x_beta_u', 'corr_x_d_u',
+    # [3 new — Group D: residual structure, V0.2-D §6]
+    'corr_F_beta_aM', 'corr_F_d', 'corr_F_u',
 ]
 
 BUILDERS = {
@@ -404,13 +417,136 @@ def fit_one_with_placebo(movement_csv: str, stock_tag: str, index_tag: str,
     }
 
 
+# === V0.2-D Phase 1: Train/Test split + parameter stability (Group A/B) ===
+
+def _oos_r2_from_train_params(X_test: np.ndarray, Y_test: np.ndarray,
+                               theta_train: np.ndarray) -> float:
+    """V0.2-D §7: oos_r2 = R²(Y_test, X_test · θ_train)."""
+    if X_test.shape[0] < 2:
+        return np.nan
+    Y_pred = X_test @ theta_train
+    ss_res = float(np.sum((Y_test - Y_pred) ** 2))
+    ss_tot = float(np.sum((Y_test - np.mean(Y_test)) ** 2))
+    return 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else np.nan
+
+
+def _refit_window(X_window: np.ndarray, Y_window: np.ndarray, model_id: int):
+    """Fit OLS on one window; return (theta, f_res, cond, r2)."""
+    theta, f_res, n_v, rank, cond, rcorr, r2 = ols_fit(X_window, Y_window)
+    return theta, f_res, cond, r2
+
+
+def fit_one_split(movement_csv: str, stock_tag: str, index_tag: str,
+                  code: str, name: str, index_code: str, model_id: int) -> dict:
+    """V0.2-D: 36-col diagnostic row — train/test refit + OOS + diagnostics.
+
+    Algorithm (V0.2-D §3 strict layering):
+      1. Reconstruct kinematics → X, Y.
+      2. mask = isfinite(Y) & all-isfinite(X).
+      3. Split valid indices 70/30 → train_idx_abs, test_idx_abs.
+      4. Layer 1: OLS on (X_train, Y_train) → θ_train, train_fit_r2.
+      5. Layer 2 (diagnostic only): OLS on (X_test, Y_test) → θ_test_fit, test_fit_r2.
+      6. Layer 3 (only valid generalization): Ŷ_oos = X_test · θ_train, oos_r2, oos_ic.
+      7. Group A fields: q/k/c train/test, drifts.
+      8. Group C: X-X correlations on X_train.
+      9. Group D: residual F_self = Y_train − X_train · θ_train, correlate with X_train columns.
+    """
+    delta_u, delta_v, beta = _read_movement(movement_csv, stock_tag, index_tag)
+    u_vec, d_vec, a_u_vec, a_v_vec, bdv_vec = _build_kinematics_ext(delta_u, delta_v, beta)
+    X, Y = BUILDERS[model_id](u_vec, d_vec, a_u_vec, a_v_vec, beta, bdv_vec)
+    mask = np.isfinite(Y) & np.all(np.isfinite(X), axis=1)
+    valid_indices = np.where(mask)[0]
+    n_valid = len(valid_indices)
+
+    # NaN-fill template
+    empty = {col: np.nan for col in CSV_COLUMNS}
+    empty.update({
+        'code': code, 'name': name, 'index_code': index_code,
+        'index_tag': index_tag, 'stock_tag': stock_tag,
+        'identification_status': 'singular', 'fit_quality': 'uninformative',
+        'q_hat': 1.0 if model_id in (0, 1) else np.nan,
+    })
+
+    if n_valid < 20:
+        empty['n_train'] = n_valid
+        empty['n_test'] = 0
+        return empty
+
+    train_idx_rel, test_idx_rel = oos_split_indices(n_valid, train_frac=0.7)
+    train_idx_abs = valid_indices[train_idx_rel]
+    test_idx_abs = valid_indices[test_idx_rel]
+
+    X_train, Y_train = X[train_idx_abs], Y[train_idx_abs]
+    X_test, Y_test = X[test_idx_abs], Y[test_idx_abs]
+
+    # Layer 1: train fit (only valid source for OOS prediction)
+    theta_train, f_res_train, cond_train, train_fit_r2 = _refit_window(X_train, Y_train, model_id)
+
+    # Layer 2: test refit (diagnostic only — must not leak into oos_r2 / oos_ic)
+    theta_test, f_res_test, _, test_fit_r2 = _refit_window(X_test, Y_test, model_id)
+
+    # Layer 3: OOS prediction with train params only
+    oos_r2 = _oos_r2_from_train_params(X_test, Y_test, theta_train)
+    Y_pred_oos = X_test @ theta_train
+    oos_ic = compute_spearman_ic(Y_pred_oos, Y_test)
+
+    # Placebo (reuse existing logic)
+    X_train_perm = permute_regressors(X_train, Y_train, seed=PLACEBO_SEED)
+    theta_null, *_ = ols_fit(X_train_perm, Y_train)
+    Y_pred_null = X_test @ theta_null
+    ic_null = compute_spearman_ic(Y_pred_null, Y_test)
+
+    # Group A: parameter stability (separate drifts; no L2 aggregation, V0.2-D §4)
+    if model_id in (0, 1):
+        q_train, k_train, c_train = 1.0, float(theta_train[0]), float(theta_train[1])
+        q_test_fit, k_test_fit, c_test_fit = 1.0, float(theta_test[0]), float(theta_test[1])
+    else:
+        q_train, k_train, c_train = (float(theta_train[0]), float(theta_train[1]), float(theta_train[2]))
+        q_test_fit, k_test_fit, c_test_fit = (float(theta_test[0]), float(theta_test[1]), float(theta_test[2]))
+    q_drift = q_test_fit - q_train
+    k_drift = k_test_fit - k_train
+    c_drift = c_test_fit - c_train
+
+    # Group C: X-X collinearity on X_train (Task 3 fills in)
+    # Group D: residual structure (Task 4 fills in)
+    # For now, leave as NaN — Tasks 3 and 4 populate.
+
+    return {
+        'code': code, 'name': name, 'index_code': index_code,
+        'index_tag': index_tag, 'stock_tag': stock_tag,
+        'n_train': X_train.shape[0], 'n_test': X_test.shape[0],
+        'condition_number': cond_train,
+        'regressor_corr': float(np.nan),  # populated by Task 3 helper if needed
+        'r2': train_fit_r2,
+        'identification_status': compute_identification_status(
+            int(np.linalg.matrix_rank(X_train)), cond_train),
+        'fit_quality': compute_fit_quality(train_fit_r2),
+        'q_hat': q_train,
+        'k_hat': k_train, 'c_hat': c_train,
+        'f_self_loss': f_res_train,
+        'ic_real': oos_ic, 'ic_null': ic_null,
+        # Group A
+        'q_train_fit': q_train, 'k_train_fit': k_train, 'c_train_fit': c_train,
+        'q_test_fit': q_test_fit, 'k_test_fit': k_test_fit, 'c_test_fit': c_test_fit,
+        'q_drift': q_drift, 'k_drift': k_drift, 'c_drift': c_drift,
+        # Group B
+        'train_fit_r2': train_fit_r2,
+        'test_fit_r2': test_fit_r2,
+        'oos_r2': oos_r2,
+        # Group C placeholders
+        'corr_x_beta_d': np.nan, 'corr_x_beta_u': np.nan, 'corr_x_d_u': np.nan,
+        # Group D placeholders
+        'corr_F_beta_aM': np.nan, 'corr_F_d': np.nan, 'corr_F_u': np.nan,
+    }
+
+
 def write_ablation_csvs(targets: List[Tuple], output_dir: str):
-    """Final 4 CSVs with both ic_real and ic_null populated."""
+    """V0.2-D: 4 CSVs with full 36-col diagnostic schema (Models 2/3 fully populated; Models 0/1 partial)."""
     os.makedirs(output_dir, exist_ok=True)
     rows_by_model = {m: [] for m in range(4)}
     for code, name, mv_csv, index_tag, stock_tag, index_code in targets:
         for m in range(4):
-            row = fit_one_with_placebo(mv_csv, stock_tag, index_tag, code, name, index_code, m)
+            row = fit_one_split(mv_csv, stock_tag, index_tag, code, name, index_code, m)
             rows_by_model[m].append(row)
     for m in range(4):
         df = pd.DataFrame(rows_by_model[m], columns=CSV_COLUMNS)
