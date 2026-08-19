@@ -36,7 +36,7 @@ Phase 5: decision gate (summary + HTML + TXT) ← Task 5
 - **OOS split**: 70/30 (train = `[0, floor(0.7·(T−2))]`, test = `[floor(0.7·(T−2)), T−2]`); no overlap; no shuffle.
 - **Placebo**: `np.random.default_rng(seed=42)` (fixed, no tuning); permute regressors ONLY (NOT `a_S`); 4 independent permuted indices per stock.
 - **Diagnostics reuse from V0**: `cond(X)` (NOT `cond(XᵀX)`), `regressor_corr` (X column correlation), `R²` with SS_tot≈0 → NaN guard, `identification_status` (rank + cond), `fit_quality` (R² buckets).
-- **Per-stock CSV schema (17 cols, identical for all 4 models)**:
+- **Per-stock CSV schema (18 cols, identical for all 4 models)**:
   `code, name, index_code, index_tag, stock_tag, n_train, n_test, condition_number, regressor_corr, r2, identification_status, fit_quality, q_hat, k_hat, c_hat, f_self_loss, ic_real, ic_null`
 - **CLI flags write-dead**: `--model {0|1|2|3}`, `--all`, `--limit N`, `--no-placebo`, `--input PATH`. **禁止** `--pick-best-ic`, `--maximize-ic`, `--feature-engineering`, `--reverse-select`.
 - **Forbidden (YAGNI)**: redesign d_vec; modify F_self definition; change prediction target; change trading strategy; add new regressors beyond β·a_M, β̇·v_M, −d, −u; tune for IC; reverse-select stocks.
@@ -361,7 +361,7 @@ git commit -m "feat(projection): V0.1 Task 1 — OLS dispatcher + 4 design matri
 **Interfaces:**
 - Produces:
   - `fit_one_in_sample(movement_csv, stock_tag, index_tag, model_id) -> dict`
-  - `write_in_sample_csvs(movement_csvs, output_dir)` → writes 4 CSVs at `kc_estimates_model{0,1,2,3}.csv` (17 cols, ic_real/ic_null = NaN at this stage)
+  - `write_in_sample_csvs(movement_csvs, output_dir)` → writes 4 CSVs at `kc_estimates_model{0,1,2,3}.csv` (18 cols, ic_real/ic_null = NaN at this stage)
   - `compute_identification_status(rank, cond)` → `{well_conditioned, ill_conditioned, unidentifiable, singular}`
   - `compute_fit_quality(r2)` → `{good, weak, poor, uninformative}`
 
@@ -371,7 +371,7 @@ Append to `tests/test_dynamics_eigen.py`:
 
 ```python
 def test_in_sample_fit_5_synthetic_stocks(tmp_path):
-    """Process 5 synthetic stocks through all 4 models, verify 4 CSV outputs with 17 cols."""
+    """Process 5 synthetic stocks through all 4 models, verify 4 CSV outputs with 18 cols."""
     import tempfile, os
     from projection.ablation_fit import write_in_sample_csvs
     
@@ -433,7 +433,7 @@ from typing import List, Tuple
 
 CSV_OUT_DIR = 'data/projection'
 
-# Schema (17 cols, identical across all 4 models)
+# Schema (18 cols, identical across all 4 models)
 CSV_COLUMNS = [
     'code', 'name', 'index_code', 'index_tag', 'stock_tag',
     'n_train', 'n_test', 'condition_number', 'regressor_corr', 'r2',

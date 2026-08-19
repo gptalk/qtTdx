@@ -211,10 +211,10 @@ IC_real(s) = Spearman(â_S^test(s), a_S^test(s)) ∈ [−1, +1]
 
 ```
 data/projection/
-├── kc_estimates_model0.csv      # 17 列(含 q_hat=1.0 固定列)
-├── kc_estimates_model1.csv      # 17 列(含 q_hat=1.0 固定列)
-├── kc_estimates_model2.csv      # 17 列(q_hat=OLS 估计)
-├── kc_estimates_model3.csv      # 17 列(q_hat=OLS 估计)
+├── kc_estimates_model0.csv      # 18 列(含 q_hat=1.0 固定列)
+├── kc_estimates_model1.csv      # 18 列(含 q_hat=1.0 固定列)
+├── kc_estimates_model2.csv      # 18 列(q_hat=OLS 估计)
+├── kc_estimates_model3.csv      # 18 列(q_hat=OLS 估计)
 ├── kc_ablation_summary.csv      # 4×10 metric 矩阵
 ├── kc_ablation_recommendation.txt  # UTF-8 中文决策摘要
 └── ablation_distribution.html   # 4-panel plotly: R² / IC / ΔIC / q̂
