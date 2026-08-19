@@ -459,6 +459,33 @@ def compute_x_x_correlations(X: np.ndarray):
     return (float(corr[0, 1]), float(corr[0, 2]), float(corr[1, 2]))
 
 
+def compute_residual_correlations(F_self: np.ndarray, X_train: np.ndarray):
+    """V0.2-D §6: Pearson correlation of residual with each design-matrix column.
+
+    F_self shape (n_train,): residual = Y_train − X_train · θ_train.
+    X_train shape (n_train, 3): columns are [β·a_M, −d, −u].
+
+    Returns: (corr_F_beta_aM, corr_F_d, corr_F_u) — 3 floats, NaN if zero variance.
+
+    Diagnostic interpretation:
+      - All three near 0 → dynamics correctly specified for in-sample window.
+      - corr_F_d systemically > 0.2 → missing term in d-evolution (e.g., d², ḋ).
+      - corr_F_u systemically large → u-coupling mis-specified.
+    """
+    if F_self.shape[0] < 3 or X_train.shape[1] != 3:
+        return (np.nan, np.nan, np.nan)
+    if F_self.std() < 1e-12:
+        return (np.nan, np.nan, np.nan)
+    out = []
+    for j in range(3):
+        col_data = X_train[:, j]
+        if col_data.std() < 1e-12:
+            out.append(np.nan)
+        else:
+            out.append(float(np.corrcoef(F_self, col_data)[0, 1]))
+    return tuple(out)
+
+
 def fit_one_split(movement_csv: str, stock_tag: str, index_tag: str,
                   code: str, name: str, index_code: str, model_id: int) -> dict:
     """V0.2-D: 36-col diagnostic row — train/test refit + OOS + diagnostics.
@@ -533,8 +560,9 @@ def fit_one_split(movement_csv: str, stock_tag: str, index_tag: str,
     # Group C: X-X collinearity on X_train (V0.2-D §5)
     corr_x_beta_d, corr_x_beta_u, corr_x_d_u = compute_x_x_correlations(X_train)
 
-    # Group D: residual structure (Task 4 fills in)
-    # For now, leave as NaN — Task 4 populates.
+    # Group D: residual correlations (V0.2-D §6)
+    F_self = Y_train - X_train @ theta_train
+    corr_F_beta_aM, corr_F_d, corr_F_u = compute_residual_correlations(F_self, X_train)
 
     return {
         'code': code, 'name': name, 'index_code': index_code,
@@ -562,8 +590,10 @@ def fit_one_split(movement_csv: str, stock_tag: str, index_tag: str,
         'corr_x_beta_d': corr_x_beta_d,
         'corr_x_beta_u': corr_x_beta_u,
         'corr_x_d_u': corr_x_d_u,
-        # Group D placeholders
-        'corr_F_beta_aM': np.nan, 'corr_F_d': np.nan, 'corr_F_u': np.nan,
+        # Group D
+        'corr_F_beta_aM': corr_F_beta_aM,
+        'corr_F_d': corr_F_d,
+        'corr_F_u': corr_F_u,
     }
 
 

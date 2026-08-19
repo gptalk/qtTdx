@@ -2715,3 +2715,40 @@ def test_x_x_correlation_matches_cond_x_pattern():
     X[:, 2] = rng.normal(0, 1, T)
     c_beta_d, _, _ = compute_x_x_correlations(X)
     assert abs(c_beta_d) > 0.9, f"expected high correlation; got {c_beta_d}"
+
+
+# === V0.2-D Task 4 — Group D: residual structure (corr(F_self, X_train columns)) ===
+
+def test_residual_correlation_white_noise_zero():
+    """V0.2-D §6: synthetic Model 2 with Gaussian noise → corr_F_* ≈ 0."""
+    from projection.ablation_fit import compute_residual_correlations
+    rng = np.random.default_rng(0)
+    # NOTE: brief originally wrote T=200, but std of sample-corr under the null
+    # is 1/sqrt(T-1) ≈ 0.07, so the 0.05 threshold is unreliable. Bumping to
+    # T=2000 brings std ≈ 0.022 (max|corr| over 3 cols well below 0.05 for seed=0).
+    T = 2000
+    X_train = rng.normal(0, 1, (T, 3))
+    # Fit produces near-zero residuals if model is correctly specified
+    theta = np.array([0.5, 0.3, 0.1])
+    Y_train = X_train @ theta + rng.normal(0, 0.001, T)
+    F_self = Y_train - X_train @ theta
+    c_b, c_d, c_u = compute_residual_correlations(F_self, X_train)
+    assert all(abs(v) < 0.05 for v in (c_b, c_d, c_u)), \
+        f"white-noise residuals must give corr ≈ 0; got ({c_b}, {c_d}, {c_u})"
+
+
+def test_residual_correlation_missing_term_detects():
+    """V0.2-D §6: missing dynamics term leaves systematic residual correlated with X."""
+    from projection.ablation_fit import compute_residual_correlations
+    rng = np.random.default_rng(2)
+    T = 300
+    X_train = rng.normal(0, 1, (T, 3))
+    theta = np.array([0.5, 0.3, 0.1])
+    # Inject a missing LINEAR term correlated with X[:,1] (= −d column).
+    # NOTE: brief originally wrote `** 2` here, but E[X^3] = 0 for centered normal
+    # → corr(X^2, X) = 0, so the test would always fail. Linear missing term
+    # is what the brief's prose ("correlated with X") actually requires.
+    Y_train = X_train @ theta + 0.5 * X_train[:, 1] + rng.normal(0, 0.1, T)
+    F_self = Y_train - X_train @ theta
+    c_b, c_d, c_u = compute_residual_correlations(F_self, X_train)
+    assert abs(c_d) > 0.3, f"missing-term residual must correlate with X_d; got {c_d}"
