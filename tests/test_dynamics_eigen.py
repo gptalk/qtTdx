@@ -2517,3 +2517,46 @@ def test_placebo_real_signal_beats_null():
     }).to_csv(csv_path, index=False)
     row = fit_one_with_placebo(csv_path, stock_tag, 'idx', '000003.SZ', 'T', '000001.SH', model_id=3)
     assert row['ic_real'] - row['ic_null'] > 0.1
+
+
+# === v0.1 — Task 5: Summary + HTML + Recommendation TXT + CLI ===
+
+def test_cli_smoke_full_ablation(tmp_path):
+    """Run --all --limit 5 against 5 synthetic stocks, verify all outputs exist."""
+    import subprocess, tempfile, os
+    mv_dir = tmp_path / "movement"
+    mv_dir.mkdir()
+    for i in range(5):
+        rng = np.random.default_rng(seed=i)
+        T = 100
+        beta = 1.0 + 0.001 * np.arange(T)
+        delta_v = rng.normal(0, 1, (T, 2))
+        delta_u = beta[:, None] * delta_v + rng.normal(0, 0.5, (T, 2))
+        pd.DataFrame({
+            'Date': pd.date_range('2024-01-01', periods=T),
+            'Move_Delta_Vol_idx': delta_v[:, 0],
+            'Move_Delta_Amt_idx': delta_v[:, 1],
+            f'Move_Delta_Vol_stk{i:06d}': delta_u[:, 0],
+            f'Move_Delta_Amt_stk{i:06d}': delta_u[:, 1],
+            'Move_Proj_Coeff': beta,
+        }).to_csv(mv_dir / f"movement_idx_stk{i:06d}.csv", index=False)
+
+    out_dir = tmp_path / "out"
+    result = subprocess.run([
+        sys.executable,
+        "backtrace/projection/ablation_fit.py",
+        "--all", "--limit", "5",
+        "--movement-dir", str(mv_dir),
+        "--output-dir", str(out_dir),
+    ], capture_output=True, text=True, timeout=120,
+       cwd=REPO_ROOT, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    # 4 per-model CSVs
+    for m in range(4):
+        assert (out_dir / f"kc_estimates_model{m}.csv").exists()
+    # summary CSV
+    assert (out_dir / "kc_ablation_summary.csv").exists()
+    # recommendation TXT (UTF-8 Chinese)
+    assert (out_dir / "kc_ablation_recommendation.txt").exists()
+    # HTML
+    assert (out_dir / "ablation_distribution.html").exists()

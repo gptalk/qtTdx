@@ -416,3 +416,250 @@ def write_ablation_csvs(targets: List[Tuple], output_dir: str):
         df = pd.DataFrame(rows_by_model[m], columns=CSV_COLUMNS)
         df.to_csv(os.path.join(output_dir, f'kc_estimates_model{m}.csv'),
                   index=False, encoding='utf-8')
+
+
+# === V0.1 Task 5: Summary + HTML + Recommendation TXT + CLI ===
+import argparse
+
+
+def list_movement_csvs(movement_dir: str):
+    """Scan movement_dir for movement_*.csv; return list of (code, name, mv_csv, idx_tag, stk_tag, idx_code)."""
+    targets = []
+    for fn in sorted(os.listdir(movement_dir)):
+        if not (fn.startswith('movement_') and fn.endswith('.csv')):
+            continue
+        stem = fn[len('movement_'):-len('.csv')]
+        parts = stem.split('_')
+        if len(parts) < 2:
+            continue
+        index_tag = parts[0]
+        stock_tag = '_'.join(parts[1:])
+        suf = stock_tag[:6]
+        code = stock_tag + ('.SH' if suf.startswith(('6', '9', '5')) else '.SZ')
+        idx_code = index_tag + ('.SH' if suf.startswith(('6', '9', '5')) else '.SZ')
+        targets.append((code, None, os.path.join(movement_dir, fn),
+                        index_tag, stock_tag, idx_code))
+    return targets
+
+
+def summarize_ablation(csv_paths: dict) -> pd.DataFrame:
+    """4×10 metric matrix from 4 per-model CSVs.
+
+    csv_paths: {0: path_model0, 1: ..., 2: ..., 3: ...}
+    Returns DataFrame with rows = metrics, cols = model_N.
+    """
+    metrics = ['median_r2', 'p25_r2', 'p75_r2', 'median_cond',
+               'median_ic_real', 'median_ic_null', 'median_delta_ic',
+               'median_abs_q_minus_1', 'delta_r2_vs_m0', 'delta_ic_vs_m0']
+    summary = pd.DataFrame(index=metrics, columns=['model_0', 'model_1', 'model_2', 'model_3'])
+
+    r2_m0 = None
+    ic_real_m0 = None
+    for m in range(4):
+        df = pd.read_csv(csv_paths[m])
+        r2 = df['r2'].dropna()
+        cond = df['condition_number'].dropna()
+        ic_real = df['ic_real'].dropna()
+        ic_null = df['ic_null'].dropna()
+        q_hat = df['q_hat'].dropna()
+        summary.loc['median_r2', f'model_{m}'] = float(np.median(r2)) if len(r2) else np.nan
+        summary.loc['p25_r2', f'model_{m}'] = float(np.percentile(r2, 25)) if len(r2) else np.nan
+        summary.loc['p75_r2', f'model_{m}'] = float(np.percentile(r2, 75)) if len(r2) else np.nan
+        summary.loc['median_cond', f'model_{m}'] = float(np.median(cond)) if len(cond) else np.nan
+        summary.loc['median_ic_real', f'model_{m}'] = float(np.median(ic_real)) if len(ic_real) else np.nan
+        summary.loc['median_ic_null', f'model_{m}'] = float(np.median(ic_null)) if len(ic_null) else np.nan
+        summary.loc['median_delta_ic', f'model_{m}'] = (
+            float(np.median(ic_real - ic_null)) if len(ic_real) and len(ic_null) else np.nan
+        )
+        if m in (2, 3):
+            summary.loc['median_abs_q_minus_1', f'model_{m}'] = (
+                float(np.median(np.abs(q_hat - 1.0))) if len(q_hat) else np.nan
+            )
+        if m == 0:
+            r2_m0 = r2.values if len(r2) else None
+            ic_real_m0 = ic_real.values if len(ic_real) else None
+        if m >= 1 and r2_m0 is not None and len(r2):
+            min_len = min(len(r2), len(r2_m0))
+            summary.loc['delta_r2_vs_m0', f'model_{m}'] = float(np.median(r2.values[:min_len] - r2_m0[:min_len]))
+        if m >= 1 and ic_real_m0 is not None and len(ic_real):
+            min_len = min(len(ic_real), len(ic_real_m0))
+            summary.loc['delta_ic_vs_m0', f'model_{m}'] = float(np.median(ic_real.values[:min_len] - ic_real_m0[:min_len]))
+
+    return summary
+
+
+def build_ablation_html(summary_df: pd.DataFrame, output_path: str) -> str:
+    """4-panel plotly dark template: R² / IC_real vs IC_null / ΔIC / q̂ distribution."""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    fig = make_subplots(rows=2, cols=2, subplot_titles=(
+        'R² distribution (4 models)',
+        'IC_real vs IC_null (4 models)',
+        'ΔIC = IC_real − IC_null (3 corrections)',
+        '|q̂ − 1| distribution (Models 2/3)',
+    ))
+    colors = {0: '#1f77b4', 1: '#ff7f0e', 2: '#2ca02c', 3: '#d62728'}
+
+    # Panel 1: median R² bar
+    r2_med = summary_df.loc['median_r2'].astype(float)
+    fig.add_trace(go.Bar(x=r2_med.index, y=r2_med.values,
+                         marker_color=[colors[i] for i in range(4)],
+                         name='median R²', showlegend=False), row=1, col=1)
+
+    # Panel 2: IC_real vs IC_null bar grouped
+    ic_real = summary_df.loc['median_ic_real'].astype(float)
+    ic_null = summary_df.loc['median_ic_null'].astype(float)
+    fig.add_trace(go.Bar(x=ic_real.index, y=ic_real.values, name='IC_real',
+                         marker_color='steelblue'), row=1, col=2)
+    fig.add_trace(go.Bar(x=ic_null.index, y=ic_null.values, name='IC_null',
+                         marker_color='lightgray'), row=1, col=2)
+
+    # Panel 3: ΔIC for Models 1/2/3 vs Model 0
+    delta_ic = summary_df.loc['delta_ic_vs_m0'].dropna().astype(float)
+    fig.add_trace(go.Bar(x=delta_ic.index, y=delta_ic.values,
+                         marker_color=[colors[i] for i in range(1, 4)],
+                         name='ΔIC vs M0', showlegend=False), row=2, col=1)
+
+    # Panel 4: |q̂ − 1| for Models 2/3
+    abs_q = summary_df.loc['median_abs_q_minus_1'].dropna().astype(float)
+    fig.add_trace(go.Bar(x=abs_q.index, y=abs_q.values,
+                         marker_color=[colors[i] for i in range(2, 4)],
+                         name='|q̂ − 1|', showlegend=False), row=2, col=2)
+
+    fig.update_layout(template='plotly_dark', height=800, title='Dynamics Specification Ablation (V0.1)')
+    fig.write_html(output_path)
+    return output_path
+
+
+def write_recommendation_txt(summary_df: pd.DataFrame, output_path: str) -> str:
+    """UTF-8 Chinese decision recommendation per spec §10 decision tree.
+
+    Per spec §10 写死:
+      - Step 1: ΔR²_M1 = median_s(R²_M1,s − R²_M0,s) > 0.005  (per-stock median delta)
+      - Step 2: median_s |q̂_M2,s − 1| > 0.1                    (per-stock median |q̂ − 1|)
+      - Step 3: median(IC_real_M3) − median(IC_null_M3) > 0.02  (difference of medians)
+
+    Mid-run 阈值 / verdict 禁止调整。
+    """
+    median_r2_m1 = float(summary_df.loc['median_r2', 'model_1'])
+    median_r2_m2 = float(summary_df.loc['median_r2', 'model_2'])
+    median_r2_m3 = float(summary_df.loc['median_r2', 'model_3'])
+    median_r2_m0 = float(summary_df.loc['median_r2', 'model_0'])
+    abs_q_m2 = float(summary_df.loc['median_abs_q_minus_1', 'model_2']) if 'median_abs_q_minus_1' in summary_df.index else np.nan
+    delta_ic_m3 = float(summary_df.loc['delta_ic_vs_m0', 'model_3'])
+    # Per-stock median ΔR² (写死, 不是 difference of medians)
+    delta_r2_m1 = float(summary_df.loc['delta_r2_vs_m0', 'model_1'])
+
+    # Step 1: β-drift ΔR² = median(R²_new − R²_old) per-stock > 0.005
+    step1_pass = delta_r2_m1 > 0.005
+    # Step 2: q ≠ 1 (median of per-stock |q̂ − 1|)
+    step2_pass = abs_q_m2 > 0.1
+    # Step 3: placebo ΔIC (difference of medians)
+    step3_pass = delta_ic_m3 > 0.02
+
+    if step1_pass and step2_pass and step3_pass:
+        verdict = 'GO — Model 3 三个 correction 都显著,推进 V0.2 接进 V6'
+    elif step1_pass and step3_pass:
+        verdict = 'PARTIAL — β-drift 有用,但 q=1 不显著错;Model 1 优先'
+    elif step2_pass and step3_pass:
+        verdict = 'PARTIAL — q≠1 有用,但 β-drift 不显著;Model 2 优先'
+    elif step3_pass:
+        verdict = 'MARGINAL — 仅 ΔIC 显著,单 correction 不够;需要 Model 3'
+    elif step1_pass or step2_pass:
+        verdict = 'WEAK — correction 改了 R² 但 OOS ΔIC < 0.02,可能是过拟合'
+    else:
+        verdict = 'STOP — 三个 correction 都无效,动力学方法论应收口(B)'
+
+    lines = [
+        '=' * 60,
+        'Dynamics Specification Correction — Recommendation',
+        '=' * 60,
+        f'Run date:  {pd.Timestamp.now().strftime("%Y-%m-%d")}',
+        '',
+        '--- Per-model median R² ---',
+        f'  Model 0 (baseline):        {median_r2_m0:.4f}',
+        f'  Model 1 (β-drift):         {median_r2_m1:.4f}',
+        f'  Model 2 (free q):          {median_r2_m2:.4f}',
+        f'  Model 3 (joint):           {median_r2_m3:.4f}',
+        '',
+        '--- ΔR² (per-stock median delta) vs Model 0 ---',
+        f'  ΔR²_M1: {delta_r2_m1:+.4f}     (Step 1 threshold > 0.005)',
+        '',
+        '--- |q̂ − 1| (per-stock median) ---',
+        f'  Model 2: {abs_q_m2:.4f}        (Step 2 threshold > 0.1)',
+        '',
+        '--- ΔIC (Model 3 IC_real median − IC_null median) vs Model 0 ---',
+        f'  ΔIC_M3: {delta_ic_m3:+.4f}    (Step 3 threshold > 0.02)',
+        '',
+        '--- Decision tree (spec §10) ---',
+        f'  Step 1 (β-drift ΔR² > 0.005): {"PASS" if step1_pass else "FAIL"}',
+        f'  Step 2 (|q̂−1| > 0.1):         {"PASS" if step2_pass else "FAIL"}',
+        f'  Step 3 (ΔIC vs M0 > 0.02):    {"PASS" if step3_pass else "FAIL"}',
+        '',
+        '--- Verdict ---',
+        f'  {verdict}',
+        '=' * 60,
+    ]
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+    return output_path
+
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description='V0.1 — Dynamics Specification Correction & Ablation'
+    )
+    p.add_argument('--model', type=int, choices=[0, 1, 2, 3], default=None,
+                   help='Single model to run; default = None (= require --all)')
+    p.add_argument('--all', action='store_true',
+                   help='Run all 4 models + summary + HTML + TXT')
+    p.add_argument('--limit', type=int, default=0,
+                   help='Max stocks to process; 0 = all')
+    p.add_argument('--no-placebo', action='store_true',
+                   help='Skip placebo test (faster smoke)')
+    p.add_argument('--movement-dir', default='data/projection',
+                   help='Directory containing movement_*.csv')
+    p.add_argument('--output-dir', default='data/projection',
+                   help='Output directory for CSV / HTML / TXT')
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+    if not (args.model is not None or args.all):
+        raise SystemExit('Must pass --model N or --all')
+
+    targets = list_movement_csvs(args.movement_dir)
+    if args.limit > 0:
+        targets = targets[:args.limit]
+    print(f'输入: {args.movement_dir}/movement_*.csv')
+    print(f'目标: {len(targets)} 只 (limit={args.limit})')
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    if args.no_placebo:
+        # Use OOS without placebo (Task 3 path)
+        write_oos_csvs(targets, args.output_dir)
+    else:
+        # Full ablation (Task 4 path)
+        write_ablation_csvs(targets, args.output_dir)
+
+    # Summary
+    csv_paths = {m: os.path.join(args.output_dir, f'kc_estimates_model{m}.csv') for m in range(4)}
+    summary_df = summarize_ablation(csv_paths)
+    summary_df.to_csv(os.path.join(args.output_dir, 'kc_ablation_summary.csv'),
+                      encoding='utf-8')
+
+    # HTML
+    html_path = build_ablation_html(summary_df,
+                                    os.path.join(args.output_dir, 'ablation_distribution.html'))
+    # TXT recommendation
+    txt_path = write_recommendation_txt(summary_df,
+                                        os.path.join(args.output_dir, 'kc_ablation_recommendation.txt'))
+    print(f'Summary: {args.output_dir}/kc_ablation_summary.csv')
+    print(f'HTML:    {html_path}')
+    print(f'TXT:     {txt_path}')
+
+
+if __name__ == '__main__':
+    main()
