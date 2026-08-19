@@ -288,19 +288,19 @@ PYTHONIOENCODING=utf-8 python backtrace/projection/ablation_fit.py \
 
 ```
 Step 1: 看 Model 1 vs Model 0
-   ΔR²_M1 > 0 显著(>5% 票 ΔR² > 0.005)?
+   ΔR²_M1 = median_s (R²_M1,s − R²_M0,s)  > 0.005 ?     ← per-stock median delta
      ↓ YES
    → β drift 是 specification 问题的主要来源
    → Model 3 比 Model 2 更值得看
 
 Step 2: 看 Model 2 vs Model 0
-   median |q̂ − 1| > 0.1 ?
+   median_s |q̂_M2,s − 1| > 0.1 ?                          ← per-stock median |q̂ − 1|
      ↓ YES
    → q=1 假设显著错,q 是 specification 问题的次要来源
    → Model 3 比 Model 1 更值得看
 
 Step 3: 看 Model 3 的 ΔIC vs placebo
-   median(IC_real_M3) > median(IC_null_M3) + 0.02 ?
+   median(IC_real_M3) − median(IC_null_M3) > 0.02 ?         ← difference of medians
      ↓ YES
    → 模型有真预测信息(即使 R² 仍低)
    → 结论:V0.2 = 接 Model 3 进 V6
@@ -316,9 +316,16 @@ Step 4: 兜底
    → V0.2 = 重新审视 F_self 定义(此 spec 之外)
 ```
 
+**ΔR² / |q̂ − 1| / ΔIC 定义写死**:
+- `ΔR²` = **median of per-stock deltas**(`median_s (R²_new,s − R²_old,s)`),NOT `median(R²_new) − median(R²_old)`。前者代表"典型股票的改善",后者受样本量/异常值影响。
+- `|q̂ − 1|` = **median of per-stock |q̂ − 1|**(per-stock),NOT `|median(q̂) − 1|`。
+- `ΔIC` = **difference of medians**(`median(IC_real) − median(IC_null)`),与 ΔR²/ΔIC 是不同的统计量(spec 写死后不改)。
+
 **禁止**:
 - ❌ 用 Step 1 + Step 2 同时 YES 但 ΔIC 不显著 → 推 Model 3 为最终模型(那只是过拟合)
 - ❌ 把 `ΔR² > 0` 但 IC 不变 当作"成功"(模型只增加了 in-sample 拟合,无 OOS 价值)
+- ❌ Mid-run 调整 ΔR² 阈值 / |q̂ − 1| 阈值 / ΔIC 阈值
+- ❌ 看到 Model 1/2/3 结果后改 verdict 逻辑
 
 ## 11. 范围(Scope)与禁止(Non-Goals)
 

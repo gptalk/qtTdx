@@ -1141,19 +1141,29 @@ def build_ablation_html(summary_df: pd.DataFrame, output_path: str) -> str:
 
 
 def write_recommendation_txt(summary_df: pd.DataFrame, output_path: str) -> str:
-    """UTF-8 Chinese decision recommendation per spec §10 decision tree."""
+    """UTF-8 Chinese decision recommendation per spec §10 decision tree.
+
+    Per spec §10 写死:
+      - Step 1: ΔR²_M1 = median_s(R²_M1,s − R²_M0,s) > 0.005  (per-stock median delta)
+      - Step 2: median_s |q̂_M2,s − 1| > 0.1                    (per-stock median |q̂ − 1|)
+      - Step 3: median(IC_real_M3) − median(IC_null_M3) > 0.02  (difference of medians)
+
+    Mid-run 阈值 / verdict 禁止调整。
+    """
     median_r2_m1 = float(summary_df.loc['median_r2', 'model_1'])
     median_r2_m2 = float(summary_df.loc['median_r2', 'model_2'])
     median_r2_m3 = float(summary_df.loc['median_r2', 'model_3'])
     median_r2_m0 = float(summary_df.loc['median_r2', 'model_0'])
     abs_q_m2 = float(summary_df.loc['median_abs_q_minus_1', 'model_2']) if 'median_abs_q_minus_1' in summary_df.index else np.nan
     delta_ic_m3 = float(summary_df.loc['delta_ic_vs_m0', 'model_3'])
+    # Per-stock median ΔR² (写死, 不是 difference of medians)
+    delta_r2_m1 = float(summary_df.loc['delta_r2_vs_m0', 'model_1'])
 
-    # Step 1: β-drift (ΔR²_M1)
-    step1_pass = (median_r2_m1 - median_r2_m0) > 0.005
-    # Step 2: q ≠ 1
+    # Step 1: β-drift ΔR² = median(R²_new − R²_old) per-stock > 0.005
+    step1_pass = delta_r2_m1 > 0.005
+    # Step 2: q ≠ 1 (median of per-stock |q̂ − 1|)
     step2_pass = abs_q_m2 > 0.1
-    # Step 3: placebo ΔIC
+    # Step 3: placebo ΔIC (difference of medians)
     step3_pass = delta_ic_m3 > 0.02
 
     if step1_pass and step2_pass and step3_pass:
@@ -1177,12 +1187,18 @@ def write_recommendation_txt(summary_df: pd.DataFrame, output_path: str) -> str:
         '',
         '--- Per-model median R² ---',
         f'  Model 0 (baseline):        {median_r2_m0:.4f}',
-        f'  Model 1 (β-drift):         {median_r2_m1:.4f}   ΔR²={median_r2_m1 - median_r2_m0:+.4f}',
-        f'  Model 2 (free q):          {median_r2_m2:.4f}   ΔR²={median_r2_m2 - median_r2_m0:+.4f}',
-        f'  Model 3 (joint):           {median_r2_m3:.4f}   ΔR²={median_r2_m3 - median_r2_m0:+.4f}',
+        f'  Model 1 (β-drift):         {median_r2_m1:.4f}',
+        f'  Model 2 (free q):          {median_r2_m2:.4f}',
+        f'  Model 3 (joint):           {median_r2_m3:.4f}',
         '',
-        '--- |q̂ − 1| (Models 2/3) ---',
-        f'  Model 2 median |q̂−1|: {abs_q_m2:.4f}',
+        '--- ΔR² (per-stock median delta) vs Model 0 ---',
+        f'  ΔR²_M1: {delta_r2_m1:+.4f}     (Step 1 threshold > 0.005)',
+        '',
+        '--- |q̂ − 1| (per-stock median) ---',
+        f'  Model 2: {abs_q_m2:.4f}        (Step 2 threshold > 0.1)',
+        '',
+        '--- ΔIC (Model 3 IC_real median − IC_null median) vs Model 0 ---',
+        f'  ΔIC_M3: {delta_ic_m3:+.4f}    (Step 3 threshold > 0.02)',
         '',
         '--- Decision tree (spec §10) ---',
         f'  Step 1 (β-drift ΔR² > 0.005): {"PASS" if step1_pass else "FAIL"}',
