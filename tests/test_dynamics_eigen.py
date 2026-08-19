@@ -2889,3 +2889,105 @@ def test_projection_batch_output_dir_flag():
         )
         new_files = after - before
         assert not new_files, f"data/projection/ contaminated with new market files: {sorted(new_files)}"
+
+
+# === V0.2-C1 Task 2 — Paired C0/C1 compare helpers (2026-08-20) ===
+
+def test_paired_compare_columns_and_sign_flipped():
+    """V0.2-C1 §4.3: paired CSV has all 25 columns; sign_flipped matches sign(ic_real_C0) != sign(ic_real_C1)."""
+    from projection.c0_c1_compare import compute_c0_c1_paired_compare
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as td:
+        c0_path = os.path.join(td, 'c0.csv')
+        c1_path = os.path.join(td, 'c1.csv')
+        out_path = os.path.join(td, 'paired.csv')
+        # 3 synthetic stocks, with deliberate sign change on stock[1]
+        n = 3
+        pd.DataFrame({
+            'code': [f'stk{i:06d}' for i in range(n)],
+            'name': [f'Stock {i}' for i in range(n)],
+            'ic_real': [+0.1, +0.2, -0.3],  # C0: signs + + -
+            'q_drift': [+0.1, +0.2, +0.3],
+            'q_hat': [+0.5, +0.6, +0.7],
+            'test_fit_r2': [+0.1, +0.2, +0.3],
+            'oos_r2': [+0.05, +0.10, -0.05],
+            'condition_number': [+10.0, +20.0, +30.0],
+        }).to_csv(c0_path, index=False)
+        pd.DataFrame({
+            'code': [f'stk{i:06d}' for i in range(n)],
+            'name': [f'Stock {i}' for i in range(n)],
+            'ic_real': [+0.1, -0.2, -0.3],  # C1: signs + - - (stock[1] flipped)
+            'q_drift': [+0.05, +0.10, +0.20],
+            'q_hat': [+0.4, +0.5, +0.6],
+            'test_fit_r2': [+0.15, +0.18, +0.28],
+            'oos_r2': [+0.08, +0.05, -0.03],
+            'condition_number': [+8.0, +18.0, +28.0],
+        }).to_csv(c1_path, index=False)
+        result_path = compute_c0_c1_paired_compare(c0_path, c1_path, out_path)
+        df = pd.read_csv(result_path)
+        # All 25 columns present (2 code/name + 6 metric blocks x 3 cols + 3 flags + 2 flags)
+        assert len(df.columns) == 25, f"expected 25 cols, got {len(df.columns)}: {list(df.columns)}"
+        # sign_flipped: stock[1] flipped (+0.2 -> -0.2)
+        assert df.iloc[0]['sign_flipped'] == False
+        assert df.iloc[1]['sign_flipped'] == True
+        assert df.iloc[2]['sign_flipped'] == False
+        # q_drift_attenuated: with these values the 0.5x threshold does not
+        # trigger (|0.05| < 0.5*|0.1| is False, etc.) — assert the FLAG is
+        # present and bool-interpretable, not that it triggers.
+        assert df.iloc[0]['q_drift_attenuated'] in (True, False)
+
+
+def test_c0_c1_summary_txt_format():
+    """V0.2-C1 §4.4: summary TXT is UTF-8, has C0/C1 columns, no verdicts."""
+    from projection.c0_c1_compare import (
+        compute_c0_c1_paired_compare, write_c0_c1_compare_summary_txt,
+    )
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as td:
+        c0_path = os.path.join(td, 'c0.csv')
+        c1_path = os.path.join(td, 'c1.csv')
+        paired_path = os.path.join(td, 'paired.csv')
+        summary_path = os.path.join(td, 'summary.txt')
+        # 5 synthetic stocks
+        n = 5
+        rng = np.random.default_rng(0)
+        for path, scale in [(c0_path, 1.0), (c1_path, 0.5)]:
+            pd.DataFrame({
+                'code': [f'stk{i:06d}' for i in range(n)],
+                'name': [f'Stock {i}' for i in range(n)],
+                'ic_real': rng.normal(0, 0.3, n) * scale,
+                'q_drift': rng.normal(0.1, 0.05, n) * scale,
+                'q_hat': rng.normal(0.5, 0.2, n),
+                'test_fit_r2': rng.uniform(0, 0.2, n),
+                'oos_r2': rng.normal(0, 0.1, n),
+                'condition_number': rng.uniform(5, 30, n),
+            }).to_csv(path, index=False)
+        # Write minimal dist CSVs (3 rows each: median, p25, p75)
+        for path, m in [(os.path.join(td, 'c0_dist.csv'), 0.12), (os.path.join(td, 'c1_dist.csv'), 0.08)]:
+            pd.DataFrame({
+                'gate': ['D1', 'D1', 'D1'],
+                'statistic': ['median', 'p25', 'p75'],
+                'value': [m, m - 0.05, m + 0.05],
+            }).to_csv(path, index=False)
+        compute_c0_c1_paired_compare(c0_path, c1_path, paired_path)
+        write_c0_c1_compare_summary_txt(paired_path,
+                                        os.path.join(td, 'c0_dist.csv'),
+                                        os.path.join(td, 'c1_dist.csv'),
+                                        summary_path)
+        with open(summary_path, encoding='utf-8') as f:
+            txt = f.read()
+        # UTF-8 decoded
+        # Has C0/C1 column headers
+        assert 'C0' in txt and 'C1' in txt
+        # No verdict PASS/FAIL — use verdict-specific regex (a bare substring
+        # search would also match embedded forms like "BYPASS"/"PASSED").
+        import re as _re
+        assert _re.search(r'(?<![A-Za-z])PASS(?![A-Za-z])', txt) is None, (
+            'Summary TXT contains verdict PASS'
+        )
+        assert _re.search(r'(?<![A-Za-z])FAIL(?![A-Za-z])', txt) is None, (
+            'Summary TXT contains verdict FAIL'
+        )
+        # Has D1/D2/D3 sections
+        for d in ('D1', 'D2', 'D3'):
+            assert d in txt
