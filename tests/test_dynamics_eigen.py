@@ -2092,3 +2092,84 @@ def test_industry_threshold_30():
     assert large_row['status'] == 'ok', (
         f'LARGE industry should be ok (40 ≥ 30), got {large_row["status"]}'
     )
+
+
+# === v0 — Parameter Fit Identifiability Audit diagnostics (2026-08-19) ===
+from backtrace.projection.parameter_fit import _solve_ols
+
+
+def _make_ols_inputs(k_true=0.5, c_true=0.2, T=100, noise_std=1e-3, seed=42):
+    """合成 Y = -k d - c u + noise,生成 2D 投影与 _solve_ols 兼容的 6 个输入。
+
+    Returns: (a_u_vec, a_v_vec, d_vec, u_vec, beta, valid)
+
+    构造策略:直接造 a_u_vec = β·a_v_vec - k·d - c·u + noise,
+    这样 _solve_ols 内部 A_full = a_u - β·a_v 严格满足 Y = -k·d - c·u + noise,
+    OLS 能精确恢复 (k, c)。
+
+    注:_solve_ols 实际接口要求 beta 为 1D shape (T,),所以这里不用 2D。
+    """
+    rng = np.random.default_rng(seed)
+    # 2D 输入:Vol + Amt 两个维度独立(均为 (T, 2))
+    u_vec = rng.standard_normal((T, 2)) * 0.5   # 速度项(白噪声)
+    d_vec = np.zeros((T, 2))
+    if T >= 2:
+        d_vec[1:] = np.cumsum(u_vec[:-1], axis=0)   # d = cumsum(u[:-1])
+    # β(t) 时变 1D,shape (T,)(实数据从 Move_Proj_Coeff 列出来也是 1D)
+    beta = rng.uniform(0.8, 1.2, T)
+    # a_v_vec:大盘加速度,任意有限输入
+    a_v_vec = rng.standard_normal((T, 2)) * 0.1
+    # 核心:让 A_full = a_u - β·a_v 满足 Y = -k·d - c·u + noise
+    target = -k_true * d_vec - c_true * u_vec
+    a_u_vec = beta[:, None] * a_v_vec + target + rng.normal(0, noise_std, (T, 2))
+    valid = (
+        np.isfinite(a_u_vec).all(axis=1)
+        & np.isfinite(a_v_vec).all(axis=1)
+        & np.isfinite(d_vec).all(axis=1)
+        & np.isfinite(u_vec).all(axis=1)
+    )
+    return a_u_vec, a_v_vec, d_vec, u_vec, beta, valid
+
+
+def test_solve_ols_well_conditioned_synthetic():
+    """Regression: well-conditioned 合成 OLS 精确恢复 (k, c) + R² 高 + cond 低。
+
+    验证 audit 没改变 OLS 数学(用户最关心的 regression test)。
+    """
+    a_u, a_v, d, u, beta, valid = _make_ols_inputs(k_true=0.5, c_true=0.2, T=200, noise_std=1e-4)
+    k_hat, c_hat, f_res, n, rank, cond, rcorr, r2 = _solve_ols(a_u, a_v, d, u, beta, valid)
+    assert abs(k_hat - 0.5) < 0.05, f'k_hat={k_hat:.4f} 偏离 0.5 超过 tolerance'
+    assert abs(c_hat - 0.2) < 0.05, f'c_hat={c_hat:.4f} 偏离 0.2 超过 tolerance'
+    assert r2 > 0.9, f'R²={r2:.4f} 应 > 0.9'
+    assert cond < 1e3, f'cond={cond:.2e} 应 < 1e3'
+    assert rank == 2
+
+
+def test_solve_ols_ill_conditioned_high_cond():
+    """X 列接近共线 → cond > 1e3 → identification_status='ill_conditioned'。"""
+    a_u, a_v, d, u, beta, valid = _make_ols_inputs(T=200, noise_std=1e-3)
+    # 强加 d ≈ u,使 X 两列(-d 和 -u)高度共线
+    d[:, 0] = u[:, 0] * 0.999 + np.random.default_rng(0).standard_normal(200) * 1e-3
+    d[:, 1] = u[:, 1] * 0.999 + np.random.default_rng(1).standard_normal(200) * 1e-3
+    _, _, _, _, rank, cond, rcorr, _ = _solve_ols(a_u, a_v, d, u, beta, valid)
+    assert cond > 1e3, f'cond={cond:.2e} 应 > 1e3'
+    assert rcorr > 0.9, f'rcorr={rcorr:.4f} 应 > 0.9'
+
+
+def test_solve_ols_singular_zero_variance():
+    """X 某列全 0 → X^T X 不可逆 → rank < 2 → singular。"""
+    a_u, a_v, d, u, beta, valid = _make_ols_inputs(T=100)
+    # 让 d_vec 与 u_vec 都全 0 → X 列全 0 → rank 0
+    d = np.zeros_like(d)
+    u = np.zeros_like(u)
+    _, _, _, _, rank, _, _, _ = _solve_ols(a_u, a_v, d, u, beta, valid)
+    assert rank < 2
+
+
+def test_solve_ols_ss_tot_near_zero():
+    """Y 几乎常数 → SS_tot ≈ 0 → r2 = NaN → fit_quality='uninformative'。"""
+    a_u, a_v, d, u, beta, valid = _make_ols_inputs(T=100, noise_std=1e-3)
+    # 让 a_u = β·a_v → A_full = 0 → Y = 0 全 0
+    a_u = beta[:, None] * a_v
+    _, _, _, _, _, _, _, r2 = _solve_ols(a_u, a_v, d, u, beta, valid)
+    assert np.isnan(r2), f'r2={r2} 应为 NaN'

@@ -153,7 +153,9 @@ def _solve_ols(a_u_vec: np.ndarray, a_v_vec: np.ndarray,
     """核心 OLS 解(内部函数,fit_one 和 fit_rolling 复用)。
 
     输入:从 movement CSV 重建的 2-D 向量 + valid mask。
-    输出:(k_hat, c_hat, f_self_loss, n_valid, rank)
+    输出 (8-tuple):
+        k_hat, c_hat, f_residual_loss, n_valid, rank,
+        condition_number, regressor_corr, r2
     """
     n_valid = int(valid.sum())
     A_full = a_u_vec[valid] - beta[valid, None] * a_v_vec[valid]
@@ -168,11 +170,41 @@ def _solve_ols(a_u_vec: np.ndarray, a_v_vec: np.ndarray,
     X[n_valid:, 1] = -u_full[:, 1]
 
     theta, _, rank, _ = np.linalg.lstsq(X, Y, rcond=None)
+    # 兜底:X 全 0 时 lstsq 返回空 theta → 强制填 0,避免下游 float() 崩
+    if theta.size == 0:
+        theta = np.zeros(2)
     k_hat, c_hat = float(theta[0]), float(theta[1])
 
     F_self_pred = Y - X @ theta
-    f_self_loss = float(np.mean(F_self_pred ** 2))
-    return k_hat, c_hat, f_self_loss, n_valid, int(rank)
+    f_residual_loss = float(np.mean(F_self_pred ** 2))
+
+    # === v0 diagnostics (post-processing, 不动 OLS) ===
+
+    # condition_number: cond(X), NOT cond(X.T @ X) — 后者 κ² 失真
+    condition_number = float(np.linalg.cond(X)) if X.size > 0 else np.nan
+
+    # regressor_corr: X 两列 = -d, -u 的相关系数
+    if X.shape[0] >= 2 and X.shape[1] == 2:
+        col0, col1 = X[:, 0], X[:, 1]
+        std0, std1 = float(np.std(col0)), float(np.std(col1))
+        if std0 > 1e-12 and std1 > 1e-12:
+            regressor_corr = float(np.corrcoef(col0, col1)[0, 1])
+        else:
+            regressor_corr = np.nan
+    else:
+        regressor_corr = np.nan
+
+    # R² = 1 - SS_res / SS_tot,SS_tot ≈ 0 → NaN
+    y_mean = float(np.mean(Y))
+    ss_tot = float(np.sum((Y - y_mean) ** 2))
+    ss_res = float(np.sum(F_self_pred ** 2))
+    if ss_tot <= 1e-12:
+        r2 = np.nan
+    else:
+        r2 = 1.0 - ss_res / ss_tot
+
+    return (k_hat, c_hat, f_residual_loss, n_valid, int(rank),
+            condition_number, regressor_corr, r2)
 
 
 def _load_movement(movement_csv: str, stock_tag: str, index_tag: str):
@@ -208,12 +240,21 @@ def _build_kinematics(delta_u, delta_v, beta):
 
 def fit_one(movement_csv: str, stock_tag: str, index_tag: str,
             min_valid_days: int = 20, clip_extreme: float = 10.0):
-    """对一只股票的全样本做闭式 OLS,返回 (k_hat, c_hat, f_self_loss, n_valid, status)。"""
+    """对一只股票的全样本做闭式 OLS,返回 dict。
+
+    新增 v0 字段: rank, condition_number, regressor_corr, r2,
+                  identification_status, fit_quality, f_residual_loss
+    """
     loaded, err = _load_movement(movement_csv, stock_tag, index_tag)
     if loaded is None:
         return {
             'k_hat': np.nan, 'c_hat': np.nan,
-            'f_self_loss': np.nan, 'n_valid_days': 0,
+            'f_self_loss': np.nan, 'f_residual_loss': np.nan,
+            'n_valid_days': 0,
+            'rank': 0, 'condition_number': np.nan,
+            'regressor_corr': np.nan, 'r2': np.nan,
+            'identification_status': 'singular',
+            'fit_quality': 'uninformative',
             'status': err,
         }
     df, delta_u, delta_v, beta = loaded
@@ -229,16 +270,44 @@ def fit_one(movement_csv: str, stock_tag: str, index_tag: str,
     if n_valid < max(3, min_valid_days):
         return {
             'k_hat': np.nan, 'c_hat': np.nan,
-            'f_self_loss': np.nan, 'n_valid_days': n_valid,
+            'f_self_loss': np.nan, 'f_residual_loss': np.nan,
+            'n_valid_days': n_valid,
+            'rank': 0, 'condition_number': np.nan,
+            'regressor_corr': np.nan, 'r2': np.nan,
+            'identification_status': 'singular',
+            'fit_quality': 'uninformative',
             'status': f'too_few_days ({n_valid} < {min_valid_days})',
         }
 
-    k_hat, c_hat, f_self_loss, _, rank = _solve_ols(
+    k_hat, c_hat, f_residual_loss, _, rank, condition_number, regressor_corr, r2 = _solve_ols(
         a_u_vec, a_v_vec, d_vec, u_vec, beta, valid,
     )
 
+    # === classification ===
     finite = np.isfinite(k_hat) and np.isfinite(c_hat)
     extreme = abs(k_hat) > clip_extreme or abs(c_hat) > clip_extreme
+
+    # identification_status: 仅看 rank + cond
+    if not finite or rank < 2:
+        identification_status = 'singular'
+    elif condition_number >= 1e5:
+        identification_status = 'unidentifiable'
+    elif condition_number >= 1e3:
+        identification_status = 'ill_conditioned'
+    else:
+        identification_status = 'well_conditioned'
+
+    # fit_quality: 仅看 R²
+    if not np.isfinite(r2):
+        fit_quality = 'uninformative'
+    elif r2 < 0.01:
+        fit_quality = 'poor'
+    elif r2 < 0.1:
+        fit_quality = 'weak'
+    else:
+        fit_quality = 'good'
+
+    # 旧 status (verbose, 向后兼容)
     if not finite:
         status = 'solve_failed'
     elif rank < 2:
@@ -252,7 +321,15 @@ def fit_one(movement_csv: str, stock_tag: str, index_tag: str,
 
     return {
         'k_hat': k_hat, 'c_hat': c_hat,
-        'f_self_loss': f_self_loss, 'n_valid_days': n_valid,
+        'f_self_loss': f_residual_loss,  # alias for backward compat
+        'f_residual_loss': f_residual_loss,
+        'n_valid_days': n_valid,
+        'rank': rank,
+        'condition_number': condition_number,
+        'regressor_corr': regressor_corr,
+        'r2': r2,
+        'identification_status': identification_status,
+        'fit_quality': fit_quality,
         'status': status,
     }
 
@@ -268,14 +345,21 @@ def fit_rolling(movement_csv: str, stock_tag: str, index_tag: str,
 
     Returns:
         list[dict]:每 dict 含 'window', 'window_start', 'window_end',
-                    'k_hat', 'c_hat', 'f_self_loss', 'n_valid_days', 'status'
+                    'k_hat', 'c_hat', 'f_residual_loss', 'n_valid_days', 'status',
+                    + 7 新字段: rank, condition_number, regressor_corr, r2,
+                                identification_status, fit_quality
     """
     loaded, err = _load_movement(movement_csv, stock_tag, index_tag)
     if loaded is None:
         return [{
             'window': w, 'window_start': '', 'window_end': '',
             'k_hat': np.nan, 'c_hat': np.nan,
-            'f_self_loss': np.nan, 'n_valid_days': 0,
+            'f_self_loss': np.nan, 'f_residual_loss': np.nan,
+            'n_valid_days': 0,
+            'rank': 0, 'condition_number': np.nan,
+            'regressor_corr': np.nan, 'r2': np.nan,
+            'identification_status': 'singular',
+            'fit_quality': 'uninformative',
             'status': err,
         } for w in windows]
     df, delta_u, delta_v, beta = loaded
@@ -299,12 +383,17 @@ def fit_rolling(movement_csv: str, stock_tag: str, index_tag: str,
                 'window_start': str(df['Date'].iloc[s])[:10] if s < T else '',
                 'window_end': str(df['Date'].iloc[T - 1])[:10] if T > 0 else '',
                 'k_hat': np.nan, 'c_hat': np.nan,
-                'f_self_loss': np.nan, 'n_valid_days': n_valid,
+                'f_self_loss': np.nan, 'f_residual_loss': np.nan,
+                'n_valid_days': n_valid,
+                'rank': 0, 'condition_number': np.nan,
+                'regressor_corr': np.nan, 'r2': np.nan,
+                'identification_status': 'singular',
+                'fit_quality': 'uninformative',
                 'status': f'too_few_days ({n_valid})',
             })
             continue
         try:
-            k_hat, c_hat, f_loss, _, rank = _solve_ols(
+            k_hat, c_hat, f_residual_loss, _, rank, condition_number, regressor_corr, r2 = _solve_ols(
                 a_u_vec[sub], a_v_vec[sub], d_vec[sub], u_vec[sub], beta[sub], valid,
             )
         except Exception as e:
@@ -313,12 +402,38 @@ def fit_rolling(movement_csv: str, stock_tag: str, index_tag: str,
                 'window_start': str(df['Date'].iloc[s])[:10],
                 'window_end': str(df['Date'].iloc[T - 1])[:10],
                 'k_hat': np.nan, 'c_hat': np.nan,
-                'f_self_loss': np.nan, 'n_valid_days': n_valid,
+                'f_self_loss': np.nan, 'f_residual_loss': np.nan,
+                'n_valid_days': n_valid,
+                'rank': 0, 'condition_number': np.nan,
+                'regressor_corr': np.nan, 'r2': np.nan,
+                'identification_status': 'singular',
+                'fit_quality': 'uninformative',
                 'status': f'solve_failed: {type(e).__name__}: {e}',
             })
             continue
         finite = np.isfinite(k_hat) and np.isfinite(c_hat)
         extreme = abs(k_hat) > clip_extreme or abs(c_hat) > clip_extreme
+
+        # identification_status: 仅看 rank + cond
+        if not finite or rank < 2:
+            identification_status = 'singular'
+        elif condition_number >= 1e5:
+            identification_status = 'unidentifiable'
+        elif condition_number >= 1e3:
+            identification_status = 'ill_conditioned'
+        else:
+            identification_status = 'well_conditioned'
+
+        # fit_quality: 仅看 R²
+        if not np.isfinite(r2):
+            fit_quality = 'uninformative'
+        elif r2 < 0.01:
+            fit_quality = 'poor'
+        elif r2 < 0.1:
+            fit_quality = 'weak'
+        else:
+            fit_quality = 'good'
+
         if not finite:
             status = 'solve_failed'
         elif rank < 2:
@@ -332,8 +447,15 @@ def fit_rolling(movement_csv: str, stock_tag: str, index_tag: str,
             'window_start': str(df['Date'].iloc[s])[:10],
             'window_end': str(df['Date'].iloc[T - 1])[:10],
             'k_hat': k_hat, 'c_hat': c_hat,
-            'f_self_loss': f_loss,
+            'f_self_loss': f_residual_loss,  # alias for backward compat
+            'f_residual_loss': f_residual_loss,
             'n_valid_days': n_valid,
+            'rank': rank,
+            'condition_number': condition_number,
+            'regressor_corr': regressor_corr,
+            'r2': r2,
+            'identification_status': identification_status,
+            'fit_quality': fit_quality,
             'status': status,
         })
     return out
@@ -625,7 +747,9 @@ def main_fit_all(targets, min_valid_days: int, clip_extreme: float):
 
     out_df = pd.DataFrame(rows, columns=[
         'code', 'name', 'index_code', 'index_tag', 'stock_tag',
-        'k_hat', 'c_hat', 'f_self_loss', 'n_valid_days', 'status',
+        'k_hat', 'c_hat', 'f_self_loss', 'f_residual_loss', 'n_valid_days', 'status',
+        'rank', 'condition_number', 'regressor_corr', 'r2',
+        'identification_status', 'fit_quality',
     ])
     out_path = os.path.join(CSV_OUT_DIR, KC_OUT_NAME)
     out_df.to_csv(out_path, index=False, encoding='utf-8')
@@ -635,6 +759,13 @@ def main_fit_all(targets, min_valid_days: int, clip_extreme: float):
     too_few = sum(1 for r in rows if r['status'].startswith('too_few_days'))
     fail = len(rows) - ok - singular - too_few
 
+    # v0 分类汇总
+    idstatus_count = {}
+    fquality_count = {}
+    for r in rows:
+        idstatus_count[r['identification_status']] = idstatus_count.get(r['identification_status'], 0) + 1
+        fquality_count[r['fit_quality']] = fquality_count.get(r['fit_quality'], 0) + 1
+
     print(f'\n=== 汇总 ===')
     print(f'  ok:       {ok}/{len(rows)}')
     if singular:
@@ -643,12 +774,22 @@ def main_fit_all(targets, min_valid_days: int, clip_extreme: float):
         print(f'  too_few:  {too_few}/{len(rows)}')
     if fail:
         print(f'  other:    {fail}/{len(rows)}')
-    print(f'  清单: {out_path}')
+    print(f'\n=== v0 identification_status ===')
+    for k, v in sorted(idstatus_count.items(), key=lambda x: -x[1]):
+        print(f'  {k}: {v}/{len(rows)}')
+    print(f'\n=== v0 fit_quality ===')
+    for k, v in sorted(fquality_count.items(), key=lambda x: -x[1]):
+        print(f'  {k}: {v}/{len(rows)}')
+    print(f'\n  清单: {out_path}')
 
     if ok > 0:
         k_vals = np.array([r['k_hat'] for r in rows if r['status'].startswith('ok')])
         c_vals = np.array([r['c_hat'] for r in rows if r['status'].startswith('ok')])
         f_vals = np.array([r['f_self_loss'] for r in rows if r['status'].startswith('ok')])
+        r2_vals = np.array([r['r2'] for r in rows if r['status'].startswith('ok')
+                            and np.isfinite(r['r2'])])
+        cond_vals = np.array([r['condition_number'] for r in rows if r['status'].startswith('ok')
+                              and np.isfinite(r['condition_number'])])
         print(f'\n=== ok 子集分布 ===')
         print(f'  k_hat: median={np.median(k_vals):+.4f} '
               f'p25={np.percentile(k_vals, 25):+.4f} '
@@ -658,6 +799,13 @@ def main_fit_all(targets, min_valid_days: int, clip_extreme: float):
               f'p75={np.percentile(c_vals, 75):+.4f}')
         print(f'  F²:    median={np.median(f_vals):.2e} '
               f'max={np.max(f_vals):.2e}')
+        if len(r2_vals) > 0:
+            print(f'  R²:    median={np.median(r2_vals):.4f} '
+                  f'p25={np.percentile(r2_vals, 25):.4f} '
+                  f'p75={np.percentile(r2_vals, 75):.4f}')
+        if len(cond_vals) > 0:
+            print(f'  cond:  median={np.median(cond_vals):.2e} '
+                  f'max={np.max(cond_vals):.2e}')
 
 
 def main_rolling(targets, windows: list[int], clip_extreme: float,
@@ -674,7 +822,10 @@ def main_rolling(targets, windows: list[int], clip_extreme: float,
     base_cols = ['code', 'name', 'index_code', 'index_tag', 'stock_tag', 'windows']
     summary_cols = list(base_cols)
     for w in windows:
-        summary_cols.extend([f'k_{w}', f'c_{w}', f'f2_{w}', f'n_{w}', f'status_{w}'])
+        summary_cols.extend([
+            f'k_{w}', f'c_{w}', f'f2_{w}', f'n_{w}', f'status_{w}',
+            f'cond_{w}', f'rcorr_{w}', f'r2_{w}', f'idstatus_{w}', f'fquality_{w}',
+        ])
 
     summary_rows = []
     for i, (code, name, mv_csv, index_tag, stock_tag, index_code) in enumerate(targets, 1):
@@ -689,7 +840,9 @@ def main_rolling(targets, windows: list[int], clip_extreme: float,
         stock_csv = os.path.join(CSV_OUT_DIR, f'kc_rolling_{index_tag}_{stock_tag}.csv')
         per_stock_df = pd.DataFrame(rows, columns=[
             'window', 'window_start', 'window_end',
-            'k_hat', 'c_hat', 'f_self_loss', 'n_valid_days', 'status',
+            'k_hat', 'c_hat', 'f_self_loss', 'f_residual_loss', 'n_valid_days', 'status',
+            'rank', 'condition_number', 'regressor_corr', 'r2',
+            'identification_status', 'fit_quality',
         ])
         per_stock_df.to_csv(stock_csv, index=False, encoding='utf-8')
 
@@ -709,6 +862,12 @@ def main_rolling(targets, windows: list[int], clip_extreme: float,
             srow[f'f2_{w}'] = r['f_self_loss']
             srow[f'n_{w}'] = r['n_valid_days']
             srow[f'status_{w}'] = r['status']
+            # v0 diagnostics
+            srow[f'cond_{w}'] = r['condition_number']
+            srow[f'rcorr_{w}'] = r['regressor_corr']
+            srow[f'r2_{w}'] = r['r2']
+            srow[f'idstatus_{w}'] = r['identification_status']
+            srow[f'fquality_{w}'] = r['fit_quality']
         summary_rows.append(srow)
 
         # 进度行:各窗口 k/c 紧凑打
@@ -817,8 +976,12 @@ def main_rolling_time(targets, window: int = 240, clip_extreme: float = 10.0):
                     'index_code': index_code,
                     'index_tag': index_tag, 'stock_tag': stock_tag,
                     'k_hat': np.nan, 'c_hat': np.nan,
-                    'f_self_loss': np.nan,
+                    'f_self_loss': np.nan, 'f_residual_loss': np.nan,
                     'n_valid_days': n_avail,   # 真实可用天数,不埋进 status 字符串
+                    'rank': 0, 'condition_number': np.nan,
+                    'regressor_corr': np.nan, 'r2': np.nan,
+                    'identification_status': 'singular',
+                    'fit_quality': 'uninformative',
                     'status': f'too_few_days ({n_avail})',
                 })
                 continue
@@ -839,13 +1002,17 @@ def main_rolling_time(targets, window: int = 240, clip_extreme: float = 10.0):
                     'index_code': index_code,
                     'index_tag': index_tag, 'stock_tag': stock_tag,
                     'k_hat': np.nan, 'c_hat': np.nan,
-                    'f_self_loss': np.nan,
+                    'f_self_loss': np.nan, 'f_residual_loss': np.nan,
                     'n_valid_days': n_valid,
+                    'rank': 0, 'condition_number': np.nan,
+                    'regressor_corr': np.nan, 'r2': np.nan,
+                    'identification_status': 'singular',
+                    'fit_quality': 'uninformative',
                     'status': f'too_few_valid ({n_valid})',
                 })
                 continue
             try:
-                k_hat, c_hat, f_loss, _, rank = _solve_ols(
+                k_hat, c_hat, f_residual_loss, _, rank, condition_number, regressor_corr, r2 = _solve_ols(
                     a_u_vec[sub], a_v_vec[sub], d_vec[sub], u_vec[sub], beta[sub], valid,
                 )
             except Exception as e:
@@ -855,13 +1022,38 @@ def main_rolling_time(targets, window: int = 240, clip_extreme: float = 10.0):
                     'index_code': index_code,
                     'index_tag': index_tag, 'stock_tag': stock_tag,
                     'k_hat': np.nan, 'c_hat': np.nan,
-                    'f_self_loss': np.nan,
+                    'f_self_loss': np.nan, 'f_residual_loss': np.nan,
                     'n_valid_days': n_valid,
+                    'rank': 0, 'condition_number': np.nan,
+                    'regressor_corr': np.nan, 'r2': np.nan,
+                    'identification_status': 'singular',
+                    'fit_quality': 'uninformative',
                     'status': f'solve_failed: {type(e).__name__}: {e}',
                 })
                 continue
             finite = np.isfinite(k_hat) and np.isfinite(c_hat)
             extreme = abs(k_hat) > clip_extreme or abs(c_hat) > clip_extreme
+
+            # identification_status: 仅看 rank + cond
+            if not finite or rank < 2:
+                identification_status = 'singular'
+            elif condition_number >= 1e5:
+                identification_status = 'unidentifiable'
+            elif condition_number >= 1e3:
+                identification_status = 'ill_conditioned'
+            else:
+                identification_status = 'well_conditioned'
+
+            # fit_quality: 仅看 R²
+            if not np.isfinite(r2):
+                fit_quality = 'uninformative'
+            elif r2 < 0.01:
+                fit_quality = 'poor'
+            elif r2 < 0.1:
+                fit_quality = 'weak'
+            else:
+                fit_quality = 'good'
+
             if not finite:
                 status = 'solve_failed'
             elif rank < 2:
@@ -876,14 +1068,23 @@ def main_rolling_time(targets, window: int = 240, clip_extreme: float = 10.0):
                 'index_code': index_code,
                 'index_tag': index_tag, 'stock_tag': stock_tag,
                 'k_hat': k_hat, 'c_hat': c_hat,
-                'f_self_loss': f_loss,
+                'f_self_loss': f_residual_loss,  # alias for backward compat
+                'f_residual_loss': f_residual_loss,
                 'n_valid_days': n_valid,
+                'rank': rank,
+                'condition_number': condition_number,
+                'regressor_corr': regressor_corr,
+                'r2': r2,
+                'identification_status': identification_status,
+                'fit_quality': fit_quality,
                 'status': status,
             })
         print('✓')
     out = pd.DataFrame(rows, columns=[
         'asof_date', 'code', 'name', 'index_code', 'index_tag', 'stock_tag',
-        'k_hat', 'c_hat', 'f_self_loss', 'n_valid_days', 'status',
+        'k_hat', 'c_hat', 'f_self_loss', 'f_residual_loss', 'n_valid_days', 'status',
+        'rank', 'condition_number', 'regressor_corr', 'r2',
+        'identification_status', 'fit_quality',
     ])
     out_path = os.path.join(CSV_OUT_DIR, 'kc_estimates_time.csv')
     out.to_csv(out_path, index=False, encoding='utf-8')
