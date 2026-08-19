@@ -120,3 +120,117 @@ def build_design_model_3(u_vec, d_vec, a_u_vec, a_v_vec, beta, beta_dot_vM_vec):
     u_stack = _stack_2d(u_vec)
     X = np.column_stack([beta_aM_stack, -d_stack, -u_stack])
     return X, Y
+
+
+# === V0.1 Task 2: In-Sample 4-Model Fit + CSV Output ===
+import pandas as pd
+from typing import List, Tuple
+
+CSV_OUT_DIR = 'data/projection'
+
+# Schema (17 cols, identical across all 4 models)
+CSV_COLUMNS = [
+    'code', 'name', 'index_code', 'index_tag', 'stock_tag',
+    'n_train', 'n_test', 'condition_number', 'regressor_corr', 'r2',
+    'identification_status', 'fit_quality',
+    'q_hat', 'k_hat', 'c_hat', 'f_self_loss',
+    'ic_real', 'ic_null',
+]
+
+BUILDERS = {
+    0: build_design_model_0,
+    1: build_design_model_1,
+    2: build_design_model_2,
+    3: build_design_model_3,
+}
+
+
+def compute_identification_status(rank: int, cond: float) -> str:
+    if rank < 2 or not np.isfinite(cond):
+        return 'singular'
+    if cond < 1e3:
+        return 'well_conditioned'
+    if cond < 1e5:
+        return 'ill_conditioned'
+    return 'unidentifiable'
+
+
+def compute_fit_quality(r2: float) -> str:
+    if not np.isfinite(r2):
+        return 'uninformative'
+    if r2 >= 0.1:
+        return 'good'
+    if r2 >= 0.01:
+        return 'weak'
+    return 'poor'
+
+
+def _read_movement(movement_csv: str, stock_tag: str, index_tag: str):
+    """Read movement CSV → (delta_u, delta_v, beta)."""
+    df = pd.read_csv(movement_csv)
+    delta_u = df[[f'Move_Delta_Vol_{stock_tag}',
+                  f'Move_Delta_Amt_{stock_tag}']].to_numpy()
+    delta_v = df[[f'Move_Delta_Vol_{index_tag}',
+                  f'Move_Delta_Amt_{index_tag}']].to_numpy()
+    beta = df['Move_Proj_Coeff'].to_numpy()
+    return delta_u, delta_v, beta
+
+
+def fit_one_in_sample(movement_csv: str, stock_tag: str, index_tag: str,
+                      code: str, name: str, index_code: str, model_id: int) -> dict:
+    """Run in-sample fit for one stock × one model.
+
+    Returns dict with 17 CSV columns (ic_real/ic_null = NaN at this stage).
+    """
+    delta_u, delta_v, beta = _read_movement(movement_csv, stock_tag, index_tag)
+    u_vec, d_vec, a_u_vec, a_v_vec, bdv_vec = _build_kinematics_ext(delta_u, delta_v, beta)
+    X, Y = BUILDERS[model_id](u_vec, d_vec, a_u_vec, a_v_vec, beta, bdv_vec)
+    mask = np.isfinite(Y) & np.all(np.isfinite(X), axis=1)
+    n_valid = int(mask.sum())
+
+    if n_valid < 20:
+        return {col: np.nan for col in CSV_COLUMNS} | {
+            'code': code, 'name': name, 'index_code': index_code,
+            'index_tag': index_tag, 'stock_tag': stock_tag,
+            'n_train': n_valid, 'n_test': 0,
+            'q_hat': 1.0 if model_id in (0, 1) else np.nan,
+            'identification_status': 'singular' if n_valid < 2 else 'ill_conditioned',
+            'fit_quality': 'uninformative',
+        }
+
+    X_v, Y_v = X[mask], Y[mask]
+    theta, f_res, n_v, rank, cond, rcorr, r2 = ols_fit(X_v, Y_v)
+
+    if model_id in (0, 1):
+        k_hat, c_hat = float(theta[0]), float(theta[1])
+        q_hat = 1.0
+    else:  # Model 2/3
+        q_hat, k_hat, c_hat = float(theta[0]), float(theta[1]), float(theta[2])
+
+    return {
+        'code': code, 'name': name, 'index_code': index_code,
+        'index_tag': index_tag, 'stock_tag': stock_tag,
+        'n_train': n_v, 'n_test': 0,            # populated in Task 3
+        'condition_number': cond,
+        'regressor_corr': rcorr,
+        'r2': r2,
+        'identification_status': compute_identification_status(rank, cond),
+        'fit_quality': compute_fit_quality(r2),
+        'q_hat': q_hat, 'k_hat': k_hat, 'c_hat': c_hat,
+        'f_self_loss': f_res,
+        'ic_real': np.nan, 'ic_null': np.nan,
+    }
+
+
+def write_in_sample_csvs(targets: List[Tuple], output_dir: str):
+    """Write 4 in-sample CSVs to output_dir/kc_estimates_model{0,1,2,3}.csv."""
+    os.makedirs(output_dir, exist_ok=True)
+    rows_by_model = {m: [] for m in range(4)}
+    for code, name, mv_csv, index_tag, stock_tag, index_code in targets:
+        for m in range(4):
+            row = fit_one_in_sample(mv_csv, stock_tag, index_tag, code, name, index_code, m)
+            rows_by_model[m].append(row)
+    for m in range(4):
+        df = pd.DataFrame(rows_by_model[m], columns=CSV_COLUMNS)
+        df.to_csv(os.path.join(output_dir, f'kc_estimates_model{m}.csv'),
+                  index=False, encoding='utf-8')

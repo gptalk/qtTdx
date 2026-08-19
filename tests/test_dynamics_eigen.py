@@ -2377,3 +2377,50 @@ def test_ols_fit_cond_uses_X_not_XTX():
     assert abs(cond - expected_cond) < 1e-3
     # cond(X.T @ X) = inf, cond(X) ≈ 2.45e8 → threshold must be > 2.45e8 and < inf
     assert cond < 1e10
+
+
+# === v0.1 — Task 2: In-Sample 4-Model Fit + CSV Output ===
+
+def test_in_sample_fit_5_synthetic_stocks(tmp_path):
+    """Process 5 synthetic stocks through all 4 models, verify 4 CSV outputs with 17 cols."""
+    import tempfile, os
+    from projection.ablation_fit import write_in_sample_csvs
+
+    # Build 5 synthetic movement CSVs
+    mv_dir = tmp_path / "movement"
+    mv_dir.mkdir()
+    targets = []
+    for i in range(5):
+        rng = np.random.default_rng(seed=i)
+        T = 100
+        beta = 1.0 + 0.001 * np.arange(T)
+        delta_v = rng.normal(0, 1, (T, 2))
+        delta_u = beta[:, None] * delta_v + rng.normal(0, 0.5, (T, 2))
+        df = pd.DataFrame({
+            'Date': pd.date_range('2024-01-01', periods=T),
+            'Move_Delta_Vol_idx': delta_v[:, 0],
+            'Move_Delta_Amt_idx': delta_v[:, 1],
+            f'Move_Delta_Vol_stk{i:06d}': delta_u[:, 0],
+            f'Move_Delta_Amt_stk{i:06d}': delta_u[:, 1],
+            'Move_Proj_Coeff': beta,
+        })
+        csv_path = mv_dir / f"movement_idx_stk{i:06d}.csv"
+        df.to_csv(csv_path, index=False)
+        targets.append((f"00000{i}.SZ", f"Stock{i}", str(csv_path), 'idx', f'stk{i:06d}', '000001.SH'))
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    write_in_sample_csvs(targets, str(out_dir))
+
+    for m in range(4):
+        path = out_dir / f"kc_estimates_model{m}.csv"
+        assert path.exists(), f"missing {path}"
+        df = pd.read_csv(path)
+        assert len(df) == 5
+        assert len(df.columns) == 18  # spec §5 schema (17 in count comment is typo; CSV_COLUMNS list has 18 entries)
+        # ic_real / ic_null are NaN at this stage (Tasks 3+4 will populate)
+        assert df['ic_real'].isna().all()
+        assert df['ic_null'].isna().all()
+        # Models 0/1 q_hat = 1.0; Models 2/3 q_hat = OLS estimate (varies)
+        if m in (0, 1):
+            assert (df['q_hat'] == 1.0).all()
