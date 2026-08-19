@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 import subprocess
 import sys, os
+import tempfile
 from pathlib import Path
 
 BACKTRACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backtrace')
@@ -2173,3 +2174,85 @@ def test_solve_ols_ss_tot_near_zero():
     a_u = beta[:, None] * a_v
     _, _, _, _, _, _, _, r2 = _solve_ols(a_u, a_v, d, u, beta, valid)
     assert np.isnan(r2), f'r2={r2} 应为 NaN'
+
+
+# === v0 — Parameter Fit Identifiability Audit (2026-08-19 Task 2) ===
+
+def test_build_identifiability_distribution_html_synthetic():
+    """给定 100 行合成 kc_estimates,产出 4-panel HTML,文件存在 + plotly 加载。"""
+    from backtrace.projection.parameter_fit import build_identifiability_distribution_html
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame({
+        'code': [f'stk_{i:04d}' for i in range(100)],
+        'k_hat': rng.normal(0, 1, 100),
+        'c_hat': rng.normal(0, 1, 100),
+        'r2': rng.uniform(0, 0.2, 100),
+        'condition_number': np.exp(rng.uniform(2, 12, 100)),
+        'identification_status': rng.choice(
+            ['well_conditioned', 'ill_conditioned', 'unidentifiable', 'singular'], 100,
+        ),
+        'fit_quality': rng.choice(['good', 'weak', 'poor', 'uninformative'], 100),
+    })
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = os.path.join(tmp, 'kc_id.html')
+        build_identifiability_distribution_html(df, out_path)
+        assert os.path.exists(out_path)
+        assert os.path.getsize(out_path) > 5000  # plotly 最小 HTML 也不止 5k
+        # 拆开 HTML 验证有 4 子图(找 subplot 关键字)
+        with open(out_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        assert 'R²' in content or 'R^2' in content
+        assert 'cond' in content or 'Condition' in content
+
+
+def test_write_identifiability_summary_txt_synthetic():
+    """给定 100 行合成 kc_estimates,产出 TXT,关键字段全部出现。"""
+    from backtrace.projection.parameter_fit import write_identifiability_summary_txt
+    rng = np.random.default_rng(0)
+    df = pd.DataFrame({
+        'code': [f'stk_{i:04d}' for i in range(100)],
+        'r2': rng.uniform(0, 0.2, 100),
+        'condition_number': np.exp(rng.uniform(2, 12, 100)),
+        'identification_status': rng.choice(
+            ['well_conditioned', 'ill_conditioned', 'unidentifiable', 'singular'], 100,
+        ),
+        'fit_quality': rng.choice(['good', 'weak', 'poor', 'uninformative'], 100),
+    })
+    with tempfile.TemporaryDirectory() as tmp:
+        out_path = os.path.join(tmp, 'kc_id.txt')
+        write_identifiability_summary_txt(df, out_path)
+        assert os.path.exists(out_path)
+        with open(out_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        # 关键字段
+        for k in ['Total:', 'Well conditioned:', 'Ill conditioned:',
+                  'Unidentifiable:', 'Singular:',
+                  'Good:', 'Weak:', 'Poor:', 'Uninformative:',
+                  'R²', 'Condition Number', 'median', 'p25', 'p75']:
+            assert k in content, f'missing key: {k}'
+
+
+def test_cli_smoke_audit_outputs(tmp_path_factory):
+    """CLI --limit 5 跑通 + CSV 含 17 列 + HTML 生成 + TXT 生成。"""
+    # 用 limit 5(限制 < 5 文件,既有 data/projection/movement_*.csv)
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, 'backtrace/projection/parameter_fit.py', '--limit', '5'],
+        capture_output=True, text=True, timeout=120, encoding='utf-8', errors='replace',
+    )
+    assert result.returncode == 0, f'stderr: {result.stderr}'
+    # CSV 17 列
+    csv_path = 'data/projection/kc_estimates.csv'
+    assert os.path.exists(csv_path)
+    df = pd.read_csv(csv_path)
+    assert len(df.columns) == 17
+    expected_cols = {'condition_number', 'r2', 'regressor_corr',
+                    'identification_status', 'fit_quality'}
+    assert expected_cols.issubset(set(df.columns))
+    # HTML
+    html_path = 'backtrace/outputs/kc_identifiability_distribution.html'
+    assert os.path.exists(html_path)
+    assert os.path.getsize(html_path) > 5000
+    # TXT
+    txt_path = 'data/projection/kc_identifiability_summary.txt'
+    assert os.path.exists(txt_path)

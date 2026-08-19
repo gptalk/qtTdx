@@ -679,6 +679,165 @@ def plot_rolling_aggregate(summary_df: pd.DataFrame, windows: list[int]) -> str:
     return out
 
 
+def build_identifiability_distribution_html(kc_df: pd.DataFrame, output_path: str) -> str:
+    """4 子图 plotly:R² 直方图 / cond 直方图 / R² vs |k̂| / (k̂, ĉ) 散点按 R² 着色。"""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+
+    r2 = pd.to_numeric(kc_df['r2'], errors='coerce').to_numpy()
+    cond = pd.to_numeric(kc_df['condition_number'], errors='coerce').to_numpy()
+    k_abs = np.abs(pd.to_numeric(kc_df['k_hat'], errors='coerce').to_numpy())
+    k = pd.to_numeric(kc_df['k_hat'], errors='coerce').to_numpy()
+    c = pd.to_numeric(kc_df['c_hat'], errors='coerce').to_numpy()
+
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=(
+            'R² 直方图(模型解释力)',
+            'cond(X) 直方图(数值可识别性,对数轴)',
+            'R² vs |k̂| 散点(低 R² → 参数爆炸?)',
+            '(k̂, ĉ) 散点(颜色 = R²)',
+        ),
+        vertical_spacing=0.15, horizontal_spacing=0.10,
+    )
+
+    # (1,1) R² histogram
+    r2_finite = r2[np.isfinite(r2)]
+    fig.add_trace(go.Histogram(
+        x=r2_finite, nbinsx=50, name='R²',
+        marker_color='rgba(46, 204, 113, 0.7)',
+    ), row=1, col=1)
+
+    # (1,2) cond histogram (log scale)
+    cond_finite = cond[np.isfinite(cond) & (cond > 0)]
+    fig.add_trace(go.Histogram(
+        x=np.log10(cond_finite), nbinsx=50, name='log10(cond)',
+        marker_color='rgba(52, 152, 219, 0.7)',
+    ), row=1, col=2)
+    # 红虚线:1e3 / 1e5
+    for boundary in [3, 5]:
+        fig.add_trace(go.Scatter(
+            x=[boundary, boundary], y=[0, 1], mode='lines',
+            line=dict(color='red', dash='dash', width=1.5),
+            showlegend=False, yaxis='y2',
+        ), row=1, col=2)
+
+    # (2,1) R² vs |k̂|
+    valid_mask = np.isfinite(r2) & np.isfinite(k_abs)
+    fig.add_trace(go.Scatter(
+        x=r2[valid_mask], y=k_abs[valid_mask],
+        mode='markers', name='|k̂|',
+        marker=dict(size=5, color='rgba(155, 89, 182, 0.5)'),
+        showlegend=False,
+    ), row=2, col=1)
+
+    # (2,2) (k̂, ĉ) scatter, color = R²
+    valid_mask2 = np.isfinite(k) & np.isfinite(c) & np.isfinite(r2)
+    fig.add_trace(go.Scatter(
+        x=k[valid_mask2], y=c[valid_mask2],
+        mode='markers', name='(k̂, ĉ)',
+        marker=dict(
+            size=5, color=r2[valid_mask2],
+            colorscale='RdYlGn', cmin=0, cmax=0.2,
+            colorbar=dict(title='R²', x=1.02, len=0.5, y=0.2),
+            showscale=True,
+        ),
+        showlegend=False,
+    ), row=2, col=2)
+
+    fig.update_xaxes(title_text='R²', row=1, col=1)
+    fig.update_xaxes(title_text='log10(cond(X))', row=1, col=2)
+    fig.update_xaxes(title_text='R²', row=2, col=1)
+    fig.update_xaxes(title_text='k̂', row=2, col=2)
+    fig.update_yaxes(title_text='频数', row=1, col=1)
+    fig.update_yaxes(title_text='频数', row=1, col=2)
+    fig.update_yaxes(title_text='|k̂|', type='log', row=2, col=1)
+    fig.update_yaxes(title_text='ĉ', row=2, col=2)
+
+    fig.update_layout(
+        template='plotly_dark', height=900, width=1400,
+        title_text=f'Parameter Fit Identifiability Audit (N={len(kc_df)})',
+    )
+    fig.write_html(output_path)
+    return output_path
+
+
+def write_identifiability_summary_txt(kc_df: pd.DataFrame, output_path: str) -> str:
+    """UTF-8 中文汇总:分类计数 + 分布统计 + recommendation。"""
+    from datetime import datetime
+    n_total = len(kc_df)
+    id_status = kc_df['identification_status'].fillna('singular')
+    fq = kc_df['fit_quality'].fillna('uninformative')
+    n_well = int((id_status == 'well_conditioned').sum())
+    n_ill = int((id_status == 'ill_conditioned').sum())
+    n_unid = int((id_status == 'unidentifiable').sum())
+    n_sing = int((id_status == 'singular').sum())
+    n_good = int((fq == 'good').sum())
+    n_weak = int((fq == 'weak').sum())
+    n_poor = int((fq == 'poor').sum())
+    n_uninf = int((fq == 'uninformative').sum())
+
+    r2 = pd.to_numeric(kc_df['r2'], errors='coerce').to_numpy()
+    r2_finite = r2[np.isfinite(r2)]
+    cond = pd.to_numeric(kc_df['condition_number'], errors='coerce').to_numpy()
+    cond_finite = cond[np.isfinite(cond) & (cond > 0)]
+
+    pct = lambda n: 100.0 * n / max(n_total, 1)
+    well_pct = pct(n_well)
+    if well_pct > 50:
+        rec = 'well_conditioned 占比 > 50% → V6 在 well_conditioned 子集重跑 (spec v0.2)'
+    elif well_pct >= 10:
+        rec = 'well_conditioned 占比 10-50% → V6 因子降级,只看 well_conditioned 子集'
+    else:
+        rec = 'well_conditioned 占比 < 10% → 动力学模型作为方法论不可用,收口'
+
+    lines = [
+        '=' * 50,
+        'Parameter Fit Identifiability Audit',
+        '=' * 50,
+        f'Run date:  {datetime.now().strftime("%Y-%m-%d")}',
+        f'Total:           {n_total} stocks',
+        '', '--- Identification Status ---',
+        f'  Well conditioned:  {n_well} ({well_pct:.1f}%)',
+        f'  Ill conditioned:   {n_ill} ({pct(n_ill):.1f}%)',
+        f'  Unidentifiable:    {n_unid} ({pct(n_unid):.1f}%)',
+        f'  Singular:          {n_sing} ({pct(n_sing):.1f}%)',
+        '', '--- Fit Quality ---',
+        f'  Good:              {n_good} ({pct(n_good):.1f}%)',
+        f'  Weak:              {n_weak} ({pct(n_weak):.1f}%)',
+        f'  Poor:              {n_poor} ({pct(n_poor):.1f}%)',
+        f'  Uninformative:     {n_uninf} ({pct(n_uninf):.1f}%)',
+        '', '--- R² Distribution ---',
+    ]
+    if len(r2_finite) > 0:
+        lines.extend([
+            f'  median = {np.median(r2_finite):.4f}',
+            f'  p25    = {np.percentile(r2_finite, 25):.4f}',
+            f'  p75    = {np.percentile(r2_finite, 75):.4f}',
+        ])
+    else:
+        lines.append('  (no finite R²)')
+    lines.extend([
+        '', '--- Condition Number Distribution ---',
+    ])
+    if len(cond_finite) > 0:
+        lines.extend([
+            f'  median = {np.median(cond_finite):.2e}',
+            f'  p25    = {np.percentile(cond_finite, 25):.2e}',
+            f'  p75    = {np.percentile(cond_finite, 75):.2e}',
+        ])
+    else:
+        lines.append('  (no finite condition number)')
+    lines.extend([
+        '', '--- Recommendation ---',
+        f'  {rec}',
+        '=' * 50,
+    ])
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines) + '\n')
+    return output_path
+
+
 def main():
     args = parse_args()
     os.makedirs(CSV_OUT_DIR, exist_ok=True)
@@ -753,6 +912,16 @@ def main_fit_all(targets, min_valid_days: int, clip_extreme: float):
     ])
     out_path = os.path.join(CSV_OUT_DIR, KC_OUT_NAME)
     out_df.to_csv(out_path, index=False, encoding='utf-8')
+
+    # === v0: Identifiability Audit outputs ===
+    HTML_OUT_DIR = 'backtrace/outputs'
+    os.makedirs(HTML_OUT_DIR, exist_ok=True)
+    html_path = os.path.join(HTML_OUT_DIR, 'kc_identifiability_distribution.html')
+    build_identifiability_distribution_html(out_df, html_path)
+    txt_path = os.path.join(CSV_OUT_DIR, 'kc_identifiability_summary.txt')
+    write_identifiability_summary_txt(out_df, txt_path)
+    print(f'\n  v0 audit HTML: {html_path}')
+    print(f'  v0 audit TXT:  {txt_path}')
 
     ok = sum(1 for r in rows if r['status'].startswith('ok'))
     singular = sum(1 for r in rows if r['status'] == 'singular')
