@@ -1839,3 +1839,62 @@ def test_lookup_kc_for_code(tmp_path):
     bad = tmp_path / 'bad.csv'
     bad.write_text('code,foo,bar\n601609.SH,1,2\n', encoding='utf-8')
     assert lookup_kc_for_code(str(bad), '601609.SH') is None
+
+
+# === v6 — Dynamics Factor Validation (2026-08-19) ===
+
+def test_compute_cross_section_ic_positive():
+    """Perfect positive rank correlation → IC ≈ 1.0."""
+    from dynamics.dynamics_factor_validation import compute_cross_section_ic
+    factor = pd.Series([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    ret = pd.Series([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+    ic, pval, n = compute_cross_section_ic(factor, ret)
+    assert ic > 0.99
+    assert n == 10
+    assert pval < 0.001
+
+
+def test_compute_cross_section_ic_negative():
+    """Negative correlation → IC < 0."""
+    from dynamics.dynamics_factor_validation import compute_cross_section_ic
+    factor = pd.Series([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    ret = pd.Series([1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1])
+    ic, _, _ = compute_cross_section_ic(factor, ret)
+    assert ic < -0.99
+
+
+def test_compute_cross_section_ic_too_few():
+    """n < 10 → NaN, n=actual."""
+    from dynamics.dynamics_factor_validation import compute_cross_section_ic
+    factor = pd.Series([1, 2, 3])
+    ret = pd.Series([0.1, 0.2, 0.3])
+    ic, _, n = compute_cross_section_ic(factor, ret)
+    assert np.isnan(ic)
+    assert n == 3
+
+
+def test_compute_quantile_returns_monotonic():
+    """Q1 < Q5 monotonic."""
+    from dynamics.dynamics_factor_validation import compute_quantile_returns
+    np.random.seed(42)
+    factor = pd.Series(np.arange(100).astype(float))
+    ret = pd.Series(factor.values * 0.01)  # 完美单调
+    q = compute_quantile_returns(factor, ret, n_quantiles=5)
+    assert q['q1_ret'] < q['q5_ret']
+    assert q['q5_minus_q1'] > 0
+
+
+def test_compute_eigen_factors():
+    """(k=0.145, c=1.112) → rho ≈ 0.85, regime=overdamped."""
+    from dynamics.dynamics_factor_validation import compute_eigen_factors
+    kc = pd.DataFrame({'code': ['000001.SZ'], 'k_hat': [0.145], 'c_hat': [1.112]})
+    out = compute_eigen_factors(kc)
+    assert abs(out['rho'].iloc[0] - 0.85) < 0.01
+    assert out['regime'].iloc[0] == 'overdamped'
+
+
+def test_load_kc_estimates_missing():
+    """missing path → FileNotFoundError with hint."""
+    from dynamics.dynamics_factor_validation import load_kc_estimates
+    with pytest.raises(FileNotFoundError, match='parameter_fit.py'):
+        load_kc_estimates('/nonexistent/kc_estimates.csv')
