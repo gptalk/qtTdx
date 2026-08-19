@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 import subprocess
 import sys, os
+from pathlib import Path
 
 BACKTRACE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'backtrace')
 if BACKTRACE_DIR not in sys.path:
@@ -1884,6 +1885,20 @@ def test_compute_quantile_returns_monotonic():
     assert q['q5_minus_q1'] > 0
 
 
+def test_compute_quantile_returns_non_numeric_factor():
+    """regime / categorical 因子 → 全部 NaN, 不抛错 (Task 2 修复)。"""
+    from dynamics.dynamics_factor_validation import compute_quantile_returns
+    regimes = ['overdamped', 'critical', 'underdamped', 'anti_damped'] * 25
+    factor = pd.Series(regimes[:100])
+    ret = pd.Series(np.random.RandomState(42).randn(100) * 0.01)
+    q = compute_quantile_returns(factor, ret, n_quantiles=5)
+    # 所有 q1-q5 + spread 都应是 NaN,n_obs=100(只是 dropna 后)
+    for i in range(1, 6):
+        assert np.isnan(q[f'q{i}_ret']), f'q{i}_ret should be NaN for string factor'
+    assert np.isnan(q['q5_minus_q1'])
+    assert q['n_obs'] == 100
+
+
 def test_compute_eigen_factors():
     """(k=0.145, c=1.112) → rho ≈ 0.85, regime=overdamped."""
     from dynamics.dynamics_factor_validation import compute_eigen_factors
@@ -1898,3 +1913,35 @@ def test_load_kc_estimates_missing():
     from dynamics.dynamics_factor_validation import load_kc_estimates
     with pytest.raises(FileNotFoundError, match='parameter_fit.py'):
         load_kc_estimates('/nonexistent/kc_estimates.csv')
+
+
+# === v6 Task 2 — CLI smoke test ===
+
+def test_cli_factor_validation_minimal(tmp_path):
+    """CLI runs with required files, exits 0, writes 3 CSVs + 1 TXT."""
+    import subprocess
+    # 需要 kc_estimates.csv 存在 — 在 test fixture 里跳过如果缺失
+    kc_path = Path('data/projection/kc_estimates.csv')
+    if not kc_path.exists():
+        pytest.skip('kc_estimates.csv not available — run parameter_fit.py first')
+
+    out_dir = tmp_path / 'outputs'
+    data_dir = tmp_path / 'data'
+    result = subprocess.run(
+        [
+            sys.executable,
+            'backtrace/dynamics/dynamics_factor_validation.py',
+            '--limit', '50',
+            '--horizons', '5,20',
+            '--output-dir', str(out_dir),
+            '--data-dir', str(data_dir),
+            '--repo-root', '.',
+        ],
+        capture_output=True, text=True, encoding='utf-8', errors='replace',
+        env={**os.environ, 'PYTHONIOENCODING': 'utf-8'},
+    )
+    assert result.returncode == 0, f'stderr: {result.stderr}'
+    assert (data_dir / 'factor_validation.csv').exists()
+    assert (data_dir / 'factor_validation_by_year.csv').exists()
+    assert (data_dir / 'factor_validation_by_industry.csv').exists()
+    assert (out_dir / 'dynsys_factor_validation_summary.txt').exists()

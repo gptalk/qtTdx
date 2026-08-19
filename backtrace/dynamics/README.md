@@ -18,6 +18,13 @@ dynamics/
 ├── dynamics_1step_oos.py   OOS 1 步预测(纯动力学基线,F_self 滚动均值)
 ├── dynamics_state_backtest.py  状态分组 + vbt basket 回测 + IC 评估
 ├── dynamics_eigen_analysis.py  (k̂, ĉ) → 特征值 + 11 类稳定性分类 + HTML(v4)
+├── dynamics_oos_viz.py       OOS 1 步预测 + 4 子图 HTML (v5.9)
+├── dynamics_oos_batch.py     全市场 OOS 分布 dashboard (v5.10-5.11)
+├── dynamics_forced_response.py   受迫系统 + G(ω) 频率响应 (v5)
+├── dynamics_si_*.py          行业稳定性指数 SI 评估 (v4.7-4.10)
+├── dynamics_state_timeline.py   状态时间线 + 4 力分解 HTML (v5.8)
+├── dynamics_si_freq_response.py   时序 G(ω) 动画 (v5.3-5.7)
+├── dynamics_factor_validation.py  v3-v5.11 业务验证 — IC + Q1-Q5 (v6,2026-08-19)
 └── README.md               本文件
 ```
 
@@ -593,6 +600,71 @@ sim['in_wedge']      # True
 
 零数值开销(`analyze_eigenvalues` 只是 2×2 矩阵特征值),但把"模型参数稳定性"和"轨迹形状"绑在一张表里 — 后续 IC / basket 回测可以直接按 `Sim_DynamicClass` 分组,看"稳定 vs 发散股票的未来收益是否真有差异"。
 
+### 6.9 v6 输出 schema(2026-08-19)
+
+`dynamics_factor_validation.py` 产出 3 个 CSV + 1 个 TXT + 1 个 HTML,UTF-8(`utf-8-sig` for Excel 兼容)。
+
+#### 6.9.1 `v6_factor_validation.csv` (主表,18 列)
+
+每行 = 1 个 (factor, horizon) 组合的跨期聚合统计。
+
+| 列 | 类型 | 含义 |
+|---|---|---|
+| `factor` | str | 因子名,如 `k` / `rho` / `hit_rate` / `delta_k` / `regime` |
+| `horizon` | int | forward return 窗口(交易日):5 / 20 / 60 |
+| `n_obs` | int | 参与评估的 (code, date) 总数 |
+| `n_dates` | int | 评估跨度的交易日数 |
+| `ic_mean` | float | 跨期 Spearman IC 均值(主信号)|
+| `ic_std` | float | IC 跨期标准差 |
+| `ic_ir` | float | IC 信息比率 = `mean / std`(类似 Sharpe,> 0.5 视为稳定信号) |
+| `ic_pvalue` | float | `ttest_1samp(IC, 0)` 的 p 值(均值显著 ≠ 0 测试) |
+| `q1_ret` / ... / `q5_ret` | float | pd.qcut 5 等分后每组的 forward return 中位数 |
+| `q5_minus_q1` | float | 多空收益差(单调性指标,> 0 表示因子排序有效) |
+| `top_year` | int | 该因子跨 `n_dates` 中,IC 最大的年份(如 2024) |
+| `top_year_ic` | float | `top_year` 那年的 IC |
+| `top_industry` | str | 申万一级行业名(如 `电子` / `银行`),IC 最大的那个 |
+| `top_industry_ic` | float | `top_industry` 的 IC |
+| `status` | str | `ok` / `not_loaded` / `insufficient_data` / `no_industry` |
+
+#### 6.9.2 `v6_by_year.csv` (8 列,主表按年切片)
+
+每行 = 1 个 (factor, horizon, year) 组合。
+
+| 列 | 类型 | 含义 |
+|---|---|---|
+| `factor` / `horizon` | str / int | 同主表 |
+| `year` | int | 日历年份(2019 / 2024 / ...) |
+| `n_obs` | int | 该年样本数 |
+| `n_dates` | int | 该年交易日数 |
+| `ic_mean` | float | 该年跨截面 IC 均值 |
+| `ic_std` | float | 该年 IC std |
+| `status` | str | `ok` / `insufficient_data`(n_obs < 20)|
+
+#### 6.9.3 `v6_by_industry.csv` (8 列,主表按申万一级行业切片)
+
+每行 = 1 个 (factor, horizon, industry_l1) 组合。
+
+| 列 | 类型 | 含义 |
+|---|---|---|
+| `factor` / `horizon` | str / int | 同主表 |
+| `industry_l1` | str | 申万二级 sector_code 前 5 位(如 `88100` / `88101`),用作行业聚合 key(申万二级名称见 `industry_l2`)|
+| `n_obs` | int | 该行业样本数 |
+| `n_dates` | int | 该行业交易日数 |
+| `ic_mean` / `ic_std` / `status` | float / float / str | 同 `v6_by_year.csv` |
+
+#### 6.9.4 `v6_summary.txt` (UTF-8 纯文本)
+
+按 `|ic_mean|` 降序排列输出 top-10 因子 + 显著项 (p<0.05) 全表 + by-year 显著提示 + by-industry top-N + 决策提示(v6 §3.11 决策标准的中文版)。
+
+#### 6.9.5 `dynsys_v6_factor_validation.html` (2×2 plotly)
+
+| (行, 列) | 子图 |
+|---|---|
+| (1, 1) | `ic_mean` by factor(bar chart,top-10)| |
+| (1, 2) | `ic_mean` by horizon × factor(heatmap) |
+| (2, 1) | Q1-Q5 forward return by factor(line plot,top-10 by q5-q1)|
+| (2, 2) | IC 时间稳定性(跨年 std,top-10 by ic_ir)|
+
 ## 7. 与其他目录的关系
 
 - **`backtrace/projection/`** — 数学源头。本目录 `from projection._projection_core import ...`。
@@ -813,6 +885,91 @@ PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_si_lagged_ic.py --wind
 - 截面行业数太少(< 10)时 Spearman 抽样噪声本身就有 E|IC| ≈ 0.3,别把它当信号
 - 若 lagged IC ≈ 0 → 行业层**纯描述性**,SI 用于报告 / 风险标签,不作选股信号(确认 v4.8 结论)
 - 若 lagged IC > 0.05 显著 → 行业 SI(t) 是预测性指标,v4.12 行业轮动策略有基础
+
+### 3.11 v6 — 因子验证 (Cross-sectional IC + Q1-Q5)(2026-08-19)
+
+v3-v5.11 产出的描述性变量(`k̂` / `ĉ` / λ / ρ / OOS hit_rate / state prop)到底有没有业务价值?
+v6 是**纯消费者**:读已有 CSV(不重算)→ 跨截面 Spearman IC + Q1-Q5 quantile returns
+→ 按因子给"预测力评分"。
+
+**目标因子**(24 个,从已有 CSV 派生):
+
+| 因子类 | 因子名 | 来源 / 派生 |
+|---|---|---|
+| **OLS 原始** | `k` / `c` | kc_estimates.csv 直接读 |
+| **OLS 派生比** | `c_over_k` / `log_c_over_k` | kc_estimates.csv 派生(过阻尼 / 欠阻尼度量) |
+| **特征值** | `rho` / `theta` / `dist_to_unit` | `analyze_eigenvalues` 派生(ρ = 谱半径,θ = 主特征值角度) |
+| **11 类分类** | `regime` | overdamped / critical / underdamped / anti_damped(简化 4 类业务语义,字符串因子,IC 跳过 quantile)|
+| **OOS 预测质量** | `hit_rate` / `rmse` / `mae` / `direction_acc` | prediction_summary.csv |
+| **状态分布** | `state_dominant` + 7 prop 列(`follow`/`against`/`independent`/`leading`/`lagging`/`resonance`/`orbit`) | state_distribution.csv |
+| **时序漂移** | `delta_k` / `delta_c` / `delta_rho` / `delta_theta` | kc_estimates_time.csv 月末 diff(需先跑 `parameter_fit.py --rolling-time`)|
+
+**调用**:
+
+```bash
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_factor_validation.py
+# 默认:limit=500, horizons=5,20,60, 读 4 个 CSV + data/stocks/
+
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_factor_validation.py \
+    --limit 50 --horizons 5,20 \
+    --output-dir backtrace/outputs/v6_smoke \
+    --data-dir data/dynamics
+# 冒烟:50 只票 + 2 horizons
+
+PYTHONIOENCODING=utf-8 python backtrace/dynamics/dynamics_factor_validation.py \
+    --kc-csv data/projection/kc_estimates.csv \
+    --oos-summary data/dynamics/prediction_summary.csv \
+    --state-csv data/dynamics/state_distribution.csv \
+    --kc-time-csv data/projection/kc_estimates_time.csv \
+    --factors k,c,rho,hit_rate
+# 自定义 CSV 路径 + 因子子集
+```
+
+**输入 CSV**(缺哪个 → 该因子 `status='not_loaded'`,不抛):
+
+| CSV | 路径 | 来源 |
+|---|---|---|
+| `kc_estimates.csv` | `data/projection/` | `parameter_fit.py`(status startswith 'ok') |
+| `prediction_summary.csv` | `data/dynamics/` | `dynamics_oos_batch.py --kc-estimates-csv ...` |
+| `state_distribution.csv` | `data/dynamics/` | `dynamics_state_backtest.py` |
+| `kc_estimates_time.csv` | `data/projection/` | `parameter_fit.py --rolling-time` |
+| `data/stocks/<code>.csv` | `data/stocks/` | `fetch_daily.py`(本地日线) |
+| `sw2/members.csv` + `stock_basic.csv` | `data/sw2/` / `data/` | 行业聚合 |
+
+**输出**(5 文件,全 gitignored):
+
+| 路径 | 内容 |
+|---|---|
+| `data/dynamics/v6_factor_validation.csv` | main 表:每 (factor, horizon) 一行,列见 §6 |
+| `data/dynamics/v6_by_year.csv` | 按年聚合 |
+| `data/dynamics/v6_by_industry.csv` | 申万一级行业聚合 |
+| `data/dynamics/v6_summary.txt` | UTF-8 中文汇总(top-10 + by-year + by-industry 显著项 + 决策提示) |
+| `backtrace/outputs/dynsys_v6_factor_validation.html` | 2×2 plotly 仪表板:IC by factor / IC by horizon / Q1-Q5 收益 / 跨年稳定性 |
+
+**评估口径**(per factor, per horizon):
+
+1. **IC** = cross-sectional Spearman ρ(factor_t, fwd_ret_t+h) on each date t
+2. 跨期汇总:`ic_mean` / `ic_std` / `ic_ir = mean/std` / `ic_pvalue` (one-sample t-test against 0)
+3. **Q1-Q5** = `pd.qcut(factor_t, 5, duplicates='drop')` → 每组 forward return 中位数
+4. **Q5 - Q1** = 多空收益差(单调性指标)
+5. 按年/按行业分层(`industry_l1` 来自 `sw2/members.csv`)
+
+**决策标准**(spec §13):
+
+| 现象 | 解读 | 行动 |
+|---|---|---|
+| `ic_mean >= 0.05` 且 `ic_pvalue < 0.05` | 因子有显著预测力 | 进 α 组合 |
+| `0.02 <= ic_mean < 0.05` | 弱信号 | 需做 v6.1+ 多 horizons 验证 |
+| `q5_minus_q1 > 0.005`(月化 0.5%)且单调 | Q1-Q5 单调性 OK | 检查换手率(隐含交易成本) |
+| 所有因子 IC ≈ 0 | 模型是**纯描述性**,无预测价值 | 收口,v6 报告作为架构性结论 |
+
+**已知陷阱**:
+
+- 14 个因子并非正交(相关性见 HTML (2,2))— 不要叠加做"alpha 组合",先用单因子评估
+- `delta_*` 时序因子需要 `kc_estimates_time.csv` 跑过(`parameter_fit.py --rolling-time`);缺失 → 4 个 delta 因子全 `not_loaded`
+- 行业聚合从 `sw2/members.csv` 读,需要 `fetch_daily.py` / `stock_basic.csv` 完整跑过
+- `n_obs` < 10 的 (factor, horizon, date) 跳过(避免 spearmanr 在 n=2 时返回 ±1 假信号)
+- 默认 `min_n_per_date=10`,业务密集板块(< 10 票)整组跳过
 
 ### §4 v5 — 受迫系统 + G(ω) 频率响应
 
