@@ -499,7 +499,7 @@ git commit -m "feat(projection): V0.2-C1 Task 2 — paired C0/C1 compare helpers
 - Modify: `tests/test_dynamics_eigen.py` (append 1 CLI smoke test)
 
 **Interfaces:**
-- CLI args: `--input-sh PATH` (default `data/stock_basic.csv` filtered to SH), `--input-sz PATH`, `--market-dir DIR` (default `data/projection_market/`), `--c0-dir DIR` (default `data/projection_v01_d/`), `--c1-output-dir DIR` (default `data/projection_v01_c1/`), `--limit N` (default 0 = all), `--days N` (default 240), `--skip-data-gen` (flag, default False)
+- CLI args: `--input-sh PATH` (default `data/stock_basic.csv` filtered to SH), `--input-sz PATH`, `--market-dir DIR` (default `data/projection_market/`), `--c0-dir DIR` (default `data/projection_v01_d/`), `--c1-output-dir DIR` (default `data/projection_v01_c1/`), `--limit N` (default 0 = all), `--days N` (default 240), `--skip-data-gen` (flag, default False), `--skip-ablation` (flag, default False; for CI smoke tests where C1 CSV is pre-populated)
 - Pipeline:
   1. Filter `data/stock_basic.csv` to SH-only subset → write to `<td>/stocks_sh.csv`
   2. Filter `data/stock_basic.csv` to SZ-only subset → write to `<td>/stocks_sz.csv`
@@ -561,9 +561,19 @@ def test_v0_2_c1_cli_smoke():
         c0_dir = os.path.join(td, 'data', 'projection_v01_d')
         os.makedirs(c0_dir)
         n = 6
+        # Include `index_code` so the CLI's driver-aware filter is exercised.
+        # SH stocks (600xxx) → 申万 industry codes (881xxx.SH/SZ) for C0
+        # SH stocks → 000001.SH (上证综指) for C1
+        # SZ stocks (000xxx) → 申万 industry codes (881xxx) for C0
+        # SZ stocks → 399001.SZ (深证成指) for C1
+        index_codes_c0 = ['881001.SH', '881001.SH', '881001.SH',
+                          '881002.SZ', '881002.SZ', '881002.SZ']
+        index_codes_c1 = ['000001.SH', '000001.SH', '000001.SH',
+                          '399001.SZ', '399001.SZ', '399001.SZ']
         pd.DataFrame({
             'code': [r['code'] for r in rows],
             'name': [r['name'] for r in rows],
+            'index_code': index_codes_c0,
             'ic_real': np.random.default_rng(0).normal(0, 0.3, n),
             'q_drift': np.random.default_rng(1).normal(0.1, 0.05, n),
             'q_hat': np.random.default_rng(2).normal(0.5, 0.2, n),
@@ -571,9 +581,26 @@ def test_v0_2_c1_cli_smoke():
             'oos_r2': np.random.default_rng(4).normal(0, 0.1, n),
             'condition_number': np.random.default_rng(5).uniform(5, 30, n),
         }).to_csv(os.path.join(c0_dir, 'kc_estimates_model2_diag.csv'), index=False)
+        # C1 input CSV (the CLI's ablation step would normally produce this,
+        # but for the smoke test we pre-populate with matching market-driver rows)
+        c1_input_dir = os.path.join(td, 'data', 'projection_v01_c1')
+        os.makedirs(c1_input_dir)
+        pd.DataFrame({
+            'code': [r['code'] for r in rows],
+            'name': [r['name'] for r in rows],
+            'index_code': index_codes_c1,
+            'ic_real': np.random.default_rng(0).normal(0, 0.2, n),
+            'q_drift': np.random.default_rng(1).normal(0.05, 0.03, n),
+            'q_hat': np.random.default_rng(2).normal(0.5, 0.2, n),
+            'test_fit_r2': np.random.default_rng(3).uniform(0, 0.2, n),
+            'oos_r2': np.random.default_rng(4).normal(0, 0.08, n),
+            'condition_number': np.random.default_rng(5).uniform(5, 30, n),
+        }).to_csv(os.path.join(c1_input_dir, 'kc_estimates_model2_diag.csv'), index=False)
         # Run CLI
         market_dir = os.path.join(td, 'data', 'projection_market')
         c1_dir = os.path.join(td, 'data', 'projection_v01_c1')
+        # Use --skip-data-gen --skip-ablation so the test is CI-friendly
+        # (no TQ required; C0 + C1 CSVs are pre-populated).
         result = subprocess.run([
             sys.executable,
             'backtrace/projection/v0_2_c1_market_swap.py',
@@ -581,15 +608,20 @@ def test_v0_2_c1_cli_smoke():
             '--market-dir', market_dir,
             '--c0-dir', c0_dir,
             '--c1-output-dir', c1_dir,
+            '--skip-data-gen',
+            '--skip-ablation',
             '--limit', '0',
-            '--days', '60',
         ], capture_output=True, text=True,
            env={**os.environ, 'PYTHONIOENCODING': 'utf-8', 'REPO_ROOT': os.getcwd()},
            cwd=os.getcwd(), timeout=300)
         assert result.returncode == 0, f"CLI failed: {result.stderr}\nstdout: {result.stdout}"
-        # Verify C1 outputs
-        for f in ('kc_estimates_model2_diag.csv', 'c0_c1_paired_compare.csv', 'c0_c1_compare_summary.txt'):
+        # Verify paired compare outputs (the test's actual scope)
+        for f in ('kc_estimates_model2_diag_filtered.csv', 'c0_c1_paired_compare.csv', 'c0_c1_compare_summary.txt'):
             assert os.path.exists(os.path.join(c1_dir, f)), f"missing C1 output: {f}"
+        # Verify paired compare has all 25 cols and the driver-filter was applied
+        paired = pd.read_csv(os.path.join(c1_dir, 'c0_c1_paired_compare.csv'))
+        assert len(paired.columns) == 25, f"paired CSV has {len(paired.columns)} cols, expected 25"
+        assert len(paired) == 6, f"expected 6 paired rows (after filter), got {len(paired)}"
 ```
 
 - [ ] **Step 3.2: Run test to verify it fails**
@@ -653,6 +685,8 @@ def parse_args():
                    help='回看天数。默认 240')
     p.add_argument('--skip-data-gen', action='store_true',
                    help='跳过 movement 文件生成(只跑 ablation + paired compare)')
+    p.add_argument('--skip-ablation', action='store_true',
+                   help='跳过 v0_2_d_decompose 调用(只跑 paired compare;需要 C1 CSV 已存在)')
     return p.parse_args()
 
 
@@ -712,18 +746,21 @@ def main():
             print(f'{label}: 完成')
 
     # Step 4: Run V0.2-D pipeline on market-driver dir
-    cmd_ablation = [
-        sys.executable,
-        os.path.join(BACKTRACE_DIR, 'projection', 'v0_2_d_decompose.py'),
-        '--movement-dir', args.market_dir,
-        '--output-dir', args.c1_output_dir,
-    ]
-    if args.limit > 0:
-        cmd_ablation += ['--limit', str(args.limit)]
-    rc = run_subprocess(cmd_ablation, timeout=3600)
-    if rc != 0:
-        sys.exit(rc)
-    print(f'C1 ablation: 完成')
+    if not args.skip_ablation:
+        cmd_ablation = [
+            sys.executable,
+            os.path.join(BACKTRACE_DIR, 'projection', 'v0_2_d_decompose.py'),
+            '--movement-dir', args.market_dir,
+            '--output-dir', args.c1_output_dir,
+        ]
+        if args.limit > 0:
+            cmd_ablation += ['--limit', str(args.limit)]
+        rc = run_subprocess(cmd_ablation, timeout=3600)
+        if rc != 0:
+            sys.exit(rc)
+        print(f'C1 ablation: 完成')
+    else:
+        print('C1 ablation: 跳过(--skip-ablation)')
 
     # Step 5: Paired compare
     c0_csv = os.path.join(args.c0_dir, 'kc_estimates_model2_diag.csv')
@@ -739,6 +776,30 @@ def main():
     if not os.path.exists(c1_csv):
         print(f'ERROR: C1 not found at {c1_csv}', file=sys.stderr)
         sys.exit(1)
+
+    # V0.2-C1 Task 2 concern 2 — driver-aware filtering before merge.
+    # Real V0.2-D CSV may contain stray market-driver rows (002475.SZ ×3,
+    # 601609.SH ×2 from earlier contamination). Structural dedup in
+    # compute_c0_c1_paired_compare is NOT driver-aware, so we filter
+    # here by index_code: C0 keeps 88xxxx industry rows; C1 keeps
+    # market index rows (000001.SH / 399001.SZ).
+    c0_filtered_csv = os.path.join(args.c0_dir, 'kc_estimates_model2_diag_filtered.csv')
+    c1_filtered_csv = os.path.join(args.c1_output_dir, 'kc_estimates_model2_diag_filtered.csv')
+    c0_df = pd.read_csv(c0_csv, dtype={'code': str})
+    c1_df = pd.read_csv(c1_csv, dtype={'code': str})
+    n_c0_before, n_c1_before = len(c0_df), len(c1_df)
+    if 'index_code' in c0_df.columns:
+        c0_df = c0_df[c0_df['index_code'].str.startswith('88', na=False)].copy()
+    if 'index_code' in c1_df.columns:
+        c1_df = c1_df[c1_df['index_code'].isin(['000001.SH', '399001.SZ'])].copy()
+    n_c0_after, n_c1_after = len(c0_df), len(c1_df)
+    print(f'C0 filter: {n_c0_before} → {n_c0_after} rows (industry-driver only)')
+    print(f'C1 filter: {n_c1_before} → {n_c1_after} rows (market-driver only)')
+    c0_df.to_csv(c0_filtered_csv, index=False, encoding='utf-8')
+    c1_df.to_csv(c1_filtered_csv, index=False, encoding='utf-8')
+    c0_csv = c0_filtered_csv
+    c1_csv = c1_filtered_csv
+
     # If c0_dist / c1_dist are missing, create stub from CSV (compute fresh)
     if not os.path.exists(c0_dist):
         from projection.ablation_fit import compute_v0_2_d_distributions
