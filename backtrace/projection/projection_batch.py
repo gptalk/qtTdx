@@ -132,16 +132,25 @@ from _projection_core import (
     build_forces_df,
 )
 
-CSV_OUT_DIR = 'data/projection'   # 每只股票 CSV + batch_manifest.csv 都落这里
+CSV_OUT_DIR = 'data/projection'   # 默认输出目录;运行时由 --output-dir 覆盖(模块全局)
+
+# KC source dir (always default, regardless of --output-dir):
+# load_kc_map() 总是从 data/projection/kc_estimates.csv 读取(parameter_fit.py 的固定输出),
+# 不受 --output-dir 影响 — 这样 C0 行业基线和 C1 市场基线能共享同一份拟合表。
+KC_SOURCE_DIR = 'data/projection'
 
 
 def load_kc_map(status_filter: str = 'ok'):
-    """从 data/projection/kc_estimates.csv 读 {(index_tag, stock_tag): (k̂, ĉ)}。
+    """从 KC_SOURCE_DIR/kc_estimates.csv 读 {(index_tag, stock_tag): (k̂, ĉ)}。
+
+    注意:此函数**总是**从默认 `data/projection/kc_estimates.csv` 读取,
+    不受 --output-dir 影响(parameter_fit.py 的固定输出位置,
+    C0 / C1 共享同一份拟合表)。
 
     status_filter: 只取 status 以该前缀开头的行(默认 'ok');空字符串 = 全部。
     找不到 / 文件不存在 → 返回 {}。
     """
-    path = os.path.join(CSV_OUT_DIR, 'kc_estimates.csv')
+    path = os.path.join(KC_SOURCE_DIR, 'kc_estimates.csv')
     if not os.path.exists(path):
         return {}
     df = pd.read_csv(path, dtype={
@@ -166,6 +175,14 @@ def parse_args():
     parser.add_argument(
         '--input', default=os.path.join(CSV_OUT_DIR, 'stocks.csv'),
         help=f'股票列表 CSV 路径(列:code, 可选 name)。默认 {CSV_OUT_DIR}/stocks.csv',
+    )
+    parser.add_argument(
+        '--output-dir', default='data/projection',
+        help=(
+            '输出目录(所有 projection / movement / dynamics / forces / batch_manifest CSV 落到这里)。'
+            '默认 data/projection。注意:load_kc_map() 总是从默认 data/projection/kc_estimates.csv 读取,'
+            '不受 --output-dir 影响。'
+        ),
     )
     parser.add_argument('--days', type=int, default=240, help='回看天数。默认 240')
     parser.add_argument('--limit', type=int, default=0, help='最多处理多少只;0 表示全部。默认 0')
@@ -407,6 +424,11 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
 
 def main():
     args = parse_args()
+    # V0.2-C1 Task 1:把 --output-dir 绑到模块全局 CSV_OUT_DIR,
+    # 让 process_one() / batch_manifest 写路径都跟着变。
+    # 注意:load_kc_map() 仍走 KC_SOURCE_DIR(默认 data/projection),不受影响。
+    global CSV_OUT_DIR
+    CSV_OUT_DIR = args.output_dir
     os.makedirs(CSV_OUT_DIR, exist_ok=True)
 
     # --dynamics 自动开启 --movement(动力学层依赖 mv dict)

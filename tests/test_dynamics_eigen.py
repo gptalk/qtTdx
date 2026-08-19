@@ -2851,3 +2851,41 @@ def test_cli_smoke_v0_2_d_full_pipeline():
         for f in ('kc_estimates_model2_diag.csv', 'panel5_drift_vs_collinearity.html',
                    'v0_2_d_distributions.csv', 'v0_2_d_summary.txt'):
             assert os.path.exists(os.path.join(out_dir, f)), f"missing output: {f}"
+
+
+# === V0.2-C1 Task 1 — projection_batch --output-dir flag (2026-08-20) ===
+
+def test_projection_batch_output_dir_flag():
+    """V0.2-C1 Task 1: --output-dir redirects movement files; load_kc_map reads from default."""
+    import subprocess, tempfile, os
+    with tempfile.TemporaryDirectory() as td:
+        # Snapshot existing movement_399001_*.csv files BEFORE the run —
+        # so we can verify the test's run did not add any new ones to data/projection/
+        # (previous V0.2-D runs may have left legitimate files there).
+        proj_dir = 'data/projection'
+        before = set(
+            f for f in os.listdir(proj_dir)
+            if f.startswith('movement_399001_') and f.endswith('.csv')
+        )
+        result = subprocess.run([
+            sys.executable,
+            'backtrace/projection/projection_batch.py',
+            '--input', 'data/projection/stocks.csv',
+            '--output-dir', td,
+            '--movement',
+            '--index', '399001.SZ',
+            '--days', '60',
+            '--limit', '2',
+        ], capture_output=True, text=True, timeout=120,
+           cwd=REPO_ROOT, env={**os.environ, 'PYTHONIOENCODING': 'utf-8'})
+        assert result.returncode == 0, f"CLI failed: {result.stderr}"
+        # Verify movement files written to td (NOT to data/projection/)
+        out_files = [f for f in os.listdir(td) if f.startswith('movement_') and f.endswith('.csv')]
+        assert len(out_files) >= 1, f"No movement files in {td}; got {os.listdir(td)}"
+        # Verify data/projection/ NOT contaminated with new market movement files
+        after = set(
+            f for f in os.listdir(proj_dir)
+            if f.startswith('movement_399001_') and f.endswith('.csv')
+        )
+        new_files = after - before
+        assert not new_files, f"data/projection/ contaminated with new market files: {sorted(new_files)}"
