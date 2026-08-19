@@ -2256,3 +2256,124 @@ def test_cli_smoke_audit_outputs(tmp_path_factory):
     # TXT
     txt_path = 'data/projection/kc_identifiability_summary.txt'
     assert os.path.exists(txt_path)
+
+
+# === v0.1 — Dynamics Specification Correction & Ablation (2026-08-19 Task 1) ===
+import numpy as np
+from projection.ablation_fit import (
+    ols_fit, build_design_model_0, build_design_model_1,
+    build_design_model_2, build_design_model_3, _build_kinematics_ext,
+)
+
+
+def _make_ext_inputs(k_true=0.5, c_true=0.2, q_true=0.8, T=200, seed=0,
+                     beta_drift=0.001):
+    """Synthetic 2-D data satisfying Model 3 exactly.
+
+    Defaults satisfy Model 3: q_true=0.8 (free q), beta_drift=0.001 (β varies).
+    For Model 0 tests, override: q_true=1.0, beta_drift=0 (matches Model 0's
+    q=1, β̇=0 assumptions exactly, avoiding omitted-variable bias).
+
+    Returns 6-tuple: (u_vec, d_vec, a_u_vec, a_v_vec, beta, beta_dot_vM_vec)
+    The 5th element (beta) is required by build_design_model_0/1/2/3.
+    """
+    rng = np.random.default_rng(seed)
+    beta = 1.2 + beta_drift * np.arange(T)            # β constant if beta_drift=0
+    delta_v = rng.normal(0, 1, (T, 2))
+    delta_u = beta[:, None] * delta_v + rng.normal(0, 0.5, (T, 2))
+    d_vec = np.zeros((T, 2)); d_vec[1:] = np.cumsum(delta_u[:-1] - beta[:-1, None]*delta_v[:-1], axis=0)
+    u_vec = delta_u - beta[:, None] * delta_v
+    a_u = np.full((T, 2), np.nan); a_u[:-1] = np.diff(delta_u, axis=0)
+    a_v = np.full((T, 2), np.nan); a_v[:-1] = np.diff(delta_v, axis=0)
+    beta_dot_vM = np.full((T, 2), np.nan)
+    beta_dot_vM[:-1] = (np.diff(beta))[:, None] * delta_v[:-1]
+    # a_S = q·β·a_M + β̇·v_M − k·d − c·u + ε
+    eps = rng.normal(0, 0.01, (T, 2))
+    a_u_new = q_true * beta[:, None] * a_v + beta_dot_vM - k_true * d_vec - c_true * u_vec + eps
+    # only first T-1 rows used (last row NaN)
+    a_u[:-1] = a_u_new[:-1]
+    return u_vec, d_vec, a_u, a_v, beta, beta_dot_vM
+
+
+def test_build_design_model0_subtracts_beta_aM():
+    u, d, au, av, beta, bdv = _make_ext_inputs()
+    X, Y = build_design_model_0(u, d, au, av, beta, bdv)
+    # Y = a_u - β·a_v, X = [-d, -u]
+    assert X.shape[1] == 2
+    # Last row is NaN (from au NaN) → Y last row should be NaN
+    assert np.isnan(Y[-1])
+    # First row should be finite (a_v[0] finite)
+    assert np.isfinite(Y[0])
+
+
+def test_build_design_model1_subtracts_betadot_vM():
+    u, d, au, av, beta, bdv = _make_ext_inputs()
+    X, Y = build_design_model_1(u, d, au, av, beta, bdv)
+    assert X.shape[1] == 2
+    # Y should equal Model 0's Y minus bdv stacked
+    X0, Y0 = build_design_model_0(u, d, au, av, beta, bdv)
+    bdv_stack = np.concatenate([bdv[:, 0], bdv[:, 1]])
+    np.testing.assert_allclose(np.nan_to_num(Y), np.nan_to_num(Y0 - bdv_stack), equal_nan=True)
+
+
+def test_build_design_model2_keeps_aS_in_Y():
+    u, d, au, av, beta, bdv = _make_ext_inputs()
+    X, Y = build_design_model_2(u, d, au, av, beta, bdv)
+    assert X.shape[1] == 3  # [β·a_M, -d, -u]
+
+
+def test_build_design_model3_combines_offset_and_free_q():
+    u, d, au, av, beta, bdv = _make_ext_inputs()
+    X, Y = build_design_model_3(u, d, au, av, beta, bdv)
+    assert X.shape[1] == 3
+    # Y_Model3 - Y_Model1 = β·a_M (since Model 3 keeps β·a_M in X, Model 1 subtracts it)
+    X1, Y1 = build_design_model_1(u, d, au, av, beta, bdv)
+    beta_aM = beta[:, None] * av
+    beta_aM_stack = np.concatenate([beta_aM[:, 0], beta_aM[:, 1]])
+    np.testing.assert_allclose(np.nan_to_num(Y - Y1), np.nan_to_num(beta_aM_stack), equal_nan=True)
+
+
+def test_ols_fit_recovers_k_c_model0():
+    # Model 0 assumes q=1 and β̇=0; must use compatible synthetic data
+    u, d, au, av, beta, bdv = _make_ext_inputs(k_true=0.5, c_true=0.2, q_true=1.0, beta_drift=0.0)
+    X, Y = build_design_model_0(u, d, au, av, beta, bdv)
+    mask = np.isfinite(Y)
+    X_v, Y_v = X[mask], Y[mask]
+    theta, f_res, n_valid, rank, cond, rcorr, r2 = ols_fit(X_v, Y_v)
+    assert n_valid == mask.sum()
+    assert abs(theta[0] - 0.5) < 0.05  # k_hat ≈ 0.5
+    assert abs(theta[1] - 0.2) < 0.05  # c_hat ≈ 0.2
+
+
+def test_ols_fit_recovers_q_k_c_model3():
+    u, d, au, av, beta, bdv = _make_ext_inputs(k_true=0.5, c_true=0.2, q_true=0.8)
+    X, Y = build_design_model_3(u, d, au, av, beta, bdv)
+    mask = np.isfinite(Y)
+    X_v, Y_v = X[mask], Y[mask]
+    theta, *_ = ols_fit(X_v, Y_v)
+    # theta = (q, k, c)
+    assert abs(theta[0] - 0.8) < 0.05
+    assert abs(theta[1] - 0.5) < 0.05
+    assert abs(theta[2] - 0.2) < 0.05
+
+
+def test_ols_fit_r2_nan_when_ss_tot_zero():
+    X = np.ones((50, 2))
+    Y = np.full(50, 3.14)  # constant → SS_tot = 0
+    *_, r2 = ols_fit(X, Y)
+    assert np.isnan(r2)
+
+
+def test_ols_fit_cond_uses_X_not_XTX():
+    """Verify cond(X) not cond(X.T @ X) (κ² amplifier test).
+
+    For this X, cond(X) ≈ 2.45e8 but cond(XᵀX) = inf. Threshold must
+    distinguish finite cond(X) from infinite cond(XᵀX), so use 1e10.
+    """
+    X = np.array([[1.0, 1.0], [1.0 + 1e-8, 1.0], [1.0, 1.0 + 1e-8]])
+    Y = np.array([1.0, 2.0, 3.0])
+    *_, cond, _, _ = ols_fit(X, Y)
+    expected_cond = np.linalg.cond(X)
+    assert abs(cond - expected_cond) < 1e-3
+    # cond(X.T @ X) = inf, cond(X) ≈ 2.45e8 → threshold must be > 2.45e8 and < inf
+    assert cond < 1e10
