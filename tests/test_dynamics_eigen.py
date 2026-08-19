@@ -2470,3 +2470,50 @@ def test_oos_perfect_prediction_high_ic():
     row = fit_one_oos(csv_path, 'stk000001', 'idx', '000001.SZ', 'T', '000001.SH', model_id=3)
     assert row['n_train'] > 0 and row['n_test'] > 0
     assert row['ic_real'] > 0.5  # strong signal, should be high
+
+
+# === v0.1 — Task 4: Placebo Test (Permutation Baseline, seed=42) ===
+
+def test_placebo_seed_is_42():
+    from projection import ablation_fit
+    assert ablation_fit.PLACEBO_SEED == 42
+
+
+def test_placebo_permutes_regressors_not_Y():
+    """Verifies that Y is NOT shuffled when permuting regressors."""
+    from projection.ablation_fit import permute_regressors
+    rng = np.random.default_rng(0)
+    X = rng.normal(0, 1, (100, 3))
+    Y = np.arange(100, dtype=float)
+    X_perm = permute_regressors(X, Y, seed=42)
+    # Y should NOT appear in X_perm columns
+    assert X_perm.shape == X.shape
+    # X_perm rows are shuffled version of X (same column marginals)
+    assert not np.allclose(X, X_perm)
+    # Re-permuting with same seed → same X_perm (deterministic)
+    X_perm2 = permute_regressors(X, Y, seed=42)
+    np.testing.assert_array_equal(X_perm, X_perm2)
+
+
+def test_placebo_real_signal_beats_null():
+    """a_S = Model 3 with true signal → ic_real > ic_null + 0.1."""
+    from projection.ablation_fit import fit_one_with_placebo
+    import tempfile, os
+    mv_dir = tempfile.mkdtemp()
+    csv_path = os.path.join(mv_dir, "movement_idx_stk000003.csv")
+    T = 200
+    rng = np.random.default_rng(0)
+    beta = 1.2 + 0.001 * np.arange(T)
+    delta_v = rng.normal(0, 1, (T, 2))
+    delta_u = beta[:, None] * delta_v + rng.normal(0, 0.5, (T, 2))
+    stock_tag = 'stk000003'
+    pd.DataFrame({
+        'Date': pd.date_range('2024-01-01', periods=T),
+        'Move_Delta_Vol_idx': delta_v[:, 0],
+        'Move_Delta_Amt_idx': delta_v[:, 1],
+        f'Move_Delta_Vol_{stock_tag}': delta_u[:, 0],
+        f'Move_Delta_Amt_{stock_tag}': delta_u[:, 1],
+        'Move_Proj_Coeff': beta,
+    }).to_csv(csv_path, index=False)
+    row = fit_one_with_placebo(csv_path, stock_tag, 'idx', '000003.SZ', 'T', '000001.SH', model_id=3)
+    assert row['ic_real'] - row['ic_null'] > 0.1

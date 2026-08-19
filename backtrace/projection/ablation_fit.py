@@ -326,3 +326,93 @@ def write_oos_csvs(targets: List[Tuple], output_dir: str):
         df = pd.DataFrame(rows_by_model[m], columns=CSV_COLUMNS)
         df.to_csv(os.path.join(output_dir, f'kc_estimates_model{m}.csv'),
                   index=False, encoding='utf-8')
+
+
+# === V0.1 Task 4: Permutation Placebo (seed=42) ===
+PLACEBO_SEED = 42  # WRITE-DEAD per spec §4: fixed seed, no tuning
+
+
+def permute_regressors(X: np.ndarray, Y_unused: np.ndarray = None, seed: int = PLACEBO_SEED):
+    """Permute ROWS of X independently per column (destroys temporal coupling).
+    Y is NOT touched (a_S stays in original order).
+
+    Returns X_perm with same shape as X.
+    """
+    rng = np.random.default_rng(seed)
+    X_perm = np.empty_like(X)
+    for j in range(X.shape[1]):
+        perm = rng.permutation(X.shape[0])
+        X_perm[:, j] = X[perm, j]
+    return X_perm
+
+
+def fit_one_with_placebo(movement_csv: str, stock_tag: str, index_tag: str,
+                         code: str, name: str, index_code: str, model_id: int) -> dict:
+    """Run OOS fit + placebo fit for one stock × one model.
+
+    1. Reconstruct kinematics, build (X, Y).
+    2. mask finite rows.
+    3. 70/30 split → train/test indices.
+    4. Real: OLS on (X_train, Y_train) → θ → predict on X_test → ic_real.
+    5. Placebo: X_perm = permute_regressors(X_train) → OLS on (X_perm, Y_train) → θ_null
+       → predict on X_test → ic_null.
+    """
+    delta_u, delta_v, beta = _read_movement(movement_csv, stock_tag, index_tag)
+    u_vec, d_vec, a_u_vec, a_v_vec, bdv_vec = _build_kinematics_ext(delta_u, delta_v, beta)
+    X, Y = BUILDERS[model_id](u_vec, d_vec, a_u_vec, a_v_vec, beta, bdv_vec)
+    mask = np.isfinite(Y) & np.all(np.isfinite(X), axis=1)
+    valid_indices = np.where(mask)[0]
+    n_valid = len(valid_indices)
+
+    if n_valid < 20:
+        return fit_one_in_sample(movement_csv, stock_tag, index_tag, code, name, index_code, model_id)
+
+    train_idx_rel, test_idx_rel = oos_split_indices(n_valid, train_frac=0.7)
+    train_idx_abs = valid_indices[train_idx_rel]
+    test_idx_abs = valid_indices[test_idx_rel]
+
+    X_train, Y_train = X[train_idx_abs], Y[train_idx_abs]
+    X_test, Y_test = X[test_idx_abs], Y[test_idx_abs]
+
+    # Real fit
+    theta, f_res, n_train_v, rank, cond, rcorr, r2 = ols_fit(X_train, Y_train)
+    Y_pred_test = X_test @ theta
+    ic_real = compute_spearman_ic(Y_pred_test, Y_test)
+
+    # Placebo fit: permute X_train rows, keep Y_train order
+    X_train_perm = permute_regressors(X_train, Y_train, seed=PLACEBO_SEED)
+    theta_null, *_ = ols_fit(X_train_perm, Y_train)
+    Y_pred_test_null = X_test @ theta_null
+    ic_null = compute_spearman_ic(Y_pred_test_null, Y_test)
+
+    if model_id in (0, 1):
+        k_hat, c_hat = float(theta[0]), float(theta[1])
+        q_hat = 1.0
+    else:
+        q_hat, k_hat, c_hat = float(theta[0]), float(theta[1]), float(theta[2])
+
+    return {
+        'code': code, 'name': name, 'index_code': index_code,
+        'index_tag': index_tag, 'stock_tag': stock_tag,
+        'n_train': n_train_v, 'n_test': len(test_idx_abs),
+        'condition_number': cond, 'regressor_corr': rcorr, 'r2': r2,
+        'identification_status': compute_identification_status(rank, cond),
+        'fit_quality': compute_fit_quality(r2),
+        'q_hat': q_hat, 'k_hat': k_hat, 'c_hat': c_hat,
+        'f_self_loss': f_res,
+        'ic_real': ic_real, 'ic_null': ic_null,
+    }
+
+
+def write_ablation_csvs(targets: List[Tuple], output_dir: str):
+    """Final 4 CSVs with both ic_real and ic_null populated."""
+    os.makedirs(output_dir, exist_ok=True)
+    rows_by_model = {m: [] for m in range(4)}
+    for code, name, mv_csv, index_tag, stock_tag, index_code in targets:
+        for m in range(4):
+            row = fit_one_with_placebo(mv_csv, stock_tag, index_tag, code, name, index_code, m)
+            rows_by_model[m].append(row)
+    for m in range(4):
+        df = pd.DataFrame(rows_by_model[m], columns=CSV_COLUMNS)
+        df.to_csv(os.path.join(output_dir, f'kc_estimates_model{m}.csv'),
+                  index=False, encoding='utf-8')
