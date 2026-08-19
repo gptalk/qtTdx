@@ -304,6 +304,10 @@ def compute_cross_section_ic(
     n = len(df)
     if n < 10:
         return (np.nan, np.nan, n)
+    # 非数值因子(字符串 / 分类 / bool)→ spearmanr 会按字母序排,产生 garbage IC;
+    # 显式返回 NaN — 镜像 compute_quantile_returns 的 guard (v6.0.1 IMPORTANT #10)
+    if not pd.api.types.is_numeric_dtype(df['f']):
+        return (np.nan, np.nan, n)
     if df['f'].nunique() < 2 or df['r'].nunique() < 2:
         return (np.nan, np.nan, n)
     rho, pval = spearmanr(df['f'].values, df['r'].values)
@@ -601,22 +605,67 @@ def validate_all_factors(
                     top_year = str(yr)
                     top_year_ic = yr_ic_mean
 
-            # by-industry
+            # by-industry — v6.0.1 BLOCKER #8 fix:
+            # 旧实现把市场级 IC 按"行业内每只票"append 一次,导致 n_dates 虚高、
+            # 且 per-industry IC 实际就是市场级 IC,毫无区分度。
+            # 新实现:每个 industry 单独算 — restrict 到 industry 内股票,
+            # 在每个 date 上算该 industry 子集的 Spearman IC,跨 date 求 mean。
+            # 阈值 per spec §6.4:per (date, industry) ≥ 30 stocks 才算 IC,否则 skip 该 (date, industry)。
             ind_l1_dict = industry_l1.to_dict() if hasattr(industry_l1, 'to_dict') else {}
-            ind_ics = {}
-            for x in ics:
-                for c in x['codes']:
-                    ind = ind_l1_dict.get(c, 'unknown')
-                    ind_ics.setdefault(ind, []).append(x['ic'])
-            for ind, ind_ic_list in ind_ics.items():
-                if len(ind_ic_list) < 5:
+            # 用 codes_to_industry(industry_l1) 反向索引:industry → set of codes
+            industry_to_codes: dict[str, set[str]] = {}
+            for c, ind in ind_l1_dict.items():
+                industry_to_codes.setdefault(ind, set()).add(c)
+            industries_to_eval = set(industry_to_codes.keys()) - {'unknown'}
+            if not industries_to_eval:
+                industries_to_eval = {'unknown'}
+            # 取 fwd_rets 的 date 列
+            fwd_date_col = fwd_rets.index.get_level_values('date')
+            unique_dates = pd.DatetimeIndex(sorted(fwd_date_col.unique()))
+            for ind in sorted(industries_to_eval):
+                ind_codes = industry_to_codes[ind]
+                ind_ic_list = []
+                ind_n_obs_total = 0
+                for date_t in unique_dates:
+                    if is_rolling:
+                        # rolling factors: 只考虑 asof_date == date_t 的因子行
+                        grp = fpanel[fpanel['asof_date'] == date_t]
+                        if grp.empty:
+                            continue
+                        fac_s = grp.set_index('code')['factor_value']
+                    else:
+                        fac_s = fpanel.set_index('code')['factor_value']
+                    try:
+                        ret_s = fwd_rets.xs(date_t, level='date')[ret_col]
+                    except (KeyError, ValueError):
+                        continue
+                    # restrict 到 industry 内股票
+                    common_ind = fac_s.index.intersection(ret_s.index).intersection(ind_codes)
+                    if len(common_ind) < 30:  # spec §6.4 threshold
+                        continue
+                    ic_ind, _, n_ind = compute_cross_section_ic(
+                        fac_s.loc[common_ind], ret_s.loc[common_ind]
+                    )
+                    if not np.isnan(ic_ind):
+                        ind_ic_list.append(ic_ind)
+                    ind_n_obs_total += n_ind
+                if not ind_ic_list:
+                    # 没有任何 date 跨过 30 阈值 → emit insufficient_data 行
+                    by_industry_rows.append({
+                        'factor': fn, 'horizon': h, 'industry_l1': ind,
+                        'n_obs': 0, 'n_dates': 0,
+                        'ic_mean': np.nan, 'ic_std': np.nan,
+                        'status': 'insufficient_data',
+                    })
                     continue
-                ind_ic_mean = float(np.mean(ind_ic_list))
+                ind_ic_arr = np.array(ind_ic_list)
+                ind_ic_mean = float(np.mean(ind_ic_arr))
                 by_industry_rows.append({
                     'factor': fn, 'horizon': h, 'industry_l1': ind,
+                    'n_obs': ind_n_obs_total,
                     'n_dates': len(ind_ic_list),
                     'ic_mean': ind_ic_mean,
-                    'ic_std': float(np.std(ind_ic_list, ddof=1)) if len(ind_ic_list) > 1 else np.nan,
+                    'ic_std': float(np.std(ind_ic_arr, ddof=1)) if len(ind_ic_list) > 1 else np.nan,
                     'status': 'ok',
                 })
                 if abs(ind_ic_mean) > abs(top_industry_ic):
@@ -652,7 +701,7 @@ MAIN_COLS = [
 ]
 
 BY_YEAR_COLS = ['factor', 'horizon', 'year', 'n_obs', 'n_dates', 'ic_mean', 'ic_std', 'status']
-BY_INDUSTRY_COLS = ['factor', 'horizon', 'industry_l1', 'n_dates', 'ic_mean', 'ic_std', 'status']
+BY_INDUSTRY_COLS = ['factor', 'horizon', 'industry_l1', 'n_obs', 'n_dates', 'ic_mean', 'ic_std', 'status']
 
 
 def write_main_csv(results: pd.DataFrame, path: str) -> None:

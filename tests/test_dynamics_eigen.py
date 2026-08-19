@@ -1874,6 +1874,22 @@ def test_compute_cross_section_ic_too_few():
     assert n == 3
 
 
+def test_compute_cross_section_ic_string_factor():
+    """v6.0.1 IMPORTANT #10: regime/state_dominant 是 string →
+    compute_cross_section_ic 必须返回 (NaN, NaN, n),不能按字母序排产生 garbage IC。"""
+    from dynamics.dynamics_factor_validation import compute_cross_section_ic
+    np.random.seed(42)
+    regimes = np.random.choice(
+        ['overdamped', 'critical', 'underdamped', 'anti_damped'], size=100
+    )
+    factor = pd.Series(regimes)
+    ret = pd.Series(np.random.randn(100) * 0.01)
+    ic, pval, n = compute_cross_section_ic(factor, ret)
+    assert np.isnan(ic), f'string factor should yield NaN IC, got {ic}'
+    assert np.isnan(pval)
+    assert n == 100  # n_obs 仍然返回,只在 IC 层面 NaN
+
+
 def test_compute_quantile_returns_monotonic():
     """Q1 < Q5 monotonic."""
     from dynamics.dynamics_factor_validation import compute_quantile_returns
@@ -1945,3 +1961,134 @@ def test_cli_factor_validation_minimal(tmp_path):
     assert (data_dir / 'factor_validation_by_year.csv').exists()
     assert (data_dir / 'factor_validation_by_industry.csv').exists()
     assert (out_dir / 'dynsys_factor_validation_summary.txt').exists()
+
+
+# === v6.0.1 final-review regression tests (BLOCKER #8 + IMPORTANT #9 + #10) ===
+
+def test_validate_all_factors_by_industry_true_per_industry_ic():
+    """v6.0.1 BLOCKER #8: by_industry aggregation must compute IC on **industry-only**
+    stocks, NOT inflate n_dates by appending market-wide IC once per stock-in-industry.
+
+    Construction: 2 dates × 2 industries × 35 stocks = 140 (code, date) rows.
+    - Industry A (35 stocks): random factor + random returns → ic_mean ≈ 0.
+    - Industry B (35 stocks): factor monotonically 1..35; returns = factor * 0.01
+      (perfect monotonic) → ic_mean ≈ 1.
+    With the OLD (buggy) impl, B's ic_mean would equal the market-wide IC
+    (somewhere in the middle), not ≈ 1. With the NEW impl, B should be clearly ≈ 1
+    and A clearly ≈ 0.
+    """
+    from dynamics.dynamics_factor_validation import (
+        build_factor_panel, validate_all_factors,
+    )
+    np.random.seed(42)
+    n_per_ind = 35  # ≥ 30 to clear spec §6.4 threshold
+    codes_a = [f'90000{i:02d}' for i in range(n_per_ind)]
+    codes_b = [f'80000{i:02d}' for i in range(n_per_ind)]
+    all_codes = codes_a + codes_b
+    # Factor values (static, one per code)
+    rng = np.random.RandomState(0)
+    factors_a = rng.randn(n_per_ind)
+    factors_b = np.arange(1, n_per_ind + 1).astype(float)  # monotonic 1..35
+    # Forward returns — MultiIndex (code, date)
+    dates = pd.to_datetime(['2024-01-01', '2024-01-02'])
+    rows = []
+    for d_idx, d in enumerate(dates):
+        # Industry A: random returns
+        for i, c in enumerate(codes_a):
+            rows.append({'code': c, 'date': d, 'fwd_ret_5d': float(rng.randn() * 0.01)})
+        # Industry B: returns = factor * 0.01 (perfect monotonic)
+        for i, c in enumerate(codes_b):
+            rows.append({'code': c, 'date': d, 'fwd_ret_5d': factors_b[i] * 0.01})
+    fwd_rets = pd.DataFrame(rows).set_index(['code', 'date']).sort_index()
+    # Build panel (single factor = 'k' static)
+    panel_rows = []
+    for c, fv in zip(codes_a, factors_a):
+        panel_rows.append({'code': c, 'factor_name': 'k', 'factor_value': fv, 'status': 'loaded'})
+    for c, fv in zip(codes_b, factors_b):
+        panel_rows.append({'code': c, 'factor_name': 'k', 'factor_value': fv, 'status': 'loaded'})
+    panel = pd.DataFrame(panel_rows)
+    # Industry lookup (l1 keys: 'indA' / 'indB')
+    industry_l1 = pd.Series(
+        {**{c: 'indA' for c in codes_a}, **{c: 'indB' for c in codes_b}}
+    )
+    main, by_year, by_ind = validate_all_factors(
+        panel, fwd_rets, horizons=[5], industry_l1=industry_l1,
+    )
+    assert len(by_ind) == 2, f'expected 2 industry rows, got {len(by_ind)}'
+    ind_b_row = by_ind[by_ind['industry_l1'] == 'indB'].iloc[0]
+    ind_a_row = by_ind[by_ind['industry_l1'] == 'indA'].iloc[0]
+    # Industry B: IC ≈ 1 across both dates
+    assert ind_b_row['ic_mean'] > 0.9, (
+        f"indB ic_mean should be ≈1 (perfect monotonic), got {ind_b_row['ic_mean']}"
+    )
+    # Industry A: IC ≈ 0 (random factor, random returns)
+    assert abs(ind_a_row['ic_mean']) < 0.3, (
+        f"indA ic_mean should be ≈0 (random), got {ind_a_row['ic_mean']}"
+    )
+    # Critical: indB - indA must be clearly differentiated (>0.5).
+    # Old buggy impl would have produced nearly identical values
+    # (both = market-wide IC ≈ 0.4-0.6 from mix of random + monotonic).
+    assert ind_b_row['ic_mean'] - ind_a_row['ic_mean'] > 0.5, (
+        f'industry differentiation lost: indB={ind_b_row["ic_mean"]:.3f} '
+        f'indA={ind_a_row["ic_mean"]:.3f}'
+    )
+
+
+def test_industry_threshold_30():
+    """v6.0.1 IMPORTANT #9: per (date, industry) if <30 stocks have data,
+    that (date, industry) is skipped. If every date for an industry has <30 stocks,
+    the industry gets status='insufficient_data' with ic_mean=NaN."""
+    from dynamics.dynamics_factor_validation import (
+        build_factor_panel, validate_all_factors,
+    )
+    np.random.seed(42)
+    # 3 industries: SMALL (10 stocks — below threshold), MEDIUM (30 stocks — at
+    # threshold — counts), LARGE (40 stocks — well above).
+    codes_small = [f'70000{i:02d}' for i in range(10)]   # <30 → skip
+    codes_medium = [f'60000{i:02d}' for i in range(30)]  # exactly 30 → count
+    codes_large = [f'50000{i:02d}' for i in range(40)]   # >30 → count
+    dates = pd.to_datetime(['2024-01-01'])
+    rng = np.random.RandomState(0)
+    rows = []
+    for c in codes_small + codes_medium + codes_large:
+        rows.append({
+            'code': c, 'date': dates[0],
+            'fwd_ret_5d': float(rng.randn() * 0.01),
+        })
+    fwd_rets = pd.DataFrame(rows).set_index(['code', 'date']).sort_index()
+    # Build panel — all stocks have factor value 1.0 (constant → IC = NaN by
+    # nunique<2 guard, but that's fine — we test the *threshold*, not the IC value).
+    panel_rows = []
+    for c in codes_small + codes_medium + codes_large:
+        # Use distinct factor values to avoid nunique<2
+        val = float(int(c) % 100) / 100.0 + 0.001
+        panel_rows.append({'code': c, 'factor_name': 'k', 'factor_value': val, 'status': 'loaded'})
+    panel = pd.DataFrame(panel_rows)
+    industry_l1 = pd.Series(
+        {
+            **{c: 'SMALL' for c in codes_small},
+            **{c: 'MEDIUM' for c in codes_medium},
+            **{c: 'LARGE' for c in codes_large},
+        }
+    )
+    main, by_year, by_ind = validate_all_factors(
+        panel, fwd_rets, horizons=[5], industry_l1=industry_l1,
+    )
+    # SMALL industry: only 10 stocks at date_t < 30 → insufficient_data
+    small_row = by_ind[by_ind['industry_l1'] == 'SMALL'].iloc[0]
+    assert small_row['status'] == 'insufficient_data', (
+        f'SMALL industry should be insufficient_data (10 stocks < 30 threshold), '
+        f'got {small_row["status"]}'
+    )
+    assert pd.isna(small_row['ic_mean'])
+    assert small_row['n_dates'] == 0
+    assert small_row['n_obs'] == 0
+    # MEDIUM / LARGE: ≥30 → 'ok' (may be NaN IC due to constant factor, but row emitted)
+    medium_row = by_ind[by_ind['industry_l1'] == 'MEDIUM'].iloc[0]
+    large_row = by_ind[by_ind['industry_l1'] == 'LARGE'].iloc[0]
+    assert medium_row['status'] == 'ok', (
+        f'MEDIUM industry should be ok (exactly 30 ≥ 30), got {medium_row["status"]}'
+    )
+    assert large_row['status'] == 'ok', (
+        f'LARGE industry should be ok (40 ≥ 30), got {large_row["status"]}'
+    )
