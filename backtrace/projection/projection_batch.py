@@ -3,16 +3,17 @@
 #
 # 基线指数(优先级从高到低):
 #   1. --index <code> 显式传入 → 所有股票共用同一基线(覆盖下列自动逻辑)
-#   2. 默认 → 每只票按 申万二级行业(881xxx.SH) 投影,不是大盘指数。
+#   2. 默认 → per-exchange market(SH→000001.SH / SZ→399001.SZ)
 #      行业映射走 _projection_core.resolve_industry(data/sw2/members.csv);
 #      新股/非 A 股等 sw2 缺失的代码自动回退大盘(resolve_index)。
-#   3. --market-baseline → 全部回退到大盘基线(SZ→深证成指 / SH→上证综指)
+#   3. --industry → 切回 per-stock 申万二级行业(881xxx.SH) 投影
 #
 # 参数:
 #   --input              path  股票列表 CSV(列:code, 可选 name)。默认 data/projection/stocks.csv
 #   --days               int   回看天数。默认 240
 #   --limit              int   最多处理多少只;0 表示全部。默认 0
-#   --market-baseline    flag  全部回退到大盘基线(覆盖默认行业基线)。
+#   --industry          flag  切回 per-stock 申万二级行业基线(覆盖默认 market 基线)。
+#                              V0.2-F: 默认已切到 market-driver, 仅在重跑历史 V0.2-D industry baseline 时需 --industry.
 #   --index              str   强制指定基线指数(覆盖个股自动解析);所有股票共用。
 #                              示例:--index 881427.SH(半导体)/ 000001.SH(上证综指)
 #   --two-day-vec        flag  向量扩展为 4-D(今日+前一日 Vol/Amt);首日丢弃(无前一日)。
@@ -40,7 +41,7 @@
 #      )
 #      默认读取 data/projection/stocks.csv
 #   2. PYTHONIOENCODING=utf-8 python backtrace/projection/projection_batch.py
-#      [可选 --input PATH / --days N / --limit N / --market-baseline / --index CODE
+#      [可选 --input PATH / --days N / --limit N / --industry / --index CODE
 #       / --two-day-vec / --movement / --dynamics / --lambda-q F / --classify-thresholds S
 #       / --k-restore F / --c-damp F]
 #
@@ -64,8 +65,8 @@
 #    2026-08-16 新增动力学层 14+8 列)
 #
 # CLI 示例:
-#   python backtrace/projection/projection_batch.py                              # 默认 2-D,按个股所属行业基线跑
-#   python backtrace/projection/projection_batch.py --market-baseline            # 全部用大盘基线
+#   python backtrace/projection/projection_batch.py                              # 默认 2-D,按 market 基线跑(SH→000001.SH / SZ→399001.SZ)
+#   python backtrace/projection/projection_batch.py --industry                   # 切回 per-stock 申万二级行业基线
 #   python backtrace/projection/projection_batch.py --index 881427.SH            # 全部用申万二级体育指数
 #   python backtrace/projection/projection_batch.py --index 000001.SH --days 120 # 上证综指,回看 120 日
 #   python backtrace/projection/projection_batch.py --limit 50                   # 只跑列表前 50 只
@@ -83,8 +84,8 @@
 #   python backtrace/projection/projection_batch.py --dynamics --classify-thresholds 0.15,0.60,20,100  # 改阈值
 #   python backtrace/projection/projection_batch.py --dynamics --k-restore 0.1 --c-damp 0.05  # 加弱回复 + 弱阻尼
 #   python backtrace/projection/projection_batch.py --dynamics --k-restore 0 --c-damp 0       # 残差基线(F_self = a_S - F_market)
-#   python backtrace/projection/projection_batch.py --market-baseline --dynamics --days 120 --limit 30
-#       # 全市场基线 + 动力学 + 120 日 + 前 30 只冒烟
+#   python backtrace/projection/projection_batch.py --industry --dynamics --days 120 --limit 30
+#       # 行业基线 + 动力学 + 120 日 + 前 30 只冒烟(重跑 V0.2-D industry baseline)
 #
 # 输出:
 #   - 每只股票一个 CSV:data/projection/projection_{INDEX_TAG}_{STOCK_TAG}.csv
@@ -187,8 +188,12 @@ def parse_args():
     parser.add_argument('--days', type=int, default=240, help='回看天数。默认 240')
     parser.add_argument('--limit', type=int, default=0, help='最多处理多少只;0 表示全部。默认 0')
     parser.add_argument(
-        '--market-baseline', action='store_true',
-        help='回退到大盘基线(SZ→深证成指/SH→上证综指)。默认走行业基线(申万二级)。',
+        '--industry', action='store_true',
+        help=(
+            'Per-stock 申万二级 industry index(881xxx.SH/SZ)。'
+            '默认走 per-exchange market 基线(SH→000001.SH / SZ→399001.SZ)。'
+            'V0.2-F: 默认已切到 market-driver, 仅在重跑历史 V0.2-D industry baseline 时需 --industry.'
+        ),
     )
     parser.add_argument(
         '--index', default=None,
@@ -477,7 +482,7 @@ def main():
     if args.limit > 0:
         stock_list = stock_list[:args.limit]
 
-    prefer_industry = not args.market_baseline
+    prefer_industry = args.industry   # V0.2-F: default flipped; --industry opt-in
     if args.index:
         baseline = f'显式指定基线 {args.index}(所有股票共用)'
     elif prefer_industry:
