@@ -9,6 +9,7 @@
 """
 import os
 import sys
+import inspect
 
 import numpy as np
 import pandas as pd
@@ -200,3 +201,87 @@ def test_single_movement_flag_recognized(monkeypatch):
     # args.movement 为 True,MOVEMENT_PREFIX 也已定义
     assert p2d_mod.args.movement is True
     assert p2d_mod.MOVEMENT_PREFIX == 'projmv_'
+
+
+# ----- V0.2-F Driver-Default Migration (new tests) -----
+
+def test_default_driver_is_market(monkeypatch):
+    """V0.2-F: projection_batch.py 默认 driver 是 per-exchange market (SH→000001.SH,
+    SZ→399001.SZ). 不传 --industry 时 args.industry 必须 False (新 market default).
+    旧 --market-baseline flag 必须不存在 (硬破坏)."""
+    monkeypatch.setattr(sys, 'argv', [
+        'projection_batch.py', '--input', 'data/projection/stocks.csv',
+        '--output-dir', 'data/projection', '--days', '60', '--limit', '2',
+    ])
+    import importlib
+    import projection_batch as pb_mod
+    importlib.reload(pb_mod)
+    args = pb_mod.parse_args()
+    # 新默认: market-driver (args.industry = False)
+    assert args.industry is False, (
+        f'V0.2-F 默认必须 False (market-driver), got: {args.industry}'
+    )
+    # --market-baseline 必须不存在 (硬破坏)
+    assert not hasattr(args, 'market_baseline'), (
+        'V0.2-F --market-baseline flag 应已删除, 但 argparse 仍产生该属性'
+    )
+
+
+def test_industry_flag_opts_in_to_per_stock(monkeypatch):
+    """V0.2-F: --industry flag 必须 opt-in 到 per-stock 申万二级 industry-driver."""
+    monkeypatch.setattr(sys, 'argv', [
+        'projection_batch.py', '--input', 'data/projection/stocks.csv',
+        '--output-dir', 'data/projection', '--days', '60', '--limit', '2',
+        '--industry',
+    ])
+    import importlib
+    import projection_batch as pb_mod
+    importlib.reload(pb_mod)
+    args = pb_mod.parse_args()
+    # --industry: industry-driver (args.industry = True)
+    assert args.industry is True, (
+        f'V0.2-F --industry 必须 True (industry-driver), got: {args.industry}'
+    )
+
+
+def test_market_baseline_flag_rejected(monkeypatch):
+    """V0.2-F: 旧 --market-baseline flag 已被硬破坏, 传它必须 TypeError / SystemExit."""
+    monkeypatch.setattr(sys, 'argv', [
+        'projection_batch.py', '--input', 'data/projection/stocks.csv',
+        '--market-baseline',  # ← 已删除的 flag
+    ])
+    import importlib
+    import projection_batch as pb_mod
+    importlib.reload(pb_mod)
+    with pytest.raises((SystemExit, SystemError)):
+        # argparse 收到未识别的 --market-baseline 会 SystemExit(2)
+        pb_mod.parse_args()
+
+
+def test_main_prefer_industry_default_flipped(monkeypatch):
+    """V0.2-F: main() 中 prefer_industry 必须 = args.industry (默认 False → market).
+    不依赖完整 main() 跑通 (太重), 直接从 main 源码 AST 验证赋值语句."""
+    import ast
+    from projection_batch import main as main_fn
+    src = inspect.getsource(main_fn)
+    tree = ast.parse(src)
+    # 找到 `prefer_industry = ...` 这一行
+    found = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == 'prefer_industry':
+                    # 值必须是 args.industry (新 default)
+                    if isinstance(node.value, ast.Attribute) and node.value.attr == 'industry':
+                        found = True
+                    elif (isinstance(node.value, ast.Call)
+                          and isinstance(node.value.func, ast.Name)
+                          and node.value.func.id == 'getattr'):
+                        # 容错: getattr(args, 'industry', False) 也 OK
+                        found = True
+                    else:
+                        pytest.fail(
+                            f'V0.2-F prefer_industry 赋值必须基于 args.industry, '
+                            f'got: {ast.unparse(node.value)}'
+                        )
+    assert found, 'main() 源码未找到 prefer_industry = args.industry 赋值语句'
