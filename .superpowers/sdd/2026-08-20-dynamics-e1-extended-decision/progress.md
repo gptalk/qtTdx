@@ -24,7 +24,7 @@ Task 6: Memory entry + MEMORY.md update + push
 - Task 1: complete
 - Task 2: complete
 - Task 3: complete
-- Task 4: pending
+- Task 4: complete
 - Task 5: pending
 - Task 6: pending
 
@@ -97,3 +97,22 @@ Task 6: Memory entry + MEMORY.md update + push
 - Fix: combine into single DataFrame first, then dropna jointly; preserve date alignment
 - Post-fix: 5208 → 5195 valid features (vs 5150 with bug — 45 more stocks now correctly processed); Spearman ρ results essentially identical (q_hat +0.5559 vs +0.5576; r² +0.3599 vs +0.3609) — bug only affected 58 stocks with NaN closes; majority were already correct
 - Implementer correctly worked around bug with local `extract_features_cached` wrapper; controller fixed the underlying helper per implementer's recommendation
+
+### Task 4: Tests (E1 + E2) — complete
+
+- Implementer: Task4ImplementerClaude
+- Status: DONE
+- test_v0_2_e1.py: 2 tests (summary_stats_compute, buckets_sum_to_n)
+- test_v0_2_e2.py: 3 tests (helper_one, helper_skips_insufficient, correlation_matrix_shape)
+- Total test count: 164 → 169 PASS (subset: test_dynamics_eigen + test_projection_core + test_projection_cli + new E1/E2); full suite 214 PASS
+- E1 tests use synthetic paired CSVs (5208 / 1000 rows) with `np.random.default_rng(seed)` for reproducibility; verify 17 metrics present in summary CSV + bucket counts sum to N
+- E2 tests cover: (a) helper on real 002475.SZ returns dict with required keys (skips if data missing), (b) helper returns None for non-existent code in isolated tmp cwd, (c) end-to-end 100-stock synthetic + 10 daily files → correlations CSV shape (7 features × 4 cols)
+- Helper bug fix (commit 6162488) is exercised by test_e2_features_helper_one (real data) and test_e2_correlation_matrix_shape (synthetic aligned data) — both rely on joint dropna() in extract_features_one
+- Commit: e6945768258b476a2b9b0d5057ee58da69e40b67 (e694576)
+- Note: brief expected "≥172 passed (167 baseline + 5 new)" but actual baseline of the 3 reference test files is 164 (collected), not 167; new tests added 5 → 169 total. Full suite 214 PASS confirms no regressions.
+- Reviewer verdict: APPROVED (self-review; tests pass, no regressions, brief-level baseline overcount not blocking)
+  - All 5 new tests pass ✓
+  - Full suite 214/214 PASS (no regressions) ✓
+  - tempfile + cwd restoration works (no test pollution) ✓
+  - Helper bug fix exercised by 2 tests (real + synthetic) ✓
+  - No math files touched ✓
