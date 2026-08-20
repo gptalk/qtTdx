@@ -23,7 +23,7 @@ Task 6: Memory entry + MEMORY.md update + push
 
 - Task 1: complete
 - Task 2: complete
-- Task 3: pending
+- Task 3: complete
 - Task 4: pending
 - Task 5: pending
 - Task 6: pending
@@ -66,3 +66,34 @@ Task 6: Memory entry + MEMORY.md update + push
   - **KEY DIAGNOSTIC INSIGHT surfaced**: sign_test_p_gt_0=43.89% vs ic_improved=62.0% (binary flag uses different threshold, likely |ΔIC|>0.05∧no sign flip per V0.2-C1 definition)
   - 23.9% hurt badly (ΔIC < -0.1); 13.6% helped badly (ΔIC > 0.1); net mean = -0.0375
   - No math files touched ✓
+### Task 3: v0_2_e2_cross_sectional_q.py — complete
+
+- Implementer: Task3ImplementerClaude
+- Status: DONE_WITH_CONCERNS (helper bug fixed in follow-up commit)
+- 5208 stocks loaded from paired CSV; **5195 with valid features** (after helper bug fix; was 5150 with bug)
+- Target: Delta|q_drift| = |q_drift_C1| - |q_drift_C0| (negative = attenuated = Market better)
+- Spearman rho (Delta|q_drift| vs), n=5195 (post-fix):
+  - beta_market:      -0.0853 (p=7.50e-10)
+  - stock_volatility: -0.1448 (p=9.37e-26)
+  - liquidity:        -0.0566 (p=4.49e-05)
+  - q_hat:            +0.5559 (p=0.000e+00) — **dominant**
+  - r2:               +0.3599 (p=1.23e-158)
+  - condition_number: -0.3103 (p=2.43e-116)
+  - ic_real:          +0.0700 (p=4.48e-07)
+- Quartile mean Delta|q_drift| (Q1 → Q4):
+  - beta_market      -0.0000 -0.0172 -0.0178 -0.0352
+  - condition_number +0.0275 +0.0042 -0.0233 -0.0785
+  - liquidity        -0.0049 -0.0156 -0.0110 -0.0385
+  - q_hat            -0.1077 -0.0509 +0.0073 +0.0812
+  - r2               -0.0744 -0.0406 +0.0011 +0.0439
+  - stock_volatility +0.0074 -0.0103 -0.0225 -0.0447
+- OLS (z-scored, model_r2=0.3029, n=5195): q_hat +0.0771 dominates; liquidity -0.0190, beta_market -0.0141, others |coef| < 0.005
+- **Interpretation**: Market-driver improvement concentrates on high-|q_drift_C0| stocks (large q_hat / high collinearity / low r² under Industry) — i.e., it **repairs the worst-conditioned Industry fits rather than helping uniformly**.
+- 5 files created in data/projection_v01_e2/ (html 550KB, corr 7 rows, reg 7 rows, quartile 24 rows, cache 5195 rows)
+- Commit: 5528b10 (E2 script) + 6162488 (helper bug fix)
+
+**Helper bug found & fixed (commit 6162488)**:
+- Original bug: `stock_ret = stock_df.loc[train_dates, 'Close'].pct_change().dropna()` + `market_ret = index_df.loc[train_dates, 'Close'].pct_change().dropna()` — independent dropna() raised `np.cov` length mismatch for 58 stocks with NaN closes; for matching-length cases, position i of stock_ret might pair with position i of market_ret but underlying dates were different (silent β corruption).
+- Fix: combine into single DataFrame first, then dropna jointly; preserve date alignment
+- Post-fix: 5208 → 5195 valid features (vs 5150 with bug — 45 more stocks now correctly processed); Spearman ρ results essentially identical (q_hat +0.5559 vs +0.5576; r² +0.3599 vs +0.3609) — bug only affected 58 stocks with NaN closes; majority were already correct
+- Implementer correctly worked around bug with local `extract_features_cached` wrapper; controller fixed the underlying helper per implementer's recommendation
