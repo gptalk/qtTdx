@@ -65,12 +65,24 @@ def extract_features_one(
         return None
 
     train_dates = common[-train_days:]
-    stock_ret = stock_df.loc[train_dates, 'Close'].pct_change().dropna()
-    market_ret = index_df.loc[train_dates, 'Close'].pct_change().dropna()
+    # Align stock + market returns on the SAME dates, then drop NaN jointly.
+    # Independent dropna() misaligns β when stock has NaN closes that market doesn't
+    # (or vice versa): the two arrays become different lengths and np.cov raises;
+    # if they happen to match in length, position i of stock_ret pairs with position
+    # i of market_ret but the underlying dates are different — silent β corruption.
+    aligned = pd.DataFrame({
+        'stock_ret': stock_df.loc[train_dates, 'Close'].pct_change(),
+        'market_ret': index_df.loc[train_dates, 'Close'].pct_change(),
+    }).dropna()
+    stock_ret = aligned['stock_ret'].values
+    market_ret = aligned['market_ret'].values
+
+    if len(stock_ret) < 50:
+        return None  # too few paired observations for stable β
 
     cov = np.cov(stock_ret, market_ret)
     beta_market = float(cov[0, 1] / cov[1, 1]) if cov[1, 1] > 0 else float('nan')
-    stock_vol = float(stock_ret.std())
+    stock_vol = float(stock_ret.std(ddof=1))
     liquidity = float(stock_df.loc[train_dates, 'Volume'].median())
 
     return {
