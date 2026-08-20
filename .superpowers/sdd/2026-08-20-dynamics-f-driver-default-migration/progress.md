@@ -49,4 +49,7 @@ may unify them if user wants consistency.
 - Pre-migration test count: 160 passed in 32.38s (brief expected 128; +32 tests since V0.2-C1 commit 3e60882 — all pass)
 - Caller audit confirmed: progress.md has table listing 4 callers (1 in scope = projection_batch.py; 3 out-of-scope = dynamics_*)
 - Note: brief's expected test count of 128 is stale; actual is 160. Not blocking — Task 5 will use 160 as new baseline.
-- Commit: <pending Step 1.7>
+- Commit: a976ec5 (docs(projection): V0.2-F pre-migration audit + caller inventory)
+- Reviewer verdict: APPROVED with 2 minor (deferred)
+  - M1: commit hash placeholder (FIXED in this commit)
+  - M2: brief template should record actual test baseline at write-time, not assume past commit's count (parked for future plans)
