@@ -157,14 +157,15 @@ def main():
         print(f'SH stocks: {n_sh}, SZ stocks: {n_sz}')
 
         # Step 2-3: Generate market-driver movement files
-        for label, stocks_csv, idx in [('SH→000001', sh_csv, '000001.SH'),
-                                        ('SZ→399001', sz_csv, '399001.SZ')]:
+        # V0.2-F: --index dropped — projection_batch.py 默认 per-exchange market 已覆盖
+        # SH→000001.SH / SZ→399001.SZ(原 orchestrator 显式传 --index 已 redundant)
+        for label, stocks_csv in [('SH→000001', sh_csv),
+                                  ('SZ→399001', sz_csv)]:
             cmd = [
                 sys.executable,
                 os.path.join(BACKTRACE_DIR, 'projection', 'projection_batch.py'),
                 '--input', stocks_csv,
                 '--output-dir', args.market_dir,
-                '--index', idx,
                 '--movement',
                 '--days', str(args.days),
             ]
