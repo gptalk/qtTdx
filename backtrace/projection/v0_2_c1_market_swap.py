@@ -8,8 +8,9 @@
 #
 # Pipeline:
 #   1. Filter stock_basic.csv to SH / SZ subsets
-#   2. Run projection_batch.py --index 000001.SH (SH stocks)
-#   3. Run projection_batch.py --index 399001.SZ (SZ stocks)
+#   2. Run projection_batch.py (SH stocks; default per-exchange market → 000001.SH)
+#   3. Run projection_batch.py (SZ stocks; default per-exchange market → 399001.SZ)
+#      V0.2-F: 显式 --index 已 removed;projection_batch.py 默认覆盖 per-exchange pairing
 #   4. Run v0_2_d_decompose.py on market-driver dir
 #   5. compute_c0_c1_paired_compare + write_c0_c1_compare_summary_txt
 #
