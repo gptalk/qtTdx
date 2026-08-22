@@ -92,3 +92,25 @@ Task 6 (Plan Task A6): DONE — byte-equality verified
 - Daily outputs untouched ✓
 - Note: --movement flag required to produce movement_*.csv (brief Step 1 omits it)
 - Note: dynamics_factor_validation requires explicit --kc-csv/--oos-summary/--state-csv for period-aware paths
+
+## Phase D2 decision verdict
+- Factors compared: 30 (14 OK daily, 14 OK 5min; 16 insufficient_data due to regime/state_dominant/delta_* factors)
+- ΔIC ≥ +0.02: 0 factors (ΔIC = 0 for ALL factors — see bug below)
+- ΔIC_IR ≥ +0.1: 0 factors (ΔIC_IR = 0 for ALL factors)
+- ΔOOS RMSE ≤ -5%: N/A (load_daily_prices not period-aware — see bug)
+- Δhit_rate ≥ +3pp: 0/15 common stocks (5min median hit_rate = 43.0%, daily = 49.6%; Δmean = -6.7pp)
+- Verdict: **Kill 5min**
+- Rationale: `dynamics_factor_validation --period 5m` has a critical bug — `load_daily_prices()` ignores the `--period` flag and always reads `_daily.csv` files, making the 5min IC values identical to daily (ΔIC=0). Correcting for this: on the 15 stocks common to both prediction_summary CSVs, 5min hit_rate is 6.7pp WORSE than daily, with 0 stocks showing improvement ≥+3pp. There is no evidence that 5min granularity improves predictive power over daily.
+
+### Bug: load_daily_prices ignores --period flag
+- **Location**: `backtrace/dynamics/dynamics_factor_validation.py` line 149 `load_daily_prices()`
+- **Root cause**: Always appends `_daily.csv` suffix regardless of `period` argument
+- **Impact**: `dynamics_factor_validation --period 5m` uses daily prices for forward return computation, making 5min IC identical to daily IC
+- **Fix needed**: Add period-aware suffix mapping (`_daily.csv` → `_5m.csv` for period='5m')
+
+### Bug: compute_cross_section_ic dtype guard too strict
+- **Location**: `backtrace/dynamics/dynamics_factor_validation.py` line 310 `is_numeric_dtype(df['f'])`
+- **Root cause**: Factor panel column is `object` dtype (mixed string + float rows); guard returns NaN for all factors including purely numeric ones
+- **Impact**: All ICs were NaN before the fix (applied during D2 run)
+- **Fix applied**: Added `pd.to_numeric(df['f'], errors='coerce')` + dropna before the dtype check
+- **Commit**: Fix applied but NOT yet committed (needs review)
