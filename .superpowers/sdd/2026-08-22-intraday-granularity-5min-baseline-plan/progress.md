@@ -76,3 +76,11 @@ Task 6 (Plan Task A6): DONE — byte-equality verified
 - kc_estimates.csv updated
 - prediction_summary.csv + factor_validation.csv updated
 - Output dir: canonical (no _5min suffix) ✓
+## Phase C3 5min re-run smoke
+- 5 movement CSVs in data/projection_5m/ (projection_batch --movement --period 5m)
+- All 5min outputs in *_5m form:
+  - data/projection_5m/: batch_manifest, kc_estimates, movement_*, projection_*
+  - data/dynamics_5m/: prediction_*, prediction_summary, state_distribution, state_ic, factor_validation_*
+- Daily outputs untouched ✓
+- Note: --movement flag required to produce movement_*.csv (brief Step 1 omits it)
+- Note: dynamics_factor_validation requires explicit --kc-csv/--oos-summary/--state-csv for period-aware paths
