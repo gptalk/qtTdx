@@ -45,3 +45,10 @@ LR_RANDOM_STATE = 42      # 复现实验结果
 BACKTRACE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # backtrace/ 绝对路径
 OUTPUTS_DIR = os.path.join(BACKTRACE_DIR, 'outputs')                            # backtrace/outputs/(gitignored)
 DATA_DIR = os.path.join(os.path.dirname(BACKTRACE_DIR), 'data')                 # 仓库根 data/(gitignored) — 本地日线缓存,见 data_store.py
+
+# -------- Intraday granularity --------
+VALID_GRANULARITIES = ('daily', '15m', '5m', '1m')          # 允许的粒度
+DEFAULT_INTRADAY_GRANULARITY = '5m'                          # Phase C/D 实验默认(CLI 不提升,仅实验用)
+DEFAULT_INTRADAY_LOOKBACK_DAYS = 60                          # intraday 缓存默认天数;可配置 30/60/90
+TQ_PERIOD_MAP = {'daily': '1d', '15m': '15m', '5m': '5m', '1m': '1m'}
+GRANULARITY_DT_SEC = {'daily': 86400, '15m': 900, '5m': 300, '1m': 60}
