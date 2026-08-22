@@ -285,3 +285,22 @@ def test_main_prefer_industry_default_flipped(monkeypatch):
                             f'got: {ast.unparse(node.value)}'
                         )
     assert found, 'main() 源码未找到 prefer_industry = args.industry 赋值语句'
+
+
+# ========================== --period flag (B3) ==========================
+
+def test_projection_cli_help_exposes_period():
+    """Each projection CLI should accept --period."""
+    import subprocess
+    scripts = [
+        'backtrace/projection/projection_2d.py',
+        'backtrace/projection/projection_batch.py',
+        'backtrace/projection/prediction_ode.py',
+        'backtrace/projection/state_kc_analysis.py',
+    ]
+    for s in scripts:
+        out = subprocess.run(
+            ['python', s, '--help'],
+            capture_output=True, text=True, encoding='utf-8',
+        )
+        assert '--period' in out.stdout, f"{s} missing --period"

@@ -60,6 +60,10 @@ def parse_args():
         '--min-valid-days', type=int, default=20,
         help='最少有效预测天数(默认 20)。少于则跳过。',
     )
+    p.add_argument(
+        '--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+        help='缓存粒度(仅作审计/记录;不影响预测,读现有 movement CSV)',
+    )
     return p.parse_args()
 
 

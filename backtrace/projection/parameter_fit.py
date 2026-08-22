@@ -144,6 +144,10 @@ def parse_args():
             '依赖 plotly。输出到 backtrace/outputs/。'
         ),
     )
+    p.add_argument(
+        '--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+        help='仅作审计/记录;不影响 OLS(读现有 movement CSV)',
+    )
     return p.parse_args()
 
 

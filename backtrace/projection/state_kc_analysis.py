@@ -55,6 +55,10 @@ def parse_args():
         '--drop-none', action='store_true',
         help='在 per_state 统计中丢掉 "none" 状态(数据缺失日)',
     )
+    p.add_argument(
+        '--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+        help='缓存粒度(仅作审计/记录;不影响分析,读现有 CSV)',
+    )
     return p.parse_args()
 
 

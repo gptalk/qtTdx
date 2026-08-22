@@ -61,6 +61,10 @@ def parse_args():
                    help='跳过 movement 文件生成(只跑 ablation + paired compare)')
     p.add_argument('--skip-ablation', action='store_true',
                    help='跳过 v0_2_d_decompose 调用(只跑 paired compare;需要 C1 CSV 已存在)')
+    p.add_argument(
+        '--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+        help='缓存粒度(仅作审计/记录;子脚本调用自身默认 daily,Threading 在 Phase C)',
+    )
     return p.parse_args()
 
 

@@ -31,6 +31,10 @@ def parse_args():
                    help='Output directory for diagnostic CSV / HTML / TXT')
     p.add_argument('--limit', type=int, default=0,
                    help='Max stocks to process; 0 = all')
+    p.add_argument(
+        '--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+        help='缓存粒度(仅作审计/记录;不影响分析,读现有 movement CSV)',
+    )
     return p.parse_args()
 
 

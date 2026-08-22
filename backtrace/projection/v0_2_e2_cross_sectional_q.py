@@ -27,6 +27,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.stats import spearmanr
+import argparse
 
 # Allow `import _e2_features` when run from the repo root.
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +35,15 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from _e2_features import extract_features_one  # noqa: E402
+
+
+def parse_args(args=None):
+    p = argparse.ArgumentParser(description='V0.2-E1 E2 — cross-sectional Δ|q_drift| x features')
+    p.add_argument(
+        '--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+        help='缓存粒度(仅作审计/记录;不影响分析,读现有 CSV)',
+    )
+    return p.parse_args(args)
 
 
 PAIRED_CSV = 'data/projection_v01_c1/c0_c1_paired_compare.csv'
@@ -243,7 +253,9 @@ def build_html(df: pd.DataFrame, corr: pd.DataFrame, path: str) -> None:
     fig.write_html(path, include_plotlyjs='cdn')
 
 
-def main():
+def main(args=None):
+    if args is None:
+        args = parse_args()
     df = build_dataset()
 
     corr = compute_correlations(df)
@@ -283,4 +295,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    main(parse_args())

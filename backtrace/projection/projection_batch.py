@@ -273,6 +273,10 @@ def parse_args():
             '覆盖 --c-damp。找不到的票用 --c-damp 默认值(0)。'
         ),
     )
+    parser.add_argument(
+        '--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+        help='缓存粒度(daily = 默认;其他走 intraday 流程)',
+    )
     return parser.parse_args()
 
 
@@ -301,7 +305,8 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
                  dynamics: bool = False, lambda_q=None,
                  classify_thresholds=(0.10, 0.50, np.deg2rad(30), np.deg2rad(90)),
                  k_restore: float = 0.0, c_damp: float = 0.0,
-                 kc_overrides: dict | None = None):
+                 kc_overrides: dict | None = None,
+                 period: str = 'daily'):
     """处理一只股票。返回 manifest 行 dict(失败也返回,status 字段说明原因)。
 
     Args:
@@ -317,7 +322,7 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
     """
     try:
         loaded = load_pair(stock_code, days, P, prefer_industry=prefer_industry,
-                           index_code=index_code, lag=lag)
+                           index_code=index_code, lag=lag, period=period)
         data_stock = loaded['stock_df']
         data_index = loaded['index_df']
         common_idx = loaded['common_idx']
@@ -523,6 +528,7 @@ def main():
             classify_thresholds=classify_thresholds,
             k_restore=args.k_restore, c_damp=args.c_damp,
             kc_overrides=kc_overrides,
+            period=args.period,
         )
         manifest.append(row)
         # 状态打印:动力学模式下额外列两个 CSV 路径

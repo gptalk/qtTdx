@@ -14,9 +14,21 @@ warnings.filterwarnings('ignore')
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import argparse
 
 
-def main():
+def parse_args(args=None):
+    p = argparse.ArgumentParser(description='V0.2-E1 — ΔIC distribution analysis')
+    p.add_argument(
+        '--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+        help='缓存粒度(仅作审计/记录;不影响分析,读现有 CSV)',
+    )
+    return p.parse_args(args)
+
+
+def main(args=None):
+    if args is None:
+        args = parse_args()
     paired_csv = 'data/projection_v01_c1/c0_c1_paired_compare.csv'
     output_dir = 'data/projection_v01_e1'
 
@@ -101,4 +113,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    main(parse_args())

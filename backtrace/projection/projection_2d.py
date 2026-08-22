@@ -162,6 +162,10 @@ def parse_args():
             '覆盖 --c-damp。前提:先用 parameter_fit.py 估过。'
         ),
     )
+    p.add_argument(
+        '--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+        help='缓存粒度(daily = 默认;其他走 intraday 流程)',
+    )
     return p.parse_args()
 
 args = parse_args()
@@ -235,7 +239,8 @@ CSV_OUT = 'data/projection'   # 分析结果 CSV 输出子目录(与 INDEX/STOCK
 # ======================================================
 
 # 由配置派生:六位数字代码(去交易所后缀)用于变量标签 / CSV 列名 / 图例
-loaded = load_pair(STOCK_CODE, days, P, index_code=INDEX_OVERRIDE, lag=LAG)
+loaded = load_pair(STOCK_CODE, days, P, index_code=INDEX_OVERRIDE, lag=LAG,
+                   period=args.period)
 data_stock = loaded['stock_df']
 data_index = loaded['index_df']
 common_idx = loaded['common_idx']
