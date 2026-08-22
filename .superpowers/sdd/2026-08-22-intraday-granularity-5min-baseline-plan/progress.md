@@ -37,4 +37,11 @@ Task 1 (Plan Task A1): DONE — snapshot taken, SHA256 gate recorded
 - SHA256: `8eb86c9d50d7bebe288182bc2760daf2037b567e79eed6315e0f9aaf126ab57d`
 - After Phase A Task A6, recompute hash. Must match.
 
+Task 5 (Plan Task A5): DONE — TQ 5min smoke test PASSED
+- TQ client: confirmed running (TdxW.exe + 2×tdxcef.exe)
+- 5 stocks fetched: 000059_SZ, 000096_SZ, 000159_SZ, 000552_SZ, 000554_SZ
+- Row counts: 3409 rows each (expected ~2880, well above 1500 threshold)
+- TQ depth >= 60 days confirmed — no DEFAULT_INTRADAY_LOOKBACK_DAYS adjustment needed
+- Manifest: period=5m, lookback_days=60
+
 Task 6 (Plan Task A6): pending
