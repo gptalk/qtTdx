@@ -70,3 +70,9 @@ Task 6 (Plan Task A6): DONE — byte-equality verified
 - 5min smoke passes on **000059.SZ** (A5-fetched stock with verified Amount; 002475.SZ was NOT in first-50 universe, so could not be re-fetched via `--limit 50` approach)
 - Test suite: **237 passed**
 - Commit: `7a597b8` (feat(dynamics): all scripts gain --period)
+
+## Phase C2 daily re-run smoke
+- 5 movement CSVs in data/projection/
+- kc_estimates.csv updated
+- prediction_summary.csv + factor_validation.csv updated
+- Output dir: canonical (no _5min suffix) ✓
