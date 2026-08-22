@@ -340,7 +340,7 @@ def fetch_one_stock(code, period, lookback_days):
     return df
 
 
-def _record(man, code, kind, df, name=None):
+def _record(man, code, kind, df, name=None, period='daily'):
     entry = {
         'kind': kind,
         'rows': int(len(df)),
@@ -348,6 +348,7 @@ def _record(man, code, kind, df, name=None):
         'end': str(df.index[-1].date()),
         'fetched_at': datetime.now().isoformat(timespec='seconds'),
         'status': 'ok',
+        'period': period,
     }
     if name:
         entry['name'] = name
@@ -399,7 +400,7 @@ def _run_group(tq, codes, kind, start, end, man, names=None, force=False,
                 continue
             for c, df in got.items():
                 data_store.save_daily(c, df, kind)
-                _record(man, c, kind, df, (names or {}).get(c))
+                _record(man, c, kind, df, (names or {}).get(c), period=period)
                 ok += 1
             # 记入 missing 的代码 → 标 failed,不抛错
             for c, reason in missing.items():
@@ -431,7 +432,7 @@ def _run_group(tq, codes, kind, start, end, man, names=None, force=False,
                 continue
             # success
             data_store.save_df(code, df, period, kind)
-            _record(man, code, kind, df, (names or {}).get(code))
+            _record(man, code, kind, df, (names or {}).get(code), period=period)
             ok += 1
             data_store.save_manifest(man)
             if bi % 50 == 0 or bi == len(todo):
