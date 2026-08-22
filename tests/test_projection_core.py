@@ -185,7 +185,7 @@ class _FakePipeline:
     def __init__(self, df_by_code):
         self._df = df_by_code
 
-    def load_ohlcva(self, code, use_tq=False, verbose=False):
+    def load_ohlcva(self, code, use_tq=False, verbose=False, period='daily'):
         return self._df.get(code)
 
 
@@ -690,6 +690,20 @@ def test_movement_relative_move_handles_zero_index_movement():
     # 自身幅度量仍正常
     np.testing.assert_allclose(mv['index_move_mag'], [0.0, 0.0])
     np.testing.assert_allclose(mv['stock_move_mag'], [np.sqrt(200), np.sqrt(200)], rtol=1e-9)
+
+
+def test_load_pair_period_default_is_daily():
+    from projection import _projection_core as P
+    import inspect
+    sig = inspect.signature(P.load_pair)
+    assert 'period' in sig.parameters
+    assert sig.parameters['period'].default == 'daily'
+
+def test_load_pair_invalid_period_raises():
+    from projection import _projection_core as P
+    import pytest
+    with pytest.raises(ValueError, match="period"):
+        P.load_pair('000001.SZ', 5, None, period='3m')  # pipeline=None triggers later check
 
 
 def test_state_returns_magnitudes_and_relative_move():

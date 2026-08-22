@@ -30,7 +30,7 @@ class _FakePipeline:
     def __init__(self, df_by_code):
         self._df = df_by_code
 
-    def load_ohlcva(self, code, use_tq=False, verbose=False):
+    def load_ohlcva(self, code, use_tq=False, verbose=False, period='daily'):
         return self._df.get(code)
 
 

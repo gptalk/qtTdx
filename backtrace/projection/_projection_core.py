@@ -124,7 +124,7 @@ def _safe_ratio(num, den, default=np.nan):
     return res
 
 
-def load_pair(stock_code, days, pipeline, prefer_industry=False, index_code=None, lag: int = 0):
+def load_pair(stock_code, days, pipeline, prefer_industry=False, index_code=None, lag: int = 0, *, period: str = 'daily'):
     """从本地 data/ 缓存加载 (stock_df, index_df) 共同交易日的最近 `days` 行。
 
     Args:
@@ -166,8 +166,11 @@ def load_pair(stock_code, days, pipeline, prefer_industry=False, index_code=None
     index_tag = index_code.split('.')[0]
     stock_tag = stock_code.split('.')[0]
 
-    data_index_full = pipeline.load_ohlcva(index_code, use_tq=False, verbose=True)
-    data_stock_full = pipeline.load_ohlcva(stock_code, use_tq=False, verbose=True)
+    if period not in ('daily', '15m', '5m', '1m'):
+        raise ValueError(f"period 必须是 (daily, 15m, 5m, 1m) 之一,收到 {period!r}")
+
+    data_index_full = pipeline.load_ohlcva(index_code, use_tq=False, verbose=True, period=period)
+    data_stock_full = pipeline.load_ohlcva(stock_code, use_tq=False, verbose=True, period=period)
     if data_index_full is None:
         raise RuntimeError(
             f"本地缓存缺失 {index_code}。请先跑:\n"
