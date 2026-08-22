@@ -44,4 +44,8 @@ Task 5 (Plan Task A5): DONE — TQ 5min smoke test PASSED
 - TQ depth >= 60 days confirmed — no DEFAULT_INTRADAY_LOOKBACK_DAYS adjustment needed
 - Manifest: period=5m, lookback_days=60
 
-Task 6 (Plan Task A6): pending
+Task 6 (Plan Task A6): DONE — byte-equality verified
+- SHA256 of `data/stocks/000001_SZ_daily.csv`: `8eb86c9d50d7bebe288182bc2760daf2037b567e79eed6315e0f9aaf126ab57d`
+- Matches A1 gate exactly — daily path unchanged by Phase A changes
+- Phase A exit criterion met
+- Snapshot file cleaned up
