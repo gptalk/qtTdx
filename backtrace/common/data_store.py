@@ -37,30 +37,63 @@ DATA_DIR = C.DATA_DIR
 
 KINDS = ('stocks', 'sectors', 'indices')
 
+PERIODS = ('daily', '15m', '5m', '1m')
+
 # CSV schema —— 与 backtrace/outputs/*_daily.csv 既有格式一致,不要改
 COLUMNS = ['Open', 'High', 'Low', 'Close', 'Volume', 'Amount']
 
 
-def _filename(code):
-    """000001.SH -> 000001_SH_daily.csv"""
-    return f"{code.replace('.', '_')}_daily.csv"
+def _filename(code, period='daily'):
+    """000001.SH + 'daily' -> '000001_SH_daily.csv'  (legacy)
+       000001.SH + '5m'    -> '000001_SH_5m.csv'
+    """
+    if period == 'daily':
+        return f"{code.replace('.', '_')}_daily.csv"
+    if period not in PERIODS:
+        raise ValueError(f"period 必须是 {PERIODS} 之一,收到 {period!r}")
+    return f"{code.replace('.', '_')}_{period}.csv"
 
 
-def csv_path(code, kind='stocks'):
+def csv_path(code, period='daily', kind='stocks'):
     """路径的唯一真相。读和写都必须经过这里。"""
+    if period not in PERIODS:
+        raise ValueError(f"period 必须是 {PERIODS} 之一,收到 {period!r}")
     if kind not in KINDS:
         raise ValueError(f"kind 必须是 {KINDS} 之一,收到 {kind!r}")
-    return os.path.join(DATA_DIR, kind, _filename(code))
+    return os.path.join(DATA_DIR, kind, _filename(code, period))
 
 
 def save_daily(code, df, kind='stocks'):
     """原子写(先 .tmp 再 os.replace),返回落盘路径。"""
-    path = csv_path(code, kind)
+    path = csv_path(code, kind=kind)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + '.tmp'
     df.to_csv(tmp, encoding='utf-8')
     os.replace(tmp, path)
     return path
+
+
+def save_df(code, df, period='daily', kind='stocks'):
+    """通用 period-aware 写盘。daily 时等价 save_daily。"""
+    return save_daily(code, df, kind) if period == 'daily' else _save_with_period(code, df, period, kind)
+
+
+def _save_with_period(code, df, period, kind):
+    path = csv_path(code, period, kind)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp'
+    df.to_csv(tmp, encoding='utf-8')
+    os.replace(tmp, path)
+    return path
+
+
+def load_df(code, period='daily'):
+    """跨 kind 查找(stocks → sectors → indices);period 与 kind 都参与路径。"""
+    for kind in KINDS:
+        p = csv_path(code, period, kind)
+        if os.path.exists(p):
+            return pd.read_csv(p, index_col=0, parse_dates=True).sort_index()
+    return None
 
 
 def load_daily(code):
@@ -69,7 +102,7 @@ def load_daily(code):
     跨目录查找是必要的:调用方(如 _try_local_csv)只有 code,不知道它是个股还是指数。
     """
     for kind in KINDS:
-        p = csv_path(code, kind)
+        p = csv_path(code, kind=kind)
         if os.path.exists(p):
             return pd.read_csv(p, index_col=0, parse_dates=True).sort_index()
     return None
@@ -77,7 +110,7 @@ def load_daily(code):
 
 def has_daily(code):
     """任一 kind 目录下存在该 code 的 CSV(供断点续传判断)"""
-    return any(os.path.exists(csv_path(code, k)) for k in KINDS)
+    return any(os.path.exists(csv_path(code, kind=k)) for k in KINDS)
 
 
 def manifest_path():
