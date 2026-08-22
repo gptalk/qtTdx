@@ -54,6 +54,7 @@ def load_state_force_timeseries(
     lambda_q: float | None = None,
     k_restore: float = 0.0,
     c_damp: float = 0.0,
+    period: str = 'daily',
 ) -> dict:
     """load_pair → compute_movement_projection → compute_dynamics →
     compute_forces → classify_states 一步到位。
@@ -62,7 +63,7 @@ def load_state_force_timeseries(
         dict with keys: stock_df, index_df, common_idx, index_code, index_name,
                        mv, dyn, frc, states.
     """
-    pair = load_pair(stock_code, days, pipeline, prefer_industry=prefer_industry)
+    pair = load_pair(stock_code, days, pipeline, prefer_industry=prefer_industry, period=period)
     stock_df = pair['stock_df']
     index_df = pair['index_df']
     common_idx = pair['common_idx']
@@ -234,6 +235,8 @@ def parse_args():
     parser.add_argument('--output', type=str,
                         default='backtrace/outputs/dynsys_state_timeline.html',
                         help='Output HTML path')
+    parser.add_argument('--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+                        help='缓存粒度(daily = 默认)')
     return parser.parse_args()
 
 
@@ -248,6 +251,7 @@ def main():
         lambda_q=args.lambda_q,
         k_restore=args.k_restore,
         c_damp=args.c_damp,
+        period=args.period,
     )
 
     series_per_industry = [{

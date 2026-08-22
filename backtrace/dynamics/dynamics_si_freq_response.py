@@ -519,6 +519,8 @@ def parse_args() -> argparse.Namespace:
         default='backtrace/outputs/dynsys_regime_heatmap.png',
         help='Regime heatmap PNG 输出路径',
     )
+    p.add_argument('--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+                   help='缓存粒度(daily = 默认)')
     return p.parse_args()
 
 

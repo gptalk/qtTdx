@@ -106,6 +106,8 @@ def parse_args():
                         'oracle=末日观测残差恒定外推/ar1=AR(1) 自回归(per-dim 估 ρ/μ)')
     p.add_argument('--f-self-window', type=int, default=10,
                    help='F_self 窗口(rolling=滚动均值天数;ar1=最少有效样本数)。默认 10')
+    p.add_argument('--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+                   help='缓存粒度(daily = 默认)')
     return p.parse_args()
 
 
@@ -129,12 +131,13 @@ def load_stock_list(path):
 def process_one(stock_code, stock_name, days, prefer_industry, index_code,
                 horizon, lambda_q, classify_thresholds,
                 k_restore, c_damp, kc_overrides=None,
-                f_self_mode='rolling', f_self_window=10):
+                f_self_mode='rolling', f_self_window=10,
+                period='daily'):
     """处理一只股票。返回 manifest 行 dict(失败也返回,status 字段说明原因)。"""
     try:
         # 1. 加载
         loaded = load_pair(stock_code, days, P, prefer_industry=prefer_industry,
-                           index_code=index_code, lag=0)
+                           index_code=index_code, lag=0, period=period)
         data_stock = loaded['stock_df']
         data_index = loaded['index_df']
         common_idx = loaded['common_idx']
@@ -346,6 +349,7 @@ def main():
             args.horizon, lambda_q, classify_thresholds,
             args.k_restore, args.c_damp, kc_overrides,
             args.f_self_mode, args.f_self_window,
+            args.period,
         )
         manifest.append(row)
         if row['status'] == 'ok':

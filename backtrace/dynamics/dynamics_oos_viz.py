@@ -81,6 +81,7 @@ def load_oos_predictions(
     lambda_q: float | None = None,
     f_self_window: int = 10,
     kc_estimates_path: str | None = None,
+    period: str = 'daily',
 ) -> dict:
     """跑 OOS 1 步预测并返回「预测 vs 实际」对齐数据。
 
@@ -104,6 +105,7 @@ def load_oos_predictions(
         stock_code, days, P,
         prefer_industry=prefer_industry,
         index_code=None, lag=0,
+        period=period,
     )
     data_stock = loaded['stock_df']
     data_index = loaded['index_df']
@@ -446,6 +448,8 @@ def main():
                    help='output HTML path (default: backtrace/outputs/dynsys_oos_viz_<code>.html)')
     p.add_argument('--kc-estimates-csv', dest='kc_estimates_csv', type=str, default=None,
                    help='v5.11: parameter_fit kc_estimates.csv 路径(为 None 则用现有 0.0 fallback)')
+    p.add_argument('--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+                   help='缓存粒度(daily = 默认)')
     args = p.parse_args()
 
     print(f"[v5.9] code={args.code} days={args.days} "
@@ -461,6 +465,7 @@ def main():
         lambda_q=args.lambda_q,
         f_self_window=args.f_self_window,
         kc_estimates_path=args.kc_estimates_csv,  # v5.11 NEW
+        period=args.period,
     )
 
     # 2. Render

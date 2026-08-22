@@ -69,6 +69,8 @@ def parse_args():
     p.add_argument('--init-cash', type=float, default=1e6, help='vbt 初始资金。默认 100 万')
     p.add_argument('--use-vbt', action='store_true',
                    help='跑 vbt 回测(默认先跑以验证);不传则跳过 vbt 只算 IC')
+    p.add_argument('--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+                   help='缓存粒度(daily = 默认)')
     return p.parse_args()
 
 
@@ -89,7 +91,7 @@ def load_stock_list(path):
 
 
 def process_one(stock_code, days, prefer_industry, index_code,
-                lambda_q, classify_thresholds):
+                lambda_q, classify_thresholds, period='daily'):
     """跑一只票的状态分类,返回 (state_props dict, dominant_state, total_days)。
 
     state_props: {state_name: 频率 ∈ [0, 1]},7 个 STATE_LABELS + 'none'
@@ -99,7 +101,7 @@ def process_one(stock_code, days, prefer_industry, index_code,
     try:
         loaded = load_pair(stock_code, days, P,
                            prefer_industry=prefer_industry,
-                           index_code=index_code, lag=0)
+                           index_code=index_code, lag=0, period=period)
         mv = compute_movement_projection(loaded['stock_df'], loaded['index_df'])
         dyn = compute_dynamics(mv, lambda_q=lambda_q)
         r_low, r_high, theta_f, theta_a = classify_thresholds
@@ -150,7 +152,7 @@ def main():
     for i, (code, name) in enumerate(stock_list, 1):
         props, dom, total = process_one(
             code, args.days, prefer_industry, args.index,
-            lambda_q, classify_thresholds,
+            lambda_q, classify_thresholds, period=args.period,
         )
         if props is None:
             fail += 1
@@ -206,7 +208,7 @@ def main():
     else:
         for c in all_codes:
             try:
-                df = P.load_ohlcva(c, lookback_years=args.days / 240)
+                df = P.load_ohlcva(c, lookback_years=args.days / 240, period=args.period)
                 if df is None or df.empty:
                     continue
                 # 大小写容错:Close/close 都收

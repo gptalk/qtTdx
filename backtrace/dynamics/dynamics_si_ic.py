@@ -50,6 +50,8 @@ def parse_args():
     p.add_argument('--step', type=int, default=DEFAULT_STEP)
     p.add_argument('--horizons', type=str, default='20,60',
                    help='forward horizon (days), comma-separated, e.g. "20,60"')
+    p.add_argument('--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+                   help='缓存粒度(daily = 默认)')
     return p.parse_args()
 
 

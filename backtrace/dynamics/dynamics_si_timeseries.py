@@ -61,6 +61,8 @@ def parse_args():
     p.add_argument('--ramp-up-min-n-valid', type=int, default=192,
                    help='ramp-up filter:仅保留 n_valid_days >= 该阈值 的行 '
                         '(默认 192 = 240 * 0.8,reviewer finding #2)')
+    p.add_argument('--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+                   help='缓存粒度(daily = 默认)')
     return p.parse_args()
 
 

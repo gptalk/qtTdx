@@ -61,6 +61,8 @@ def parse_args():
                    help='F_self 滚动均值窗口(天);0 = 用末日瞬时值(会触发恒等式陷阱)')
     p.add_argument('--min-valid-days', type=int, default=20,
                    help='最少有效预测天数,少于此跳过。默认 20')
+    p.add_argument('--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+                   help='缓存粒度(daily = 默认)')
     return p.parse_args()
 
 
@@ -81,7 +83,7 @@ def load_stock_list(path):
 
 
 def predict_one(stock_code, days, prefer_industry, index_code,
-                k=0.0, c=0.0, f_self_window=10):
+                k=0.0, c=0.0, f_self_window=10, period='daily'):
     """对一只股票跑 1 步 OOS 预测。
 
     F_self 预测器(避免恒等式陷阱):
@@ -94,7 +96,7 @@ def predict_one(stock_code, days, prefer_industry, index_code,
         pred_df, summary, index_code, index_tag, stock_tag
     """
     loaded = load_pair(stock_code, days, P, prefer_industry=prefer_industry,
-                       index_code=index_code, lag=0)
+                       index_code=index_code, lag=0, period=period)
     data_stock = loaded['stock_df']
     data_index = loaded['index_df']
     common_idx = loaded['common_idx']
@@ -227,6 +229,7 @@ def main():
             pred_df, summary, index_code, index_tag, stock_tag = predict_one(
                 code, args.days, prefer_industry, args.index,
                 k=args.k, c=args.c, f_self_window=args.f_self_window,
+                period=args.period,
             )
         except Exception as e:
             skipped['failed'] += 1

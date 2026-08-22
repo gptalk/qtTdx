@@ -89,6 +89,8 @@ def parse_args():
     p.add_argument('--sw2-members', default='data/sw2/members.csv',
                    help='sw2/members CSV 路径(反查 industry_l1/l2);默认 data/sw2/members.csv')
     p.add_argument('--phase-plot', action='store_true', help='画 (k,c) 11 类 phase plot 到独立 HTML(默认 off)')
+    p.add_argument('--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+                   help='缓存粒度(daily = 默认)')
     return p.parse_args()
 
 

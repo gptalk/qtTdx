@@ -889,6 +889,8 @@ def main():
     parser.add_argument('--output-dir', default='backtrace/outputs', help='output directory')
     parser.add_argument('--data-dir', default='data/dynamics', help='CSV output directory')
     parser.add_argument('--repo-root', default=REPO_ROOT, help='repo root for daily data lookup')
+    parser.add_argument('--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+                        help='缓存粒度(daily = 默认)')
     args = parser.parse_args()
 
     horizons = [int(h) for h in args.horizons.split(',')]

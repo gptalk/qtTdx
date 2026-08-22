@@ -75,6 +75,8 @@ def parse_args():
                    help='forward horizons 日(逗号分隔,默认 20,60)')
     p.add_argument('--limit', type=int, default=0,
                    help='限制行业数(0 = 全部,默认 0;冒烟测试用)')
+    p.add_argument('--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+                   help='缓存粒度(daily = 默认)')
     return p.parse_args()
 
 

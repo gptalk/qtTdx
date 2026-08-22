@@ -83,6 +83,8 @@ def parse_args():
                         'oracle=末日观测外推/ar1=AR(1) 自回归(per-dim 估 ρ/μ)')
     p.add_argument('--f-self-window', type=int, default=10,
                    help='F_self 窗口(rolling=滚动均值天数;ar1=AR(1) 最少有效样本数)。默认 10')
+    p.add_argument('--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+                   help='缓存粒度(daily = 默认)')
     return p.parse_args()
 
 
@@ -138,7 +140,7 @@ def main():
 
     # ---------- 1. 加载数据 ----------
     print(f"加载 {args.code} {STOCK_NAME} 最近 {args.days} 日...", flush=True)
-    loaded = load_pair(args.code, args.days, P, index_code=args.index, lag=0)
+    loaded = load_pair(args.code, args.days, P, index_code=args.index, lag=0, period=args.period)
     data_stock = loaded['stock_df']
     data_index = loaded['index_df']
     common_idx = loaded['common_idx']

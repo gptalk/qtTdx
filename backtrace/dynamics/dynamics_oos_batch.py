@@ -58,6 +58,7 @@ def compute_oos_metrics(
     c: float | None = None,
     f_self_window: int = 10,
     kc_estimates_path: str | None = None,  # v5.11 NEW:透传给 load_oos_predictions
+    period: str = 'daily',
 ) -> dict:
     """Per-stock OOS prediction quality metrics.
 
@@ -80,6 +81,7 @@ def compute_oos_metrics(
         c=c,
         f_self_window=f_self_window,
         kc_estimates_path=kc_estimates_path,  # v5.11 NEW
+        period=period,
     )
 
     common_idx = oos['common_idx']
@@ -443,6 +445,8 @@ def main():
                    help='output HTML path')
     p.add_argument('--kc-estimates-csv', dest='kc_estimates_csv', type=str, default=None,
                    help='v5.11: 透传给 compute_oos_metrics → load_oos_predictions')
+    p.add_argument('--period', choices=['daily', '15m', '5m', '1m'], default='daily',
+                   help='缓存粒度(daily = 默认)')
     args = p.parse_args()
 
     # 1. Load stock codes
@@ -469,6 +473,7 @@ def main():
                 days=args.days,
                 prefer_industry=args.prefer_industry,
                 kc_estimates_path=args.kc_estimates_csv,  # v5.11 NEW
+                period=args.period,
             )
             if m['n_oos'] > 0:
                 metrics_list.append(m)
@@ -506,6 +511,7 @@ def main():
             d = load_oos_predictions(
                 stock_code=code, days=args.days,
                 prefer_industry=args.prefer_industry,
+                period=args.period,
             )
             top_data.append(dict(
                 code=code,
