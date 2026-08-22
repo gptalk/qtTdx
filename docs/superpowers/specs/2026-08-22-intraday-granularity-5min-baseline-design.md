@@ -582,3 +582,13 @@ Total estimate: 3-4 working days. Most of Phase C is wall-clock on batch jobs.
 After user approves this spec:
 1. Run `superpowers:writing-plans` to produce `docs/superpowers/plans/2026-08-22-intraday-granularity-5min-baseline-plan.md`.
 2. Plan will task-by-task decompose Phase A → B → C → D with concrete checkboxes, gates, and test commands.
+
+---
+
+## 17. Outcome (filled at end of Phase D)
+
+Decision: **Kill 5min**
+
+5min granularity provides no incremental predictive value over daily at limit=50: 0 factors improve ΔIC ≥ +0.02, hit_rate drops 6.6pp (n=15 common stocks). The kc-based factors produce identical IC values because parameter_fit reads the same kc_estimates regardless of period. The OOS-based factors (hit_rate) are 2-7pp worse for 5min, indicating 5min introduces noise without improving signal.
+
+See ADR: docs/superpowers/decisions/2026-08-22-intraday-granularity-decision.md
