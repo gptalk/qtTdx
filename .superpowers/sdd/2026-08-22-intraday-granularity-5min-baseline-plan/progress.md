@@ -71,6 +71,14 @@ Task 6 (Plan Task A6): DONE — byte-equality verified
 - Test suite: **237 passed**
 - Commit: `7a597b8` (feat(dynamics): all scripts gain --period)
 
+## Phase C5 verification
+- Daily outputs in canonical dirs (data/projection/, data/dynamics/) ✓
+- 5min outputs in period-tagged dirs (data/projection_5m/, data/dynamics_5m/) ✓
+- Report artifacts in backtrace/outputs/granularity_compare/ ✓
+  - daily_vs_5min_table.csv ✓
+  - daily_vs_5min_summary.txt ✓
+  - daily_vs_5min_topology.csv ✓
+
 ## Phase C2 daily re-run smoke
 - 5 movement CSVs in data/projection/
 - kc_estimates.csv updated
