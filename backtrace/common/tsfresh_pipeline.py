@@ -57,12 +57,16 @@ def _try_local_csv(code):
     return data_store.load_daily(code)
 
 
-def load_ohlcva(code, lookback_years=None, use_tq=True, verbose=False, include_amount=True):
+def load_ohlcva(code, lookback_years=None, use_tq=True, verbose=False, include_amount=True, *, period='daily'):
     """
     TQ 优先 → 失败回退本地 CSV。
     返回 DataFrame(列 Open/High/Low/Close/Volume/Amount,DatetimeIndex)
     include_amount=False 时不取成交额(回退场景:CSV 没 Amount 列时设 False)
+    period ∈ {daily, 15m, 5m, 1m};默认 daily 与历史行为一致。
     """
+    if period not in C.VALID_GRANULARITIES:
+        raise ValueError(f"period 必须是 {C.VALID_GRANULARITIES} 之一,收到 {period!r}")
+    tq_period = C.TQ_PERIOD_MAP[period]
     lookback_years = lookback_years or C.LOOKBACK_YEARS
     fields = ['Open', 'High', 'Low', 'Close', 'Volume']
     if include_amount:
@@ -78,7 +82,7 @@ def load_ohlcva(code, lookback_years=None, use_tq=True, verbose=False, include_a
             df_real = tq.get_market_data(
                 field_list=fields, stock_list=[code],
                 start_time=start, end_time=end,
-                dividend_type='front', period='1d', fill_data=True,
+                dividend_type='front', period=tq_period, fill_data=True,
             )
             out = pd.DataFrame({
                 'Open':   pd.to_numeric(df_real['Open'][code],   errors='coerce'),
@@ -99,7 +103,11 @@ def load_ohlcva(code, lookback_years=None, use_tq=True, verbose=False, include_a
                 traceback.print_exc()
                 print("[TQ] 回退到本地 CSV")
 
-    local = _try_local_csv(code)
+    # Intraday fallback uses load_df(period); daily keeps load_daily
+    if period == 'daily':
+        local = data_store.load_daily(code)
+    else:
+        local = data_store.load_df(code, period)
     if local is not None and verbose:
         print(f"[CSV] {code}  {len(local)} 行  {local.index[0].date()} -> {local.index[-1].date()}")
     return local
