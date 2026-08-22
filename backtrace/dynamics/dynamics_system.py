@@ -51,7 +51,7 @@ from dynamics import (
     make_rolling_mean_f_self_predictor, make_constant_f_self_predictor,
     make_ar1_f_self_predictor,
 )
-
+from dynamics.dynamics_granularity_compare import output_subdir_for_period
 
 CSV_OUT_DIR = 'data/dynamics'             # 描述/力/模拟 CSV 落点
 OUT_DIR = 'backtrace/outputs'              # HTML 落点(CLAUDE.md 约定)
@@ -110,7 +110,10 @@ def _load_kc_for(index_tag, stock_tag):
 
 
 def main():
+    global CSV_OUT_DIR, OUT_DIR
     args = parse_args()
+    CSV_OUT_DIR = output_subdir_for_period('data/dynamics', args.period)
+    OUT_DIR = output_subdir_for_period('backtrace/outputs', args.period)
     os.makedirs(CSV_OUT_DIR, exist_ok=True)
     os.makedirs(OUT_DIR, exist_ok=True)
 

@@ -35,6 +35,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from backtrace.dynamics.dynamics_oos_viz import load_oos_predictions
+from dynamics.dynamics_granularity_compare import output_subdir_for_period
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 log = logging.getLogger(__name__)
@@ -496,6 +497,7 @@ def main():
              f"median_rmse={agg['median_rmse']:.4f}")
 
     # 4. Render 2×2 distribution dashboard
+    args.output = output_subdir_for_period(args.output, args.period)
     build_full_market_oos_html(
         metrics_list=metrics_list,
         output_path=args.output,

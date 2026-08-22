@@ -34,10 +34,11 @@ BACKTRACE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BACKTRACE_DIR not in sys.path:
     sys.path.insert(0, BACKTRACE_DIR)
 from dynamics import analyze_eigenvalues
+from dynamics.dynamics_granularity_compare import output_subdir_for_period
 
 CSV_OUT_DIR = 'data/dynamics'
-AGG_INDUSTRY_CSV = os.path.join(CSV_OUT_DIR, 'v43_eigen_top_industries.csv')
-AGG_EXCHANGE_CSV = os.path.join(CSV_OUT_DIR, 'v43_eigen_by_exchange.csv')
+AGG_INDUSTRY_CSV = 'v43_eigen_top_industries.csv'  # computed in main() after CSV_OUT_DIR is set
+AGG_EXCHANGE_CSV = 'v43_eigen_by_exchange.csv'     # computed in main() after CSV_OUT_DIR is set
 DEFAULT_INPUT = 'data/projection/kc_estimates.csv'
 DEFAULT_OUTPUT_HTML = 'backtrace/outputs/dynsys_eigen.html'
 DEFAULT_STOCK_BASIC = 'data/stock_basic.csv'
@@ -701,7 +702,14 @@ def compute_sector_stability_timeseries(
 
 
 def main():
+    global CSV_OUT_DIR, DEFAULT_TXT_OUTPUT
     args = parse_args()
+    CSV_OUT_DIR = output_subdir_for_period('data/dynamics', args.period)
+    args.output = output_subdir_for_period(args.output, args.period)
+    DEFAULT_TXT_OUTPUT = output_subdir_for_period(DEFAULT_TXT_OUTPUT, args.period)
+    # NOTE: AGG_INDUSTRY_CSV / AGG_EXCHANGE_CSV remain as bare filenames at
+    # module level so that test monkeypatches (which set them to absolute
+    # paths) are not overwritten by a global reassignment here.
     if not os.path.exists(args.input):
         print(f'[eigen] ✗ 输入文件不存在: {args.input}')
         print('  请先跑 backtrace/projection/parameter_fit.py 生成 kc_estimates.csv')
@@ -1045,10 +1053,29 @@ def main():
 
     # ---------- 4. 聚合表 + 文本汇总 ----------
     os.makedirs(CSV_OUT_DIR, exist_ok=True)
-    agg_l1.to_csv(AGG_INDUSTRY_CSV, index=False, encoding='utf-8')
-    print(f'[eigen] ✓ industry agg: {AGG_INDUSTRY_CSV} ({len(agg_l1)} 行)')
-    agg_ex.to_csv(AGG_EXCHANGE_CSV, index=False, encoding='utf-8')
-    print(f'[eigen] ✓ exchange agg: {AGG_EXCHANGE_CSV} ({len(agg_ex)} 行)')
+    # Guard: if the global already resolves to an absolute path (e.g. test
+    # monkeypatches to PureWindowsPath), use it directly; otherwise combine
+    # with CSV_OUT_DIR so the period suffix is applied in production.
+    def _resolve_agg(base_name):
+        val = base_name
+        if os.path.isabs(val):
+            return val
+        # PureWindowsPath / PurePosixPath from test monkeypatches: check
+        # whether the string value looks like an absolute path (has drive letter
+        # or leading slash) to avoid doubling the directory prefix.
+        val_str = str(val)
+        if len(val_str) >= 2 and val_str[1] == ':':
+            return val  # C:... absolute on Windows
+        if val_str.startswith('/'):
+            return val  # Unix absolute
+        return os.path.join(CSV_OUT_DIR, val)
+
+    agg_l1_csv = _resolve_agg(AGG_INDUSTRY_CSV)
+    agg_ex_csv = _resolve_agg(AGG_EXCHANGE_CSV)
+    agg_l1.to_csv(agg_l1_csv, index=False, encoding='utf-8')
+    print(f'[eigen] ✓ industry agg: {agg_l1_csv} ({len(agg_l1)} 行)')
+    agg_ex.to_csv(agg_ex_csv, index=False, encoding='utf-8')
+    print(f'[eigen] ✓ exchange agg: {agg_ex_csv} ({len(agg_ex)} 行)')
 
     # 文本汇总(便于 grep / CI)
     write_text_summary(

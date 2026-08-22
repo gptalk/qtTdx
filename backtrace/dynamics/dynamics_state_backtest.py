@@ -40,6 +40,7 @@ from projection._projection_core import (
     load_pair, compute_movement_projection, compute_dynamics, classify_states,
 )
 from dynamics import STATE_LABELS
+from dynamics.dynamics_granularity_compare import output_subdir_for_period
 
 CSV_OUT_DIR = 'data/dynamics'
 DEFAULT_INPUT = 'data/projection/stocks.csv'
@@ -119,7 +120,9 @@ def process_one(stock_code, days, prefer_industry, index_code,
 
 
 def main():
+    global CSV_OUT_DIR
     args = parse_args()
+    CSV_OUT_DIR = output_subdir_for_period('data/dynamics', args.period)
     os.makedirs(CSV_OUT_DIR, exist_ok=True)
 
     # 阈值

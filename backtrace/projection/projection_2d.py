@@ -76,6 +76,7 @@ from _projection_core import (
     STATE_COLORS,
     STATE_LABELS_CN,
 )
+from dynamics.dynamics_granularity_compare import output_subdir_for_period
 
 # ========================= CLI 参数 =========================
 def parse_args():
@@ -232,10 +233,10 @@ if not (0 < THETA_FOLLOWING_DEG < THETA_AGAINST_DEG < 180):
     )
 
 # ========================= 输出布局 =========================
-OUT_DIR = 'backtrace/outputs' # HTML 报告输出目录(CLAUDE.md 约定)
+OUT_DIR = output_subdir_for_period('backtrace/outputs', args.period)  # HTML 报告输出目录(CLAUDE.md 约定)
 FILE_PREFIX = 'proj2d_4d_' if TWO_DAY_VEC else 'proj2d_'  # HTML 文件统一前缀,4-D 模式切前缀
 MOVEMENT_PREFIX = 'projmv_'  # movement HTML / CSV 统一前缀,与 state 投影分开
-CSV_OUT = 'data/projection'   # 分析结果 CSV 输出子目录(与 INDEX/STOCK 标签组合文件名)
+CSV_OUT = output_subdir_for_period('data/projection', args.period)   # 分析结果 CSV 输出子目录(与 INDEX/STOCK 标签组合文件名)
 # ======================================================
 
 # 由配置派生:六位数字代码(去交易所后缀)用于变量标签 / CSV 列名 / 图例

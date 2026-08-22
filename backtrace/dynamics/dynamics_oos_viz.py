@@ -54,6 +54,7 @@ from backtrace.projection._projection_core import (
     STATE_LABELS,
 )
 from backtrace.dynamics._dynamics_core import predict_next_state
+from dynamics.dynamics_granularity_compare import output_subdir_for_period
 
 # === 模块常量(供 Task 2+ 复用) ==============================================
 DEFAULTS = dict(
@@ -469,7 +470,8 @@ def main():
     )
 
     # 2. Render
-    output_path = args.output or DEFAULT_OUTPUT.format(code=args.code.replace('.', '_'))
+    _formatted = DEFAULT_OUTPUT.format(code=args.code.replace('.', '_'))
+    output_path = output_subdir_for_period(args.output or _formatted, args.period)
     build_oos_prediction_html(
         common_idx=data['common_idx'],
         a_pred=data['a_pred'],

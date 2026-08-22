@@ -84,6 +84,7 @@ BACKTRACE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BACKTRACE_DIR not in sys.path:
     sys.path.insert(0, BACKTRACE_DIR)
 from common import tsfresh_pipeline as P  # noqa: F401  (保持导入对称,后续可扩展)
+from dynamics.dynamics_granularity_compare import output_subdir_for_period
 
 OUT_HTML_DIR = 'backtrace/outputs'   # rolling-fit HTML 输出目录
 
@@ -843,7 +844,10 @@ def write_identifiability_summary_txt(kc_df: pd.DataFrame, output_path: str) -> 
 
 
 def main():
+    global CSV_OUT_DIR, OUT_HTML_DIR
     args = parse_args()
+    CSV_OUT_DIR = output_subdir_for_period('data/projection', args.period)
+    OUT_HTML_DIR = output_subdir_for_period('backtrace/outputs', args.period)
     os.makedirs(CSV_OUT_DIR, exist_ok=True)
 
     targets = list_movement_csvs(args.input)

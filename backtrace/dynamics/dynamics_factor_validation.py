@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 # === 公共 pipeline ===
 # (Task 1 reviewer note: P was unused — dropped.)
 from dynamics._dynamics_core import analyze_eigenvalues  # 复用,不动
+from dynamics.dynamics_granularity_compare import output_subdir_for_period
 
 __all__ = [
     'load_kc_estimates', 'load_oos_predictions_summary',
@@ -894,8 +895,8 @@ def main():
     args = parser.parse_args()
 
     horizons = [int(h) for h in args.horizons.split(',')]
-    output_dir = Path(args.output_dir)
-    data_dir = Path(args.data_dir)
+    output_dir = Path(output_subdir_for_period(args.output_dir, args.period))
+    data_dir = Path(output_subdir_for_period(args.data_dir, args.period))
     output_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
 

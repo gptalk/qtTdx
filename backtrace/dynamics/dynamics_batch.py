@@ -56,6 +56,7 @@ from dynamics import (
     make_rolling_mean_f_self_predictor, make_constant_f_self_predictor,
     make_ar1_f_self_predictor,
 )
+from dynamics.dynamics_granularity_compare import output_subdir_for_period
 
 CSV_OUT_DIR = 'data/dynamics'
 CSV_FALLBACK_INPUT = 'data/projection/stocks.csv'
@@ -282,7 +283,9 @@ def process_one(stock_code, stock_name, days, prefer_industry, index_code,
 
 
 def main():
+    global CSV_OUT_DIR
     args = parse_args()
+    CSV_OUT_DIR = output_subdir_for_period('data/dynamics', args.period)
     os.makedirs(CSV_OUT_DIR, exist_ok=True)
 
     # 阈值

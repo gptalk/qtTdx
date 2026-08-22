@@ -132,6 +132,7 @@ from _projection_core import (
     compute_forces,
     build_forces_df,
 )
+from dynamics.dynamics_granularity_compare import output_subdir_for_period
 
 CSV_OUT_DIR = 'data/projection'   # 默认输出目录;运行时由 --output-dir 覆盖(模块全局)
 
@@ -438,7 +439,7 @@ def main():
     # 让 process_one() / batch_manifest 写路径都跟着变。
     # 注意:load_kc_map() 仍走 KC_SOURCE_DIR(默认 data/projection),不受影响。
     global CSV_OUT_DIR
-    CSV_OUT_DIR = args.output_dir
+    CSV_OUT_DIR = output_subdir_for_period(args.output_dir, args.period)
     os.makedirs(CSV_OUT_DIR, exist_ok=True)
 
     # --dynamics 自动开启 --movement(动力学层依赖 mv dict)

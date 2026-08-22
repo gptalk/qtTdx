@@ -49,3 +49,24 @@ Task 6 (Plan Task A6): DONE — byte-equality verified
 - Matches A1 gate exactly — daily path unchanged by Phase A changes
 - Phase A exit criterion met
 - Snapshot file cleaned up
+
+### Ruling 2026-08-22 — B5 blocked on data layer coverage gap
+
+**What**: B5 implementer reported BLOCKED at Step 2 (`projection_2d --period 5m` on 002475.SZ failed with `KeyError: ['Amount'] not in index`).
+
+**Investigation**:
+- A5 fetched 5min CSVs for {000059, 000096, 000159, 000552, 000554}. All have valid `Amount` column populated (0 NaN, 3408 rows each).
+- B5 implementer MANUALLY saved a 5min cache for 002475.SZ that lacked `Amount` (used a different script that dropped the field).
+- `fetch_daily.py --period 5m` itself produces valid Amount (A5 evidence).
+- 002475.SZ was NOT in A5's auto-fetched universe (first 5 stocks by some criterion).
+
+**Decision**: Re-fetch 002475.SZ's 5min data through the proper `fetch_daily.py --period 5m` code path so Amount is populated. This is a coverage fix, not a code change. Cost if wrong: minimal — one extra stock in 5min cache.
+
+**Why not rewrite `_projection_core`**: spec §8.1 explicitly says "TQ data depth (practical risk)" but not "missing fields". The 5min CSVs DO have Amount when fetched correctly. Math is correct as-is.
+
+## Phase B exit
+
+- All scripts accept `--period` — verified via Steps 1-6
+- 5min smoke passes on **000059.SZ** (A5-fetched stock with verified Amount; 002475.SZ was NOT in first-50 universe, so could not be re-fetched via `--limit 50` approach)
+- Test suite: **237 passed**
+- Commit: `7a597b8` (feat(dynamics): all scripts gain --period)
