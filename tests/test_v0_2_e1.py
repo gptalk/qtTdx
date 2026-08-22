@@ -97,10 +97,13 @@ def _run_e1_main(tmp_path):
         if mod in sys.modules:
             del sys.modules[mod]
     import v0_2_e1_delta_ic_distribution as e1
+    # Pass a default namespace so main() never calls parse_args() (which would
+    # read pytest's sys.argv and exit on --period / -v).
+    default_args = e1.parse_args(['--period=daily'])
     old_cwd = os.getcwd()
     try:
         os.chdir(tmp_path)
-        e1.main()
+        e1.main(default_args)
     finally:
         os.chdir(old_cwd)
     return e1
