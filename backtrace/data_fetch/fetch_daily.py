@@ -303,6 +303,43 @@ def fetch_batch(tq, codes, start, end):
     return out, missing
 
 
+def fetch_one_stock(code, period, lookback_days):
+    """Single TQ pull for one stock at given period (intraday only; daily uses fetch_batch)."""
+    import sys as _sys
+    _sys.path.insert(0, 'C:/new_tdx_mock/PYPlugins/user')
+    from tqcenter import tq as _tq
+    _tq.initialize(__file__)
+    if period == 'daily':
+        end = datetime.now().strftime('%Y%m%d')
+        start = (datetime.now() - timedelta(days=int(lookback_days * 1.5) + 30)).strftime('%Y%m%d') \
+                if lookback_days else \
+                (datetime.now() - timedelta(days=int(C.LOOKBACK_YEARS * 365 + 30))).strftime('%Y%m%d')
+        tq_period = '1d'
+    else:
+        days = lookback_days or C.DEFAULT_INTRADAY_LOOKBACK_DAYS
+        end = datetime.now().strftime('%Y%m%d')
+        start = (datetime.now() - timedelta(days=int(days * 1.8) + 10)).strftime('%Y%m%d')
+        tq_period = C.TQ_PERIOD_MAP[period]
+    fields = FIELDS  # existing
+    raw = _tq.get_market_data(
+        field_list=fields, stock_list=[code],
+        start_time=start, end_time=end,
+        dividend_type='front', period=tq_period, fill_data=True,
+    )
+    if raw is None or raw.get('Close') is None or raw['Close'].empty:
+        raise RuntimeError(f"TQ empty for {code} {tq_period}")
+    df = pd.DataFrame({
+        'Open':   pd.to_numeric(raw['Open'][code],   errors='coerce'),
+        'High':   pd.to_numeric(raw['High'][code],   errors='coerce'),
+        'Low':    pd.to_numeric(raw['Low'][code],    errors='coerce'),
+        'Close':  pd.to_numeric(raw['Close'][code],  errors='coerce'),
+        'Volume': pd.to_numeric(raw['Volume'][code], errors='coerce'),
+        'Amount': pd.to_numeric(raw['Amount'][code], errors='coerce'),
+    }).dropna(subset=['Close']).sort_index()
+    _tq.close()
+    return df
+
+
 def _record(man, code, kind, df, name=None):
     entry = {
         'kind': kind,
@@ -317,8 +354,13 @@ def _record(man, code, kind, df, name=None):
     man['entries'][code] = entry
 
 
-def _run_group(tq, codes, kind, start, end, man, names=None, force=False):
-    """拉一组(个股/行业/指数),逐批落盘 + 更新 manifest。返回 (成功数, 失败数)。"""
+def _run_group(tq, codes, kind, start, end, man, names=None, force=False,
+                period='daily', lookback_days=0):
+    """拉一组(个股/行业/指数),逐批落盘 + 更新 manifest。返回 (成功数, 失败数)。
+
+    For daily: uses batched fetch_batch + save_daily (existing behavior).
+    For intraday: calls TQ per-stock via fetch_one_stock + save_df.
+    """
     today = datetime.now().strftime('%Y-%m-%d')
     todo = []
     for c in codes:
@@ -333,40 +375,68 @@ def _run_group(tq, codes, kind, start, end, man, names=None, force=False):
         print(f"  [{kind}] 断点续传跳过今日已完成 {skipped} 只")
 
     ok = fail = 0
-    batches = list(chunked(todo))
-    for bi, batch in enumerate(batches, 1):
-        got = None
-        missing = {}
-        for attempt in (1, 2):
-            try:
-                got, missing = fetch_batch(tq, batch, start, end)
-                break
-            except RuntimeError:
-                raise                      # 空数据 = 环境问题,不重试,直接上抛中止整轮
-            except Exception as e:
-                print(f"  [{kind}] 批 {bi}/{len(batches)} 第 {attempt} 次失败: {type(e).__name__}: {e}")
-                if attempt == 2:
-                    for c in batch:
-                        man['entries'][c] = {'kind': kind, 'status': 'failed',
-                                             'reason': f'{type(e).__name__}: {e}'}
-                    fail += len(batch)
-        if got is None:
-            continue
-        for c, df in got.items():
-            data_store.save_daily(c, df, kind)
-            _record(man, c, kind, df, (names or {}).get(c))
+
+    if period == 'daily':
+        # === daily path: batched TQ (unchanged behavior) ====================
+        batches = list(chunked(todo))
+        for bi, batch in enumerate(batches, 1):
+            got = None
+            missing = {}
+            for attempt in (1, 2):
+                try:
+                    got, missing = fetch_batch(tq, batch, start, end)
+                    break
+                except RuntimeError:
+                    raise                      # 空数据 = 环境问题,不重试,直接上抛中止整轮
+                except Exception as e:
+                    print(f"  [{kind}] 批 {bi}/{len(batches)} 第 {attempt} 次失败: {type(e).__name__}: {e}")
+                    if attempt == 2:
+                        for c in batch:
+                            man['entries'][c] = {'kind': kind, 'status': 'failed',
+                                                 'reason': f'{type(e).__name__}: {e}', 'period': period}
+                        fail += len(batch)
+            if got is None:
+                continue
+            for c, df in got.items():
+                data_store.save_daily(c, df, kind)
+                _record(man, c, kind, df, (names or {}).get(c))
+                ok += 1
+            # 记入 missing 的代码 → 标 failed,不抛错
+            for c, reason in missing.items():
+                man['entries'][c] = {'kind': kind, 'status': 'failed', 'reason': reason, 'period': period}
+                fail += 1
+                print(f"  [{kind}] {c} 跳过:{reason}")
+            if not got and missing and len(missing) == len(batch):
+                pass
+            data_store.save_manifest(man)      # 每批存盘,崩了也不白跑
+            print(f"  [{kind}] 批 {bi}/{len(batches)} 完成  累计 ok={ok} fail={fail}")
+    else:
+        # === intraday path: per-stock TQ (one-at-a-time) ===================
+        for bi, code in enumerate(todo, 1):
+            for attempt in (1, 2):
+                try:
+                    df = fetch_one_stock(code, period, lookback_days)
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        man['entries'][code] = {'kind': kind, 'status': 'failed',
+                                                'reason': f'{type(e).__name__}: {e}', 'period': period}
+                        fail += 1
+                        data_store.save_manifest(man)
+                        print(f"  [{kind}] {code} 第{attempt}次失败:{type(e).__name__}: {e}")
+                        break
+                    continue
+            else:
+                # second attempt also failed (break without success)
+                continue
+            # success
+            data_store.save_df(code, df, period, kind)
+            _record(man, code, kind, df, (names or {}).get(code))
             ok += 1
-        # 记入 missing 的代码 → 标 failed,不抛错
-        for c, reason in missing.items():
-            man['entries'][c] = {'kind': kind, 'status': 'failed', 'reason': reason}
-            fail += 1
-            print(f"  [{kind}] {c} 跳过:{reason}")
-        # 整批都没拿到(全 missing)、客户端正常返回但每只都没行情(常见:某批次全是新股)
-        if not got and missing and len(missing) == len(batch):
-            # 不算环境问题;已经记入 manifest 了,继续下一批
-            pass
-        data_store.save_manifest(man)      # 每批存盘,崩了也不白跑
-        print(f"  [{kind}] 批 {bi}/{len(batches)} 完成  累计 ok={ok} fail={fail}")
+            data_store.save_manifest(man)
+            if bi % 50 == 0 or bi == len(todo):
+                print(f"  [{kind}] {bi}/{len(todo)} 完成  累计 ok={ok} fail={fail}")
+
     return ok, fail
 
 
@@ -375,6 +445,11 @@ def main():
     ap.add_argument('--limit', type=int, default=0, help='每组只取前 N 个代码(冒烟用)')
     ap.add_argument('--force', action='store_true', help='忽略 manifest,全量重拉')
     ap.add_argument('--probe', action='store_true', help='只探测 TQ 列表接口后退出')
+    ap.add_argument('--period', choices=['daily', '15m', '5m', '1m'],
+                    default='daily',
+                    help='缓存粒度(daily = 现有默认;intraday = TQ 直拉)')
+    ap.add_argument('--lookback-days', type=int, default=0,
+                    help='intraday 回看天数(daily 忽略)。0 = C.DEFAULT_INTRADAY_LOOKBACK_DAYS')
     args = ap.parse_args()
 
     try:
@@ -391,22 +466,32 @@ def main():
 
         man = data_store.load_manifest()
         man['trading_days'] = TRADING_DAYS
+        man['period'] = args.period
+        man['lookback_days'] = args.lookback_days or (
+            int(C.LOOKBACK_YEARS * 365) if args.period == 'daily'
+            else C.DEFAULT_INTRADAY_LOOKBACK_DAYS
+        )
 
         print("\n[1/3] 行业指数")
         sector_codes, sector_names = build_sector_universe(tq)
         if args.limit:
             sector_codes = sector_codes[:args.limit]
         s_ok, s_fail = _run_group(tq, sector_codes, 'sectors', start, end, man,
-                                  names=sector_names, force=args.force)
+                                  names=sector_names, force=args.force,
+                                  period=args.period, lookback_days=args.lookback_days)
 
         print("\n[2/3] 大盘指数")
-        i_ok, i_fail = _run_group(tq, INDEX_CODES, 'indices', start, end, man, force=args.force)
+        i_ok, i_fail = _run_group(tq, INDEX_CODES, 'indices', start, end, man,
+                                   force=args.force,
+                                   period=args.period, lookback_days=args.lookback_days)
 
         print("\n[3/3] 个股")
         stock_codes = build_stock_universe(tq, sector_codes, sector_names)
         if args.limit:
             stock_codes = stock_codes[:args.limit]
-        k_ok, k_fail = _run_group(tq, stock_codes, 'stocks', start, end, man, force=args.force)
+        k_ok, k_fail = _run_group(tq, stock_codes, 'stocks', start, end, man,
+                                   force=args.force,
+                                   period=args.period, lookback_days=args.lookback_days)
 
         man['generated_at'] = datetime.now().isoformat(timespec='seconds')
         data_store.save_manifest(man)
