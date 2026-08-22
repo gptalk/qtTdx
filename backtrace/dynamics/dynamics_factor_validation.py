@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 # (Task 1 reviewer note: P was unused — dropped.)
 from dynamics._dynamics_core import analyze_eigenvalues  # 复用,不动
 from dynamics.dynamics_granularity_compare import output_subdir_for_period
+from common.data_store import csv_path
 
 __all__ = [
     'load_kc_estimates', 'load_oos_predictions_summary',
@@ -146,36 +147,30 @@ def load_kc_time_series(path: str) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-def load_daily_prices(codes: list[str], repo_root: str) -> dict[str, pd.DataFrame]:
-    """Load daily close prices for given codes.
+def load_daily_prices(codes: list[str], repo_root: str, period: str = 'daily') -> dict[str, pd.DataFrame]:
+    """Load close prices for given codes.
 
-    Path: {repo_root}/data/stocks/{code_with_underscore}_daily.csv
-    (TQ local cache convention — see backtrace/common/data_store.py:csv_path)
+    Path: uses csv_path() from data_store — period-aware.
+    - period='daily'  → .../data/stocks/000001_SH_daily.csv
+    - period='5m'     → .../data/stocks/000001_SH_5m.csv
+    etc.
 
     Returns: dict[code] → DataFrame with DatetimeIndex and 'close' column.
     Missing files are silently skipped (logged warning).
     """
     out = {}
-    repo_root = Path(repo_root)
-    stocks_dir = repo_root / 'data' / 'stocks'
-    if not stocks_dir.exists():
-        raise FileNotFoundError(
-            f'data/stocks not found at {stocks_dir}. '
-            'Run: python backtrace/data_fetch/fetch_daily.py'
-        )
     for code in codes:
-        # convention from data_store.py:csv_path — '000001.SZ' -> '000001_SZ_daily.csv'
-        fname = f"{str(code).replace('.', '_')}_daily.csv"
-        f = stocks_dir / fname
+        p = csv_path(code, period=period, kind='stocks')
+        f = Path(p)
         if not f.exists():
-            log.warning(f'missing {fname} — skip')
+            log.warning(f'missing {f.name} — skip')
             continue
         df = pd.read_csv(f, index_col=0, parse_dates=True).sort_index()
         if 'Close' not in df.columns:
-            log.warning(f'{fname} missing Close — skip')
+            log.warning(f'{f.name} missing Close — skip')
             continue
         out[code] = df[['Close']].rename(columns={'Close': 'close'})
-    log.info(f'loaded daily prices for {len(out)}/{len(codes)} codes')
+    log.info(f'loaded {period} prices for {len(out)}/{len(codes)} codes')
     return out
 
 
@@ -302,13 +297,21 @@ def compute_cross_section_ic(
     Returns: (ic, p_value, n_obs). NaN if n < 10 or std = 0.
     """
     df = pd.DataFrame({'f': factor_series, 'r': ret_series}).dropna()
+    n_orig = len(df)
+    if n_orig < 10:
+        return (np.nan, np.nan, n_orig)
+    # Coerce factor to numeric — panel column is 'object' dtype due to mixed
+    # string (regime, state_dominant) and float rows; non-numeric values
+    # become NaN and are dropped, which correctly handles categorical factors.
+    df['f'] = pd.to_numeric(df['f'], errors='coerce')
+    df = df.dropna(subset=['f'])
     n = len(df)
     if n < 10:
-        return (np.nan, np.nan, n)
+        return (np.nan, np.nan, n_orig)  # preserve original count for pure string
     # 非数值因子(字符串 / 分类 / bool)→ spearmanr 会按字母序排,产生 garbage IC;
     # 显式返回 NaN — 镜像 compute_quantile_returns 的 guard (v6.0.1 IMPORTANT #10)
     if not pd.api.types.is_numeric_dtype(df['f']):
-        return (np.nan, np.nan, n)
+        return (np.nan, np.nan, n_orig)
     if df['f'].nunique() < 2 or df['r'].nunique() < 2:
         return (np.nan, np.nan, n)
     rho, pval = spearmanr(df['f'].values, df['r'].values)
@@ -946,7 +949,7 @@ def main():
     log.info(f'factor panel: {len(panel)} rows, {panel["factor_name"].nunique()} factors')
 
     # Load daily prices
-    daily_prices = load_daily_prices(codes, args.repo_root)
+    daily_prices = load_daily_prices(codes, args.repo_root, args.period)
     log.info(f'daily prices loaded: {len(daily_prices)} stocks')
 
     # Build date index — 取所有 daily data 的交集,后 240 天(留 forward return 计算空间)
